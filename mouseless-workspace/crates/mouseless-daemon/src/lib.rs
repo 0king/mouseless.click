@@ -144,6 +144,11 @@ where
             mouseless_state::Phase::Normal
         )
     }
+
+    /// Mutable access to the keyboard backend (Phase-1.2 event loop polls it).
+    pub fn keyboard_mut(&mut self) -> &mut K {
+        &mut self.kbd
+    }
 }
 
 #[cfg(test)]
