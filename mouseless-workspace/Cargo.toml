@@ -1,0 +1,24 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mouseless-core",
+    "crates/mouseless-state",
+    "crates/mouseless-ipc",
+    "crates/mouseless-kbd",
+    "crates/mouseless-mouse",
+    "crates/mouseless-overlay",
+    "crates/mouseless-daemon",
+    "crates/mouseless-cli",
+    "crates/mouseless-gtk",
+]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+mouseless-core = { path = "crates/mouseless-core" }
+mouseless-state = { path = "crates/mouseless-state" }
+mouseless-ipc = { path = "crates/mouseless-ipc" }
+mouseless-kbd = { path = "crates/mouseless-kbd" }
+mouseless-mouse = { path = "crates/mouseless-mouse" }
+mouseless-overlay = { path = "crates/mouseless-overlay" }

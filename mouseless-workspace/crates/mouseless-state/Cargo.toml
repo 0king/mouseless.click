@@ -1,0 +1,11 @@
+[package]
+name = "mouseless-state"
+version = "0.1.0"
+edition = "2021"
+description = "Overlay state machine and free-mode physics. I/O-free; time via injectable Clock trait."
+license = "MIT"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+mouseless-core = { workspace = true }

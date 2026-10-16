@@ -1,0 +1,8 @@
+{
+  "uuid": "mouseless@sonuscape.example",
+  "name": "Mouseless Overlay",
+  "description": "Draw-only grid overlay for Mouseless Linux (no input capture).",
+  "shell-version": ["45", "46", "47", "48", "49", "50"],
+  "version": 1,
+  "url": "https://mouseless.click"
+}

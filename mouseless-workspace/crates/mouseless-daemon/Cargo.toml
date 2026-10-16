@@ -1,0 +1,20 @@
+[package]
+name = "mouseless-daemon"
+version = "0.1.0"
+edition = "2021"
+description = "mouselessd: thin orchestration over trait backends. No backend logic lives here."
+license = "MIT"
+
+[[bin]]
+name = "mouselessd"
+path = "src/main.rs"
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+mouseless-core = { workspace = true }
+mouseless-state = { workspace = true }
+mouseless-ipc = { workspace = true }
+mouseless-kbd = { workspace = true }
+mouseless-mouse = { workspace = true }
+mouseless-overlay = { workspace = true }

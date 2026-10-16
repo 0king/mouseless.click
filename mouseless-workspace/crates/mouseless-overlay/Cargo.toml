@@ -1,0 +1,13 @@
+[package]
+name = "mouseless-overlay"
+version = "0.1.0"
+edition = "2021"
+description = "OverlayBackend trait (show/hide/render). Draw-only; no input capture."
+license = "MIT"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+mouseless-core = { workspace = true }
+mouseless-ipc = { workspace = true }

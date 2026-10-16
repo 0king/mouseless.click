@@ -1,0 +1,31 @@
+# mouselessd systemd unit (plan §5 rule 6, §7; audits G3, W2).
+#
+# - `After=kanata.service` but deliberately NOT Requires=/BindsTo=: no
+#   boot-order dependency; the daemon lazy-waits for TCP + device with backoff.
+# - `RuntimeDirectory=mouseless` creates /run/mouseless owned by the service
+#   for mouselessd.sock (mode 0770 via UMask); SO_PEERCRED authenticates peers.
+# - Kill-switch co-exit (plan §7): kanata TCP EOF -> daemon exits non-zero so
+#   the supervisor restarts the stack in order.
+
+[Unit]
+Description=Mouseless daemon (thin orchestration: grid math, uinput mouse, overlay IPC)
+After=kanata.service
+Wants=kanata.service
+
+[Service]
+Type=simple
+User=mouselessd
+Group=mouseless
+RuntimeDirectory=mouseless
+RuntimeDirectoryMode=0770
+UMask=0007
+ExecStart=/usr/local/bin/mouselessd
+Restart=on-failure
+RestartSec=1s
+# D-Bus/session isolation: the daemon needs no $HOME or display.
+ProtectSystem=strict
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

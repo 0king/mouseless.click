@@ -1,0 +1,15 @@
+[package]
+name = "mouseless-cli"
+version = "0.1.0"
+edition = "2021"
+description = "mouseless CLI: show/hide/toggle, layer commands, --list-input-devices."
+license = "MIT"
+
+[[bin]]
+name = "mouseless"
+path = "src/main.rs"
+
+[dependencies]
+thiserror = { workspace = true }
+mouseless-kbd = { workspace = true }
+mouseless-ipc = { workspace = true }

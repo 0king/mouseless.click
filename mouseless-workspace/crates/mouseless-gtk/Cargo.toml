@@ -1,0 +1,13 @@
+[package]
+name = "mouseless-gtk"
+version = "0.1.0"
+edition = "2021"
+description = "Settings app stub (Rust gtk4 + libadwaita in Phase 3; needs system -dev packages)."
+license = "MIT"
+
+[[bin]]
+name = "mouseless-settings"
+path = "src/main.rs"
+
+[dependencies]
+thiserror = { workspace = true }

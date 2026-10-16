@@ -1,0 +1,10 @@
+[package]
+name = "mouseless-kbd"
+version = "0.1.0"
+edition = "2021"
+description = "KeyboardBackend trait (kanata TCP + temp-grab). Concrete integrations live in impls/."
+license = "MIT"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
