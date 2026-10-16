@@ -1,23 +1,28 @@
-;; Mouseless kanata include (plan §2.3; scaffold for Phase 1.1).
-;;
-;; Sourced from the main kanata.kbd via `(include mouseless.kbd)`.
-;; - Stable output name so the daemon finds it without eventN hardcodes.
-;; - Our uinput mouse excluded (loop prevention, plan §8 test #6).
-;; - Clean no-HRM overlay layer; ShiftLeft tap trigger retained per audit C1
-;;   decision (ShiftRight stays free for capitals during fast typing).
-;; - No `cmd` actions anywhere (audit W1).
+;; Mouseless overlay layer for kanata (Phase 1.1).
+;; Installed as /etc/kanata/mouseless.kbd, sourced from unicfg.kbd via
+;;   (include "mouseless.kbd")
+;; Requires in unicfg.kbd (see UNICFG-EDITS.md):
+;; - lyr-base: lsft slot (`_`) replaced with `@ml-tap` (ShiftLeft tap trigger)
+;; - defcfg: linux-output-device-name + linux-dev-names-exclude
+;; Design notes (audit C1, user-accepted): ShiftLeft tap (<200 ms) switches to
+;; lyr-mouseless; holding ShiftLeft behaves as plain lsft. The live config's
+;; `concurrent-tap-hold yes` already makes fast Shift+key count as hold, which
+;; is the main misfire mitigation; ShiftRight is untouched for capitals.
 
-(defcfg
-  linux-output-device-name "kanata-mouseless"
-  linux-dev-names-exclude ("mouseless-mouse")
-  ;; keep the existing linux-device-detect-mode (keyboard-only) from kanata.kbd
-  danger-enable-cmd no)
+(defalias
+  ;; ShiftLeft tap -> overlay; hold -> left shift (tap-hold-release matches
+  ;; the HRM style used in unicfg.kbd).
+  ml-tap (tap-hold-release 200 200 (layer-switch lyr-mouseless) lsft)
+)
 
+;; Clean no-HRM overlay layer: plain cell letters + space; esc exits to base.
+;; Every other key is transparent (`_`) so modifiers/passthrough keep working.
+;; Column counts mirror defsrc exactly (13/14/14/13/12/7).
 (deflayer lyr-mouseless
-  ;; plain letters: zero suppression work for kanata; the daemon temp-grabs
-  ;; the output downstream (plan §2.2)
-  a s d f j k l ; spc esc)
-
-;; Trigger sketch (final tap-dance/tap-hold tuning in Phase 1.1 with the
-;; fake-clock property tests from plan §8 test #1):
-;; ShiftLeft tap (<200ms) -> layer-switch lyr-mouseless; ShiftRight untouched.
+  (layer-switch lyr-base) _ _ _ _ _ _ _ _ _ _ _ _
+  _ _ _ _ _ _ _ _ _ _ _ _ _ _
+  _ _ _ _ _ _ _ _ _ _ _ _ _ _
+  _ a s d f _ _ j k l ; _ _
+  _ _ _ _ _ _ _ _ _ _ _ _
+  _ _ _ spc _ _ _
+)
