@@ -8,3 +8,4 @@ license = "MIT"
 [dependencies]
 serde = { workspace = true }
 thiserror = { workspace = true }
+uinput = "0.1"

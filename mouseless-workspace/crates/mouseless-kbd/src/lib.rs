@@ -9,7 +9,14 @@
 //! overlay, `EVIOCGKEY` pre-check, drain on release — audits G6/G7); the real
 //! ioctl implementation lands in Phase 1.2.
 
+pub mod grab;
 pub mod impls;
+pub mod tcp;
+
+pub use grab::{CellKey, EvdevCellGrab, KANATA_OUTPUT_NAME, find_output_device, translate_key};
+pub use impls::{FakeKeyboard, KanataTcpConfig};
+
+pub use tcp::{KanataSubscriber, backoff_for_attempt, parse_server_line, query_current_layer};
 
 use thiserror::Error;
 

@@ -6,4 +6,4 @@ mod fake;
 mod uinput;
 
 pub use fake::FakeMouse;
-pub use uinput::{UINPUT_DEVICE_NAME, VENDOR_ID_SONUSCAPE};
+pub use uinput::{UINPUT_DEVICE_NAME, UinputMouse, VENDOR_ID_SONUSCAPE};
