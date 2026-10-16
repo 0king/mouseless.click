@@ -1,7 +1,7 @@
 # Mouseless Linux: High-Level Architecture & Implementation Plan
 
-> **Target OS:** Ubuntu GNOME (Wayland, GNOME Shell 50+)
-> **Input Interception:** Kanata-fronted (kanata owns grabs, tap-hold/HRM, layers; TCP + `cmd` as required)
+> **Target OS:** Ubuntu GNOME (Wayland, GNOME Shell 45+ ESM, primary test target 50+ / Ubuntu 26.04)
+> **Input Interception:** Kanata-fronted (kanata owns grabs, tap-hold/HRM, layers; TCP only, no `cmd`)
 > **Custom daemon:** Thin privileged `mouselessd` (temp-grab cell capture, grid math, uinput mouse, free-mode physics, overlay IPC, TCP client)
 > **GUI Framework:** GTK4 + libadwaita, in Rust (`gtk4` + `libadwaita` crates, `Adw.PreferencesWindow`)
 > **Overlay Subsystem:** GNOME Shell Extension (Clutter canvas in `Main.uiGroup`, draw-only)
@@ -21,13 +21,14 @@
    temporary cell-key capture during overlay, grid math, absolute-positioned clicks
    via its own uinput **mouse**, custom free-mode physics loop, overlay IPC server,
    kanata TCP client. Permanent keyboard capture is forbidden.
-3. **Kanata TCP required; `cmd` as required (rare signals only).** TCP
-   (`-p 127.0.0.1:7070`-style, localhost only) is mandatory for `LayerChange`
-   subscription and `ChangeLayer` control. The `cmd` action (requires the
-   `kanata_cmd_allowed` binary variant + `danger-enable-cmd yes`) is used ONLY for
-   rare signals (overlay show/hide hooks), NEVER for the per-cell hot path
-   (fork-per-keypress latency/jitter + sandbox limits). Per-cell keys travel via
-   temporary evdev grab (zero fork, zero leak).
+3. **Kanata TCP required; `cmd` REMOVED (audit W1).** TCP
+    (`-p 127.0.0.1:7070`-style, localhost only) is mandatory AND sufficient for
+    `LayerChange` subscription and `ChangeLayer` control. `LayerChange` IS the
+    overlay show/hide signal — no separate `cmd` hook is needed. We do NOT use
+    the `cmd` action, so we do NOT need the `kanata_cmd_allowed` binary variant,
+    do NOT set `danger-enable-cmd yes`, fork no helper per signal, and avoid the
+    `kanata-svc` sandbox socket-path blocker entirely (audit C3 resolved by
+    deletion). Per-cell keys travel via temporary evdev grab (zero fork, zero leak).
 4. **Hardware-priority pipeline DELETED.** The old "Alternative Pipeline" (mouseless
    grabs physical hardware first, kanata consumes our virtual keyboard) is removed
    and must not be reintroduced. Rationale: boot-order race with `kanata.service`
@@ -65,8 +66,9 @@
 - Kanata's TCP protocol emits `LayerChange`/layer-names/fakekey actions but **no
   per-keypress events** — kanata alone cannot tell the daemon which cell was pressed.
 - The action that could (`cmd mouseless-cell a`) is **compiled out** of the stock
-  binary (`cmd is not enabled for this kanata executable`); it needs the
-  `kanata_cmd_allowed` release asset or a `--features cmd` rebuild.
+  binary and is deliberately NOT used (audit W1): per-key `cmd` would fork per
+  press and `show/hide` via `cmd` is redundant with `LayerChange`. Stock kanata
+  binary suffices; no `kanata_cmd_allowed` swap, no `danger-enable-cmd`.
 - Kanata **cannot absolute-position the mouse on Linux** (`setmouse does not work
   in Linux yet`, TCP `SetMouse` likewise). Grid "click at cell center" is impossible
   from kanata alone — hence our uinput mouse helper.
@@ -90,15 +92,21 @@ is visible (see §5).
 - `defcfg`: add `linux-output-device-name "kanata-mouseless"`,
   `linux-dev-names-exclude ("mouseless-mouse")`, keep `keyboard-only` detect mode.
 - New layer `lyr-mouseless`: plain `a s d f j k l ;`, plain `spc`, `esc` → back to
-  base. Trigger: `ShiftLeft` tap (tap-dance/tap-hold) → `layer-switch lyr-mouseless`.
-  Rare-signal `cmd` hooks for show/hide only (no per-key `cmd`).
+  base. Trigger: `ShiftLeft` tap (tap-dance/tap-hold, ~200 ms) → `layer-switch lyr-mouseless`.
+  Decision (audit C1, user-accepted): keep `ShiftLeft` to match upstream
+  (`ShiftLeft` tap on Windows/Linux). Known cost: fast `ShiftLeft+letter` (<200 ms)
+  can misfire as tap-then-letter instead of capital. Accepted mitigation for MVP:
+  `ShiftRight` remains fully usable for capitals; tap/hold/chord/interrupt matrix
+  in test #1 must stay green. Double-tap / `Shift+Mod` tap / CapsLock alternatives
+  considered and deferred.
+- No `cmd` hooks of any kind (audit W1). No `kanata_cmd_allowed`, no
+  `danger-enable-cmd`, no `/usr/local/bin` helpers, no sandbox relaxation.
 - `kanata.service`: append TCP flag, e.g. `-p 127.0.0.1:7070` (localhost only);
-  add `--emergency-exit-code 1` (non-zero so `Restart=on-failure` restarts it);
-  swap binary to `kanata_cmd_allowed` variant (verified checksum) iff `cmd` hooks
-  are used; relax sandbox minimally for the helper path (`/usr/local/bin` exec
-  allowed; helpers must not need `$HOME`/session D-Bus since they run as
-  `kanata-svc` under `ProtectSystem=strict` + `ProtectHome=true` +
-  `NoNewPrivileges=true`).
+  keep `--emergency-exit-code 1` for macOS/Windows parity BUT on Linux kanata
+  raises `SIGTERM` directly (ignores the exit code — audit W2). Since
+  `Restart=on-failure` alone does not restart on `SIGTERM`, set either
+  `Restart=always` or `Restart=on-failure` + `RestartForceExitStatus=SIGTERM`.
+  Do NOT add `forceful-exit-code` to `defcfg` (invalid option — config parse error).
 
 ### 2.4 Data flow
 
@@ -156,13 +164,23 @@ Trait-boundary rules (enforced in review + CI):
 
 ## 4. Overlay, State, Settings, IPC Contracts
 
-- **Overlay (GNOME extension):** fullscreen transparent actor in `Main.uiGroup`;
+- **Overlay (GNOME extension):** fullscreen transparent actor in `Main.uiGroup`
+  via `Main.layoutManager.addTopChrome(actor, { affectsInputRegion: false,
+  trackFullscreen: true })`; GNOME 45+ ESM syntax, `metadata.json`
+  `"shell-version": ["45", "46", "47", "48", "49", "50"]` (audit C2);
   reports monitor geometry + cursor position to the daemon (the daemon needs both:
   geometry for cell centers, cursor pos for REL-delta computation since Linux has no
   absolute warp); renders grid/labels/highlight at 60 FPS from daemon frames.
 - **State (`mouseless-state`):** `Normal → Overlay → Subgrid → Click`, plus
-  `FreeMode` (custom physics loop, `tokio` fixed-step tick) and drag handling.
+  `FreeMode` (custom physics loop, fixed-step tick with injectable `Clock` —
+  tokio timer for daemon I/O, dedicated thread or tokio task for the tick; do not
+  async-color the physics core) and drag handling.
   `free_mode_engine` flag selects custom vs kanata-native motion.
+- **Mouse (`mouseless-mouse` → uinput `mouseless-mouse`):** REL deltas computed
+  from extension reports. Requires flat pointer acceleration for accuracy
+  (audit G1): ship udev rule `ENV{LIBINPUT_ATTR_POINTER_ACCEL}="flat"` (or
+  equivalent `ACCEL_PROFILE=flat`) scoped to `mouseless-mouse` in `platform/`.
+  Without this, libinput accel distorts large deltas and clicks land off-target.
 - **Settings (`mouseless-gtk`):** grid/appearance editor, monitor assignment,
   keybinding reference, presets (Standard, Quick-Select+Free-Mode), deep links
   (`mouseless://toggle-overlay` etc. via `.desktop` + `x-scheme-handler`), writes
@@ -171,9 +189,20 @@ Trait-boundary rules (enforced in review + CI):
   - kanata → daemon: TCP `LayerChange` subscription; daemon → kanata: `ChangeLayer`,
     `RequestCurrentLayerName/Info` (resync), `Reload*` (config apply).
   - daemon → extension: `Show(GridModel)`, `HighlightCell`, `ShowSubgrid`, `Hide`
-    over Unix socket, versioned JSON framing.
+    over Unix socket at `/run/mouseless/mouselessd.sock` (`RuntimeDirectory=mouseless`
+    on the daemon unit; mode `0770`, group `mouseless`), versioned JSON framing,
+    `SO_PEERCRED` peer check that the client is the daemon UID (audit G3).
+    Full 1-page wire spec (envelope, message schemas, error format, hello/negotiate
+    → stream → close, `schema_version` negotiation, keepalive/reconnect) is a
+    Phase-1 pre-coding deliverable (audit G2).
   - GUI/CLI → daemon: `Reload`, `Update(ConfigData)`; CLI also speaks kanata TCP
     for layer commands.
+- **Upstream feature mapping (audit G4, MVP scope):** in-scope for MVP/Phase 2:
+  grid click, subgrid, continuous mode (Phase 2.2), multi-monitor switching.
+  Deliberately deferred to Phase 4: label mode (AT-SPI, experimental), overlay
+  lock / pass-through (beta upstream), in-overlay config editor (Tab), global
+  mouse buttons, hold-for-free-mode, cycle mouse action/button/count. No ambiguity:
+  anything not listed here is out of scope until Phase 4.
 
 ---
 
@@ -182,15 +211,28 @@ Trait-boundary rules (enforced in review + CI):
 1. **Never grab at startup.** Exclusive grab of `kanata-mouseless` happens only
    while the overlay is visible, via an RAII `CellGrab` guard whose `Drop`
    implementation always releases the grab and best-effort notifies hide.
-2. **No `eventN` hardcodes.** Discover the kanata output by stable
+   Guard owns its fd: open `/dev/input/eventX` fresh on each overlay invocation,
+   close on `Drop` (audit G7 — never reuse an fd across overlays or the kernel
+   per-client buffer replays stale typing / `SYN_DROPPED`). On acquire, snapshot
+   `EVIOCGKEY` and if a key is already down, wait for release or synthesize the
+   matching key-up to the compositor before grabbing; on release, drain the fd
+   before close so no partial press/release pair leaks (audit G6 — stuck/phantom
+   keys). Kernel guarantees grab release on fd close, even on SIGKILL.
+2. **LayerChange→grab race ACCEPTED (audit W3, user-accepted).** Daemon learns
+   about `lyr-mouseless` over TCP after kanata switches; a cell key pressed
+   within ~5 ms of the switch can beat the grab. Accepted for MVP as rare in
+   practice (users don't strike the cell key within 5 ms of tapping Shift).
+   No speculative grab, no kanata-side key swallowing for MVP; revisit only if
+   telemetry/tests show real misfires.
+3. **No `eventN` hardcodes.** Discover the kanata output by stable
    `linux-output-device-name` + inotify rescan on hotplug/restart.
-3. **TCP reconnect with backoff + resync.** Exponential-backoff reconnect and
+4. **TCP reconnect with backoff + resync.** Exponential-backoff reconnect and
    `RequestCurrentLayerName` on every (re)connect; duplicate/missed `LayerChange`
    events are idempotent (single-flight overlay state machine, one mutex,
    idempotent show/hide).
-4. **`EBUSY` is retried, never fatal.** Grab attempts use timeout + retry; failure
+5. **`EBUSY` is retried, never fatal.** Grab attempts use timeout + retry; failure
    degrades to "overlay unavailable, typing unaffected".
-5. **Supervision without coupling.** Daemon unit is `After=kanata.service` but
+6. **Supervision without coupling.** Daemon unit is `After=kanata.service` but
    explicitly NOT `Requires=`/`BindsTo=` for startup; it waits lazily for TCP +
    device with backoff and survives kanata restarts transparently (except the
    kill-switch path, §7, where co-exit is intentional).
@@ -217,7 +259,10 @@ Trait-boundary rules (enforced in review + CI):
 ## 7. Kill Switch (kanata emergency-exit kills the app too)
 
 - Configure kanata `--emergency-exit-code 1` so the `LCtrl+Space+Esc` chord exits
-  kanata with a failure code (`Restart=on-failure` restarts it).
+  kanata (audit W2: on Linux kanata raises `SIGTERM` directly and ignores the code;
+  the flag is kept for macOS/Windows parity). Supervisor restart requires
+  `Restart=always` OR `Restart=on-failure` + `RestartForceExitStatus=SIGTERM` in
+  `kanata.service` — `Restart=on-failure` alone does not restart on `SIGTERM`.
 - `mouselessd` treats kanata TCP EOF/reset as kanata-death: RAII releases any held
   grab, sends overlay-hide (idempotent, best-effort), then exits via the same
   failure path so the supervisor restarts the stack in order.
@@ -231,11 +276,11 @@ Trait-boundary rules (enforced in review + CI):
 
 | # | Critical area | Why it regresses | Test (automated, blocking CI) |
 |---|---|---|---|
-| 1 | Tap-vs-hold (`ShiftLeft` tap <200 ms vs `Shift+key`) | False overlays / leaked Shifts | Fake-clock property tests: tap/hold/chord/interrupt sequences |
-| 2 | Temp-grab lifecycle | Stuck grab = dead keyboard | Fake-evdev tests: show/hide, error mid-overlay, panic, kill-switch → assert release on EVERY path |
+| 1 | Tap-vs-hold (`ShiftLeft` tap <200 ms vs `Shift+key`) | False overlays / leaked Shifts (`ShiftLeft` retained per C1 decision; `ShiftRight` fallback for capitals) | Fake-clock property tests: tap/hold/chord/interrupt sequences |
+| 2 | Temp-grab lifecycle | Stuck grab = dead keyboard; stuck/phantom keys, stale fd buffer (G6/G7) | Fake-evdev tests: show/hide, error mid-overlay, panic, kill-switch → assert release on EVERY path; `EVIOCGKEY` pre-check + drain-on-release; fresh fd per overlay |
 | 3 | Layer↔daemon↔overlay sync | Ghost overlay / desync after kanata restart | Fake-TCP-server tests: missed/duplicate `LayerChange`, reconnect resync |
 | 4 | Cell→pixel incl. scale (100/125/150/200%, 1080p/4K, vertical) | Clicks land off-target | Golden geometry tests per layout |
-| 5 | REL-delta from extension cursor pos | Overflow/clamp/multi-monitor offset bugs | Unit tests incl. negative/large deltas, per-monitor offsets |
+| 5 | REL-delta from extension cursor pos | Overflow/clamp/multi-monitor offset bugs; libinput accel distortion (G1) | Unit tests incl. negative/large deltas, per-monitor offsets; flat-accel udev rule assertion |
 | 6 | Loop prevention (exclude `mouseless-mouse`, stable output name) | Event feedback loop resurgence | Startup-ordering tests (both orders) + exclusion assertions |
 | 7 | Free-mode tick determinism | Easing/accel drift | Fixed-step golden tests per curve (`loose/natural/snappy/instant`) |
 | 8 | IPC schema + malformed frames | Daemon/extension crash on bad JSON | Version-negotiation + fuzz/corpus tests on the socket parser |
@@ -249,12 +294,17 @@ Trait-boundary rules (enforced in review + CI):
 ### Phase 1: Kanata-fronted grid MVP (Priority 1)
 - [ ] **1.1 Kanata base:** TCP port, `linux-output-device-name "kanata-mouseless"`,
   `linux-dev-names-exclude ("mouseless-mouse")`, `lyr-mouseless` (clean no-HRM),
-  `ShiftLeft`-tap trigger, `cmd_allowed` swap + `danger-enable-cmd` iff show/hide
-  hooks are used; `--emergency-exit-code 1`; verify `LayerChange` latency.
-- [ ] **1.2 Thin daemon:** TCP subscriber + resync, RAII temp-grab cell reader,
-  `mouseless-core` grid math, uinput mouse deltas + `BTN_*`, overlay IPC server,
+  `ShiftLeft`-tap trigger (retained per C1 decision), NO `cmd` (audit W1);
+  `--emergency-exit-code 1` + `Restart=always` (or `RestartForceExitStatus=SIGTERM`)
+  per audit W2; verify `LayerChange` latency.
+- [ ] **1.2 Thin daemon:** TCP subscriber + resync, RAII temp-grab cell reader
+  (fresh fd per overlay, `EVIOCGKEY` + drain per G6/G7),
+  `mouseless-core` grid math, uinput mouse deltas + `BTN_*` (flat-accel udev rule
+  per G1), overlay IPC server (`/run/mouseless/mouselessd.sock` + `SO_PEERCRED`
+  per G3, 1-page wire spec per G2),
   `mouseless-cli` (`show/hide/toggle`, `--list-input-devices`).
-- [ ] **1.3 GNOME overlay:** fullscreen Clutter actor, geometry + cursor-pos report,
+- [ ] **1.3 GNOME overlay:** fullscreen Clutter actor via `addTopChrome`
+  (`affectsInputRegion: false`), 45+ ESM, geometry + cursor-pos report,
   grid/label/highlight render, idempotent show/hide, Shell-restart resilience.
 - [ ] **1.4 End-to-end MVP:** tap Shift → overlay → 2 keys → left-click at cell
   center, zero leaked keystrokes; tests #1–#6, #8 green.
@@ -281,10 +331,16 @@ Trait-boundary rules (enforced in review + CI):
 ## 10. Open Verification Steps (pre-build spikes, ≤2 days)
 
 1. Temp-grab `kanata-mouseless` output while kanata runs (assert `EVIOCGRAB`
-   succeeds; kanata does not hold its own output).
+   succeeds; kanata does not hold its own output; verify `EVIOCGKEY` snapshot +
+   fresh-fd-per-grab per G6/G7).
 2. TCP `LayerChange` round-trip latency kanata↔daemon (target <5 ms localhost).
-3. `cmd_allowed` binary checksum + `cmd` show/hide latency (only if hooks used).
+   Race window accepted per W3 — no extra action unless misfires observed.
+3. Unix socket path + auth (replaces old `cmd_allowed` check, removed per W1):
+   `/run/mouseless/mouselessd.sock` via `RuntimeDirectory=mouseless`, mode 0770,
+   `SO_PEERCRED` check; write 1-page IPC wire spec first (G2/G3).
 4. Extension cursor-pos + geometry report accuracy at 100/150/200% scale.
-5. `apt install libgtk-4-dev libadwaita-1-dev` for the Rust GTK build.
-6. Permissions path: `mouseless` group + udev `uinput` rule + `input` membership
+5. Flat-accel udev rule for `mouseless-mouse` (G1): verify large REL deltas land
+   on cell center with no libinput distortion.
+6. `apt install libgtk-4-dev libadwaita-1-dev` for the Rust GTK build.
+7. Permissions path: `mouseless` group + udev `uinput` rule + `input` membership
    (same as upstream), scoped to temp-grab + uinput mouse (no permanent grab).

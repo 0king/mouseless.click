@@ -13,24 +13,28 @@ Reference behavior: [mouseless.click docs](file:///.misc/extracted_docs.txt).
   keyboard passthrough.
 - The ONLY evdev capture is the temporary overlay grab of the stable
   `kanata-mouseless` output device (`linux-output-device-name`), held solely
-  while the overlay is visible via the RAII `CellGrab` guard.
+  while the overlay is visible via the RAII `CellGrab` guard. Guard owns its fd:
+  open fresh per overlay, close on `Drop`; `EVIOCGKEY` snapshot on acquire, drain
+  on release (audits G6/G7).
 - Never hardcode `/dev/input/eventN`. Discover by device name + inotify rescan.
 - The hardware-priority pipeline (grab-physical-first) is DELETED. Do not
   reintroduce it under any name. Rationale in plan §1.4.
 
 ## SKILL-02 — Kanata TCP + `cmd` policy
 
-- TCP (`-p 127.0.0.1:port`, localhost only) is mandatory: subscribe `LayerChange`,
-  send `ChangeLayer`, resync with `RequestCurrentLayerName/Info`, apply config
-  with `Reload*`. Reconnect = exponential backoff + resync; all events idempotent.
-- `cmd` requires the `kanata_cmd_allowed` binary (checksummed swap) +
-  `danger-enable-cmd yes`. Use it ONLY for rare signals (overlay show/hide).
-  Per-key `cmd` is FORBIDDEN (fork latency/jitter, sandbox limits, attack surface).
-- Spawned helpers run as `kanata-svc` under `ProtectSystem=strict` +
-  `ProtectHome=true` + `NoNewPrivileges=true`: no `$HOME`, no session D-Bus,
-  no display. Helpers live in `/usr/local/bin` and speak over sockets.
+- TCP (`-p 127.0.0.1:port`, localhost only) is mandatory AND sufficient:
+  subscribe `LayerChange`, send `ChangeLayer`, resync with
+  `RequestCurrentLayerName/Info`, apply config with `Reload*`. Reconnect =
+  exponential backoff + resync; all events idempotent.
+- `cmd` is REMOVED (audit W1). No `kanata_cmd_allowed`, no `danger-enable-cmd`,
+  no helpers. `LayerChange` is the sole show/hide signal. Per-key `cmd` was
+  already forbidden; now ALL `cmd` is forbidden.
+- Spawned helpers: N/A (no helpers). Daemon↔extension socket is
+  `/run/mouseless/mouselessd.sock` (`RuntimeDirectory=mouseless`) with
+  `SO_PEERCRED` check (audit G3).
 - `setmouse`/`SetMouse` do NOT work on Linux. Absolute clicks always go through
-  our uinput mouse using extension-supplied cursor-pos + geometry.
+  our uinput mouse using extension-supplied cursor-pos + geometry, with flat
+  pointer accel udev rule for `mouseless-mouse` (audit G1).
 
 ## SKILL-03 — Loop prevention & race avoidance
 
@@ -68,8 +72,10 @@ Reference behavior: [mouseless.click docs](file:///.misc/extracted_docs.txt).
 
 ## SKILL-06 — Kill switch
 
-- Ship `--emergency-exit-code 1` so `LCtrl+Space+Esc` exits kanata abnormally
-  (supervisor restarts it). Daemon rule: kanata TCP EOF/reset → release grab
+- Ship `--emergency-exit-code 1` so `LCtrl+Space+Esc` exits kanata (Linux raises
+  `SIGTERM` directly — audit W2). Supervisor needs `Restart=always` or
+  `Restart=on-failure` + `RestartForceExitStatus=SIGTERM`. Never put
+  `forceful-exit-code` in `defcfg` (invalid). Daemon rule: kanata TCP EOF/reset → release grab
   (RAII), best-effort overlay-hide, co-exit failure code. No second kill chord.
 - Document the chord in the GUI. Test it with a fake TCP drop mid-overlay
   (assert: grab released + hide emitted + exit code).

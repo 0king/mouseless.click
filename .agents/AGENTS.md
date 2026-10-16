@@ -40,10 +40,10 @@ kanata owns interception. The old "Slint UI" agent is replaced by the GTK agent.
   - Own `defcfg`: `linux-output-device-name "kanata-mouseless"`,
     `linux-dev-names-exclude ("mouseless-mouse")`, `keyboard-only` detect mode.
   - Own service surface: TCP `-p 127.0.0.1:port` (localhost only),
-    `--emergency-exit-code 1`, `cmd_allowed` binary swap (checksummed) +
-    `danger-enable-cmd yes` ONLY for rare show/hide signals — never per-key `cmd`.
-    Document sandbox consequences (`ProtectSystem=strict`, `ProtectHome=true`,
-    `NoNewPrivileges=true`: helpers run as `kanata-svc`, no `$HOME`/session D-Bus).
+    `--emergency-exit-code 1` + `Restart=always` (or `Restart=on-failure` +
+    `RestartForceExitStatus=SIGTERM`) — Linux raises `SIGTERM` directly (audit W2).
+    No `cmd`: no `kanata_cmd_allowed` swap, no `danger-enable-cmd`, no helpers
+    (audit W1/C3 resolved by deletion).
   - Own the `KeyboardBackend` trait surface so kanata is swappable
     (`impls/kanata.rs` today; `impls/keyd.rs`, `impls/evdev_raw.rs` tomorrow).
   - Own race-avoidance: stable output-device naming, no `eventN` hardcodes, inotify
@@ -70,8 +70,9 @@ kanata owns interception. The old "Slint UI" agent is replaced by the GTK agent.
 ### 2.3 Wayland & Overlay Agent (`gnome-extension`, `mouseless-overlay`)
 - **Domain:** Compositor integration, rendering. Draw-only — never input capture.
 - **Responsibilities:**
-  - Own the GNOME Shell extension: fullscreen transparent Clutter actor in
-    `Main.uiGroup`; monitor geometry discovery; fractional-scale correctness;
+  - Own the GNOME Shell extension: fullscreen transparent Clutter actor via
+    `Main.layoutManager.addTopChrome(..., { affectsInputRegion: false,
+    trackFullscreen: true })`; GNOME 45+ ESM, `shell-version` 45–50 (audit C2); fractional-scale correctness;
     grid/label/highlight rendering at 60 FPS; idempotent show/hide; Shell-restart
     resilience.
   - Own cursor-position + geometry reporting to the daemon (required: Linux has no
@@ -107,15 +108,17 @@ kanata owns interception. The old "Slint UI" agent is replaced by the GTK agent.
 1. **Kanata → Daemon (TCP):** `LayerChange` subscription (localhost only).
    Daemon → Kanata: `ChangeLayer`, `RequestCurrentLayerName/Info` (resync),
    `Reload*` (config apply). Reconnect = backoff + resync; events idempotent.
-2. **Kanata → Daemon (`cmd`, rare only):** show/hide hooks via
-   `kanata_cmd_allowed` + `danger-enable-cmd`; helper runs as `kanata-svc` and
-   speaks over socket — never touches session D-Bus/display. Per-key `cmd`
-   forbidden.
+2. **No `cmd` path (removed per audit W1).** `LayerChange` over TCP is the sole
+   show/hide signal. No `kanata_cmd_allowed`, no `danger-enable-cmd`.
 3. **Daemon → Kanata output (evdev, temp-grab only):** RAII `CellGrab` held solely
-   while overlay is visible; `Drop` always releases. `EBUSY` → retry with timeout.
+   while overlay is visible; fresh fd per overlay, `EVIOCGKEY` pre-check, drain
+   on release (audits G6/G7); `Drop` always releases. `EBUSY` → retry with timeout.
 4. **Daemon → Mouse (uinput):** `move_rel(dx, dy)`, `click(btn)`, `scroll()`
-   on `mouseless-mouse` (kanata-excluded). Deltas computed from extension reports.
-5. **Daemon ↔ Overlay (Unix socket, versioned JSON):**
+   on `mouseless-mouse` (kanata-excluded). Flat accel udev rule required (audit G1).
+   Deltas computed from extension reports.
+5. **Daemon ↔ Overlay (Unix socket, versioned JSON):** path
+   `/run/mouseless/mouselessd.sock` (`RuntimeDirectory=mouseless`), `SO_PEERCRED`
+   check (audit G3);
    `Show(GridModel)` / `HighlightCell` / `ShowSubgrid` / `Hide` + geometry/cursor
    reports upstream. Mismatch → negotiate or refuse with clear error.
 6. **Config → Daemon/Kanata:** `Reload`, `Update(ConfigData)`; validate-then-apply
