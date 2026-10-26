@@ -10,6 +10,7 @@ truth: `../.agents/plan.md`; roles: `../.agents/AGENTS.md`; operating rules:
 - `gnome-extension/` — draw-only Shell overlay (JS ESM, Shell 45–50)
 - `platform/` — udev rules, systemd units, kanata include
 - `ui/` — GTK4 Blueprint definitions (Phase 3)
+- `specs/` — module specs; index: `specs/SPEC-MAP.md` (acceptance criteria + open questions)
 
 ## Build
 
