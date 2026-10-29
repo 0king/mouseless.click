@@ -71,6 +71,15 @@ export class OverlayActor {
         this._highlight = null;
         this._layer = null;
         this._activeCells = new Map();
+        // GNOME binds tracked-chrome visibility to fullscreen state
+        // (`trackFullscreen`), so it can re-show this actor after a monitor,
+        // scale, overview, or fullscreen change. With no model there is
+        // nothing to draw; force it back down instead of leaving an empty
+        // dim layer on screen.
+        this._visibleId = this._root.connect('notify::visible', () => {
+            if (this._root.visible && !this._model && !this._subgrid)
+                this._root.hide();
+        });
     }
 
     get actor() {
@@ -110,11 +119,23 @@ export class OverlayActor {
 
     /** Re-map the current model after a monitor/scale change. */
     reposition() {
-        if (this._model || this._subgrid)
+        if (this._model || this._subgrid) {
             this._rebuild();
+            // GNOME re-adds tracked chrome on `monitors-changed`; re-assert
+            // visibility so a mid-session scale change keeps the overlay up.
+            this._root.show();
+        } else {
+            // The same re-add can make a hidden actor visible again. With no
+            // model there is nothing to draw, so keep the chrome hidden.
+            this._root.hide();
+        }
     }
 
     destroy() {
+        if (this._visibleId) {
+            this._root.disconnect(this._visibleId);
+            this._visibleId = 0;
+        }
         this._clear();
         this._root.destroy();
     }
