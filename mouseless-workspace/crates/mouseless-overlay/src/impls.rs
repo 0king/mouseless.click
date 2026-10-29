@@ -7,4 +7,4 @@ mod fake;
 mod gnome;
 
 pub use fake::FakeOverlay;
-pub use gnome::{GNOME_SHELL_VERSIONS, SOCKET_PATH};
+pub use gnome::{GnomeOverlay, GNOME_SHELL_VERSIONS, SOCKET_GROUP, SOCKET_PATH};

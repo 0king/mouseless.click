@@ -8,8 +8,9 @@
 pub mod impls;
 
 use mouseless_ipc::CursorPos;
-use serde::{Deserialize, Serialize};
 use thiserror::Error;
+
+pub use mouseless_ipc::{GridCell, GridModel, MonitorInfo, MonitorLayout};
 
 /// Overlay backend errors (logged, never crash the Shell).
 #[derive(Debug, Error)]
@@ -22,15 +23,28 @@ pub enum OverlayError {
     Schema(String),
 }
 
-/// Grid model pushed by the daemon (`Show(GridModel)`).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct GridModel {
-    /// Monitor geometry the grid was computed for.
-    pub geometry: serde_json::Value,
-    /// Cell labels in row-major order.
-    pub labels: Vec<String>,
-    /// Highlighted cell index, if any.
-    pub highlight: Option<u32>,
+/// Events reported by the overlay (extension → daemon).
+#[derive(Debug, Clone, PartialEq)]
+pub enum OverlayEvent {
+    /// Extension connected and completed the Hello handshake.
+    Hello {
+        /// Extension version string.
+        extension_version: String,
+    },
+    /// Monitor/cursor report (on connect and geometry changes).
+    Report {
+        /// Current monitor layout.
+        layout: MonitorLayout,
+        /// Cursor position in global physical pixels.
+        cursor: CursorPos,
+    },
+    /// Reply to a `QueryCursor` request.
+    CursorReply {
+        /// Fresh cursor position.
+        cursor: CursorPos,
+    },
+    /// A previously-helloed client disconnected (Shell restart/crash).
+    Disconnected,
 }
 
 /// Swappable overlay backend (plan §1.8).
@@ -44,33 +58,60 @@ pub trait OverlayBackend {
     fn show(&mut self, model: &GridModel) -> Result<(), Self::Error>;
     /// Move the highlight (idempotent).
     fn highlight(&mut self, index: u32) -> Result<(), Self::Error>;
+    /// Show the subgrid inside parent cell `parent` (idempotent).
+    fn show_subgrid(&mut self, parent: u32, model: &GridModel) -> Result<(), Self::Error>;
     /// Hide the overlay (idempotent, best-effort).
     fn hide(&mut self) -> Result<(), Self::Error>;
+    /// Ask the compositor for a fresh cursor position (`QueryCursor`).
+    fn query_cursor(&mut self) -> Result<(), Self::Error>;
+    /// Drain queued overlay events without blocking.
+    fn poll_events(&mut self) -> Vec<OverlayEvent>;
     /// Latest cursor position reported by the compositor, if any.
     fn last_cursor(&self) -> Option<CursorPos>;
+    /// Latest monitor layout reported by the compositor, if any.
+    fn last_layout(&self) -> Option<MonitorLayout>;
+    /// Whether a live overlay client has completed the Hello handshake.
+    ///
+    /// The daemon MUST NOT grab cell keys without a live overlay: the keys
+    /// would be swallowed with nowhere to render (plan §6 degraded mode).
+    fn is_connected(&self) -> bool;
 }
 
 #[cfg(test)]
 mod tests {
     use super::impls::FakeOverlay;
     use super::*;
+    use mouseless_core::{Monitor, Rect};
+
+    fn model() -> GridModel {
+        GridModel {
+            monitor: Monitor {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+                scale: 1.0,
+            },
+            cells: vec![GridCell::new(
+                0,
+                "a",
+                Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 480.0,
+                    h: 540.0,
+                },
+            )],
+            highlight: None,
+        }
+    }
 
     #[test]
     fn show_hide_idempotent_never_fails() {
         let mut o = FakeOverlay::default();
         o.hide().unwrap(); // hiding while hidden: no-op
-        o.show(&GridModel {
-            geometry: serde_json::json!({}),
-            labels: vec!["a".into()],
-            highlight: None,
-        })
-        .unwrap();
-        o.show(&GridModel {
-            geometry: serde_json::json!({}),
-            labels: vec!["a".into()],
-            highlight: None,
-        })
-        .unwrap(); // duplicate show: no-op
+        o.show(&model()).unwrap();
+        o.show(&model()).unwrap(); // duplicate show: no-op
         assert!(o.visible);
         o.hide().unwrap();
         assert!(!o.visible);

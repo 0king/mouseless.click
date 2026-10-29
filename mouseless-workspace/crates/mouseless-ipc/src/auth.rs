@@ -104,6 +104,21 @@ pub fn peer_groups(pid: i32) -> Vec<u32> {
     Vec::new()
 }
 
+/// Resolve a group name to its gid (`getgrnam`). Returns `None` when the
+/// group does not exist; callers must then fall back to uid-only auth.
+#[cfg(target_os = "linux")]
+pub fn group_gid(name: &str) -> Option<u32> {
+    let name = std::ffi::CString::new(name).ok()?;
+    // SAFETY: `getgrnam` returns a pointer into static storage; we copy the
+    // gid immediately and never retain the pointer.
+    let gr = unsafe { libc::getgrnam(name.as_ptr()) };
+    if gr.is_null() {
+        None
+    } else {
+        Some(unsafe { (*gr).gr_gid })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

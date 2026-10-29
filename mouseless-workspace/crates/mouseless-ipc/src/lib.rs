@@ -472,4 +472,16 @@ mod tests {
             assert!(decode(truncated).is_err());
         }
     }
+
+    #[test]
+    fn checked_in_corpus_never_panics() {
+        // Matrix #8: the curated corpus ships as test data (SPEC-ipc).
+        let corpus = include_str!("../tests/corpus/malformed.ndjson");
+        for line in corpus.lines() {
+            assert!(
+                matches!(decode(line), Err(IpcError::Malformed(_))),
+                "{line:?}"
+            );
+        }
+    }
 }

@@ -5,18 +5,18 @@
 //! is swappable (`impls/kanata.rs` today; `keyd`, `evdev_raw` tomorrow).
 //!
 //! No `cmd` anywhere (audit W1): layer events arrive over kanata TCP only.
-//! The [`CellGrab`] guard documents the temp-grab contract (fresh fd per
-//! overlay, `EVIOCGKEY` pre-check, drain on release — audits G6/G7); the real
-//! ioctl implementation lands in Phase 1.2.
+//! [`EvdevCellGrab`] implements the temp-grab contract (fresh fd per overlay,
+//! `EVIOCGKEY` pre-check, drain on release — audits G6/G7); [`CellGrab`] is
+//! the hermetic scaffold used by non-production wiring and tests.
 
 pub mod grab;
 pub mod impls;
 pub mod tcp;
 
-pub use grab::{CellKey, EvdevCellGrab, KANATA_OUTPUT_NAME, find_output_device, translate_key};
-pub use impls::{FakeKeyboard, KanataTcpConfig};
+pub use grab::{find_output_device, translate_key, CellKey, EvdevCellGrab, KANATA_OUTPUT_NAME};
+pub use impls::{FakeCellGrab, FakeKeyboard, KanataTcpConfig};
 
-pub use tcp::{KanataSubscriber, backoff_for_attempt, parse_server_line, query_current_layer};
+pub use tcp::{backoff_for_attempt, parse_server_line, query_current_layer, KanataSubscriber};
 
 use thiserror::Error;
 
@@ -43,9 +43,10 @@ pub enum LayerEvent {
 
 /// Swappable keyboard backend (plan §1.8, §3).
 ///
-/// Implementations must: reconnect with exponential backoff, resync with
-/// `RequestCurrentLayerName` on every (re)connect, and treat duplicate/missed
-/// `LayerChange` events as idempotent (plan §5).
+/// Implementations must reconnect with exponential backoff, resync the current
+/// layer on every (re)connect (kanata pushes `LayerChange` on connect; a
+/// backend MAY also send `RequestCurrentLayerName`), and treat duplicate or
+/// missed `LayerChange` events as idempotent (plan §5).
 pub trait KeyboardBackend {
     /// Error type.
     type Error: std::error::Error;
@@ -59,6 +60,27 @@ pub trait KeyboardBackend {
     fn reload(&mut self) -> Result<(), Self::Error>;
 }
 
+/// Polling interface for the RAII grab used by the daemon session loop.
+///
+/// [`EvdevCellGrab`] is the production implementation; [`CellGrab`] (the
+/// scaffold) and `FakeCellGrab` implement it so daemon tests stay hermetic.
+pub trait CellKeySource {
+    /// Non-blocking poll for one cell key press.
+    fn next_key_press(&mut self) -> Result<Option<CellKey>, KbdError>;
+    /// Whether the exclusive grab is currently held.
+    fn held(&self) -> bool;
+}
+
+impl CellKeySource for CellGrab {
+    fn next_key_press(&mut self) -> Result<Option<CellKey>, KbdError> {
+        Ok(None)
+    }
+
+    fn held(&self) -> bool {
+        self.held()
+    }
+}
+
 /// RAII temporary cell-key grab (plan §5 rule 1).
 ///
 /// Contract (audits G6/G7), enforced by the Phase-1.2 evdev implementation:
@@ -70,8 +92,8 @@ pub trait KeyboardBackend {
 /// 3. On release (`Drop`), drains the fd before close (no phantom key-ups).
 /// 4. Kernel guarantees grab release on fd close, even on SIGKILL.
 ///
-/// This scaffold records the contract; [`CellGrab::held`] lets the daemon and
-/// tests assert lifecycle without real `/dev/input` access.
+/// This scaffold always reports "held" and reads no keys; it keeps non-evdev
+/// unit tests hermetic. Production wiring uses [`EvdevCellGrab`].
 #[derive(Debug, Default)]
 pub struct CellGrab {
     held: bool,

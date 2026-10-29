@@ -5,8 +5,7 @@
 //! with `Reload*`. Reconnect = exponential backoff + resync; all events
 //! idempotent. No `cmd` (audit W1).
 
-use std::io::{BufRead, BufReader, Write};
-use std::net::TcpStream;
+use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
 /// Kanata TCP connection parameters.
@@ -38,33 +37,15 @@ impl KanataTcpConfig {
 
     /// Open a TCP connection (caller owns reconnect/backoff, plan §5).
     pub fn connect(&self) -> std::io::Result<TcpStream> {
-        TcpStream::connect_timeout(
-            &self.addr().parse().expect("valid localhost addr"),
-            self.timeout,
-        )
+        let addr = self.addr();
+        let socket: SocketAddr = addr.parse().map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid kanata address {addr}: {e}"),
+            )
+        })?;
+        TcpStream::connect_timeout(&socket, self.timeout)
     }
-}
-
-/// Read one line (one JSON frame) from kanata TCP with a deadline.
-// NOTE: scaffold API; wired in Phase 1.2 (plan §9.1.2).
-#[allow(dead_code)]
-pub fn read_frame(reader: &mut BufReader<TcpStream>, timeout: Duration) -> std::io::Result<String> {
-    reader
-        .get_ref()
-        .set_read_timeout(Some(timeout))
-        .expect("set timeout");
-    let mut line = String::new();
-    reader.read_line(&mut line)?;
-    Ok(line)
-}
-
-/// Send one command line to kanata TCP.
-// NOTE: scaffold API; wired in Phase 1.2 (plan §9.1.2).
-#[allow(dead_code)]
-pub fn send_command(stream: &mut TcpStream, cmd: &str) -> std::io::Result<()> {
-    stream.write_all(cmd.as_bytes())?;
-    stream.write_all(b"\n")?;
-    stream.flush()
 }
 
 #[cfg(test)]

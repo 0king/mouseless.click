@@ -1,0 +1,10 @@
+{
+not json
+[1,2
+null
+42
+{"schema_version":1}
+{"schema_version":1,"kind":"daemon"}
+{"schema_version":"one","kind":"daemon","payload":{}}
+{"schema_version":1,"kind":null,"payload":{}}
+{"schema_version":1,"kind":"daemon","payload":

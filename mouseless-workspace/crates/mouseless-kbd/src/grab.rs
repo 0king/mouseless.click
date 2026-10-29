@@ -75,22 +75,19 @@ impl EvdevCellGrab {
         let mut grab = Self {
             device: Some(device),
         };
+        let device = grab
+            .device
+            .as_mut()
+            .ok_or_else(|| KbdError::Unavailable("grab released".into()))?;
         // G6: never grab over a held key — that key's key-up would be lost and
         // the compositor would see a stuck key. Caller retries (EBUSY policy).
-        let held = grab
-            .device
-            .as_ref()
-            .expect("present")
+        let held = device
             .get_key_state()
             .map_err(|e| KbdError::Io(format!("EVIOCGKEY: {e}")))?;
         if held.iter().next().is_some() {
             return Err(KbdError::Busy);
         }
-        grab.device
-            .as_mut()
-            .expect("present")
-            .grab()
-            .map_err(|_| KbdError::Busy)?;
+        device.grab().map_err(|_| KbdError::Busy)?;
         Ok(grab)
     }
 
@@ -139,6 +136,16 @@ impl Drop for EvdevCellGrab {
     }
 }
 
+impl crate::CellKeySource for EvdevCellGrab {
+    fn next_key_press(&mut self) -> Result<Option<CellKey>, KbdError> {
+        self.next_key_press()
+    }
+
+    fn held(&self) -> bool {
+        self.device.is_some()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,7 +154,10 @@ mod tests {
     fn translates_cell_keys() {
         use evdev::KeyCode;
         assert_eq!(translate_key(KeyCode::KEY_A), Some(CellKey::Char('a')));
-        assert_eq!(translate_key(KeyCode::KEY_SEMICOLON), Some(CellKey::Char(';')));
+        assert_eq!(
+            translate_key(KeyCode::KEY_SEMICOLON),
+            Some(CellKey::Char(';'))
+        );
         assert_eq!(translate_key(KeyCode::KEY_SPACE), Some(CellKey::Space));
         assert_eq!(translate_key(KeyCode::KEY_ESC), Some(CellKey::Escape));
         assert_eq!(translate_key(KeyCode::KEY_Q), None); // not an overlay key

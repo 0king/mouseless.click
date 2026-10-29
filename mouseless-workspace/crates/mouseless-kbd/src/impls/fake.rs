@@ -1,7 +1,45 @@
 //! In-memory fake backend for deterministic tests (plan §8 #1–#3, #10).
 
-use crate::{KbdError, KeyboardBackend, LayerEvent};
+use crate::{CellKey, KbdError, KeyboardBackend, LayerEvent};
 use std::collections::VecDeque;
+
+/// Fake cell grab: scripted keys, no `/dev/input` access (daemon tests).
+#[derive(Debug, Default)]
+pub struct FakeCellGrab {
+    held: bool,
+    keys: VecDeque<CellKey>,
+}
+
+impl FakeCellGrab {
+    /// Create a held fake grab.
+    pub fn new() -> Self {
+        Self {
+            held: true,
+            keys: VecDeque::new(),
+        }
+    }
+
+    /// Queue a key press for the daemon session loop to poll.
+    pub fn push_key(&mut self, key: CellKey) {
+        self.keys.push_back(key);
+    }
+}
+
+impl crate::CellKeySource for FakeCellGrab {
+    fn next_key_press(&mut self) -> Result<Option<CellKey>, KbdError> {
+        Ok(self.keys.pop_front())
+    }
+
+    fn held(&self) -> bool {
+        self.held
+    }
+}
+
+impl Drop for FakeCellGrab {
+    fn drop(&mut self) {
+        self.held = false;
+    }
+}
 
 /// Fake keyboard: scripted events, inspectable layer commands.
 #[derive(Debug, Default)]

@@ -1,18 +1,20 @@
 //! Live kanata TCP subscriber (Phase 1.2).
 //!
 //! Localhost TCP only: the server pushes `{"LayerChange":{"new":…}}` on
-//! connect and on every switch. Reconnect = exponential backoff + resync via
-//! `RequestCurrentLayerName` (plan §5). Duplicate/missed events stay safe
-//! because the daemon's show/hide is idempotent.
+//! connect and on every switch, so a reconnect resyncs from that connect-time
+//! push; `query_current_layer` sends `RequestCurrentLayerName` for one-shot
+//! startup/`mouseless status` queries. Duplicate/missed events stay safe
+//! because the daemon's show/hide is idempotent (plan §5).
 
-use crate::{KbdError, KanataTcpConfig, KeyboardBackend, LayerEvent};
+use crate::{KanataTcpConfig, KbdError, KeyboardBackend, LayerEvent};
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::time::Duration;
 
 /// Backoff schedule for reconnects (plan §5): 100ms doubling to 5s max.
 pub fn backoff_for_attempt(attempt: u32) -> Duration {
-    Duration::from_millis(100u64.saturating_mul(2u64.saturating_pow(attempt.min(6)))).min(Duration::from_secs(5))
+    Duration::from_millis(100u64.saturating_mul(2u64.saturating_pow(attempt.min(6))))
+        .min(Duration::from_secs(5))
 }
 
 /// Query the current layer name once (used for resync and `mouseless status`).
@@ -36,7 +38,11 @@ pub fn query_current_layer(cfg: &KanataTcpConfig) -> Result<String, KbdError> {
             return Err(KbdError::Io("kanata closed connection".into()));
         }
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
-            if let Some(name) = v.get("CurrentLayerName").and_then(|m| m.get("name")).and_then(|n| n.as_str()) {
+            if let Some(name) = v
+                .get("CurrentLayerName")
+                .and_then(|m| m.get("name"))
+                .and_then(|n| n.as_str())
+            {
                 return Ok(name.to_string());
             }
             // Ignore other pushes (LayerChange, MessagePush) while resyncing.
@@ -58,6 +64,7 @@ pub struct KanataSubscriber {
     cfg: KanataTcpConfig,
     reader: Option<BufReader<TcpStream>>,
     failures: u32,
+    read_timeout: Duration,
 }
 
 impl KanataSubscriber {
@@ -67,7 +74,24 @@ impl KanataSubscriber {
             cfg,
             reader: None,
             failures: 0,
+            read_timeout: Duration::from_millis(500),
         }
+    }
+
+    /// Change the idle read timeout used by [`KeyboardBackend::next_layer_event`].
+    ///
+    /// Data arrival still wakes `read_line` immediately, so this only bounds
+    /// how long an idle poll may block. The session loop lowers it so grabbed
+    /// cell keys are polled every few milliseconds.
+    pub fn set_read_timeout(&mut self, timeout: Duration) -> Result<(), KbdError> {
+        self.read_timeout = timeout;
+        if let Some(reader) = self.reader.as_ref() {
+            reader
+                .get_ref()
+                .set_read_timeout(Some(timeout))
+                .map_err(|e| KbdError::Io(e.to_string()))?;
+        }
+        Ok(())
     }
 
     /// Ensure a live connection (backoff sleep on repeated failure).
@@ -80,7 +104,7 @@ impl KanataSubscriber {
         }
         match self.cfg.connect() {
             Ok(s) => {
-                s.set_read_timeout(Some(Duration::from_millis(500)))
+                s.set_read_timeout(Some(self.read_timeout))
                     .map_err(|e| KbdError::Io(e.to_string()))?;
                 self.reader = Some(BufReader::new(s));
                 self.failures = 0;
@@ -100,7 +124,9 @@ impl KeyboardBackend for KanataSubscriber {
     fn next_layer_event(&mut self) -> Result<LayerEvent, Self::Error> {
         loop {
             self.ensure_connected()?;
-            let reader = self.reader.as_mut().expect("connected");
+            let Some(reader) = self.reader.as_mut() else {
+                return Err(KbdError::Io("subscriber lost connection".into()));
+            };
             let mut line = String::new();
             match reader.read_line(&mut line) {
                 Ok(0) => {
@@ -117,7 +143,10 @@ impl KeyboardBackend for KanataSubscriber {
                     // empty progress; loop back to read again).
                     continue;
                 }
-                Err(e) if e.kind() == std::io::ErrorKind::TimedOut || e.kind() == std::io::ErrorKind::WouldBlock => {
+                Err(e)
+                    if e.kind() == std::io::ErrorKind::TimedOut
+                        || e.kind() == std::io::ErrorKind::WouldBlock =>
+                {
                     // Poll timeout: no event right now. Report unavailability
                     // so the caller can do other work, staying connected.
                     return Err(KbdError::Unavailable("no layer event yet".into()));
@@ -133,7 +162,9 @@ impl KeyboardBackend for KanataSubscriber {
 
     fn set_layer(&mut self, name: &str) -> Result<(), Self::Error> {
         self.ensure_connected()?;
-        let reader = self.reader.as_mut().expect("connected");
+        let Some(reader) = self.reader.as_mut() else {
+            return Err(KbdError::Io("subscriber lost connection".into()));
+        };
         let cmd = format!("{{\"ChangeLayer\":{{\"new\":\"{name}\"}}}}\n");
         reader
             .get_mut()
@@ -147,7 +178,9 @@ impl KeyboardBackend for KanataSubscriber {
 
     fn reload(&mut self) -> Result<(), Self::Error> {
         self.ensure_connected()?;
-        let reader = self.reader.as_mut().expect("connected");
+        let Some(reader) = self.reader.as_mut() else {
+            return Err(KbdError::Io("subscriber lost connection".into()));
+        };
         reader
             .get_mut()
             .write_all(b"{\"RequestReload\":{}}\n")
@@ -189,8 +222,10 @@ mod tests {
             let mut r = BufReader::new(s.try_clone().unwrap());
             let mut line = String::new();
             r.read_line(&mut line).unwrap();
-            s.write_all(b"{\"LayerChange\":{\"new\":\"lyr-base\"}}\n").unwrap();
-            s.write_all(b"{\"CurrentLayerName\":{\"name\":\"lyr-mouseless\"}}\n").unwrap();
+            s.write_all(b"{\"LayerChange\":{\"new\":\"lyr-base\"}}\n")
+                .unwrap();
+            s.write_all(b"{\"CurrentLayerName\":{\"name\":\"lyr-mouseless\"}}\n")
+                .unwrap();
             std::thread::sleep(Duration::from_millis(100));
         });
         let cfg = KanataTcpConfig {
@@ -203,12 +238,49 @@ mod tests {
     }
 
     #[test]
+    fn reconnect_resyncs_from_connect_time_layer_push() {
+        // Matrix #3: after EOF the subscriber reconnects and consumes kanata's
+        // connect-time `LayerChange` as the resync signal.
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let h = std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            first
+                .write_all(b"{\"LayerChange\":{\"new\":\"lyr-mouseless\"}}\n")
+                .unwrap();
+            drop(first);
+            let (mut second, _) = listener.accept().unwrap();
+            second
+                .write_all(b"{\"LayerChange\":{\"new\":\"lyr-base\"}}\n")
+                .unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+        });
+        let cfg = KanataTcpConfig {
+            host: "127.0.0.1".into(),
+            port,
+            timeout: Duration::from_secs(2),
+        };
+        let mut sub = KanataSubscriber::new(cfg);
+        assert_eq!(
+            sub.next_layer_event().unwrap(),
+            LayerEvent::LayerChanged("lyr-mouseless".into())
+        );
+        assert!(matches!(sub.next_layer_event(), Err(KbdError::Io(_))));
+        assert_eq!(
+            sub.next_layer_event().unwrap(),
+            LayerEvent::LayerChanged("lyr-base".into())
+        );
+        h.join().unwrap();
+    }
+
+    #[test]
     fn subscriber_receives_layer_change() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let h = std::thread::spawn(move || {
             let (mut s, _) = listener.accept().unwrap();
-            s.write_all(b"{\"LayerChange\":{\"new\":\"lyr-mouseless\"}}\n").unwrap();
+            s.write_all(b"{\"LayerChange\":{\"new\":\"lyr-mouseless\"}}\n")
+                .unwrap();
             std::thread::sleep(Duration::from_millis(300));
         });
         let cfg = KanataTcpConfig {

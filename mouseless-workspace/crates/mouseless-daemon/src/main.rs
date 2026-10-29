@@ -1,47 +1,171 @@
-//! `mouselessd` binary: thin orchestration, Phase 1.2 event loop.
+//! `mouselessd` binary: thin orchestration, Phase 1.3 production wiring.
 //!
 //! ```text
 //! kanata TCP LayerChange → show/hide → EvdevCellGrab (fresh fd, EVIOCGKEY)
-//!   → cell keys logged → esc exits via ChangeLayer → uinput mouse (Phase 1.3 clicks)
-//!   → Unix-socket Show/Hide frames for the overlay (Phase 1.3 renders)
+//!   → cell keys → subgrid → click via uinput mouse
+//!   → Unix-socket Show/Highlight/ShowSubgrid/Hide frames (GNOME extension)
 //! ```
 //!
 //! Kill switch (plan §7): kanata TCP EOF/reset → release grab, best-effort
 //! hide broadcast, exit(1) so the supervisor restarts the stack in order.
 //!
 //! Needs `input` group membership for `/dev/input` and the `mouseless` group
-//! + udev rule for `/dev/uinput` (plan §10.6). Without them the device paths
-//! degrade loudly at startup instead of failing mid-overlay.
+//! plus the udev rule for `/dev/uinput` (plan §10.6). Missing uinput degrades
+//! to "overlay tracks, clicks disabled"; missing overlay degrades to "typing
+//! unaffected, no grab" (plan §6).
 
-mod ipc_server;
-
-use ipc_server::IpcServer;
-use mouseless_daemon::{Daemon, DaemonConfig};
-use mouseless_ipc::{DaemonToOverlay, Envelope, SCHEMA_VERSION};
-use mouseless_kbd::{CellKey, EvdevCellGrab, KanataSubscriber, KanataTcpConfig, KbdError, KeyboardBackend, LayerEvent};
-use mouseless_mouse::impls::{FakeMouse, UinputMouse};
-use mouseless_overlay::impls::FakeOverlay;
+use mouseless_daemon::{Daemon, DaemonConfig, DaemonError, SessionStep, OVERLAY_LAYER};
+use mouseless_ipc::CursorPos;
+use mouseless_kbd::{
+    EvdevCellGrab, KanataSubscriber, KanataTcpConfig, KbdError, KeyboardBackend, LayerEvent,
+};
+use mouseless_mouse::impls::UinputMouse;
+use mouseless_mouse::{MouseBackend, MouseButton, MouseError};
+use mouseless_overlay::impls::GnomeOverlay;
+use mouseless_overlay::{GridModel, MonitorLayout, OverlayBackend, OverlayError, OverlayEvent};
 use std::process::ExitCode;
 use std::time::Duration;
 
-fn hide_frame() -> Envelope {
-    Envelope {
-        schema_version: SCHEMA_VERSION,
-        kind: "daemon".into(),
-        payload: serde_json::to_value(DaemonToOverlay::Hide).expect("Hide serializes"),
+/// Production mouse: real uinput, or a loud no-op when `/dev/uinput` is denied.
+enum ProdMouse {
+    Uinput(UinputMouse),
+    Disabled,
+}
+
+impl ProdMouse {
+    fn create() -> Self {
+        match UinputMouse::create() {
+            Ok(m) => {
+                println!("mouselessd: uinput mouseless-mouse ready");
+                Self::Uinput(m)
+            }
+            Err(e) => {
+                eprintln!(
+                    "mouselessd: uinput unavailable ({e}); clicks disabled, overlay still tracks"
+                );
+                Self::Disabled
+            }
+        }
     }
 }
 
-fn show_frame() -> Envelope {
-    Envelope {
-        schema_version: SCHEMA_VERSION,
-        kind: "daemon".into(),
-        payload: serde_json::to_value(DaemonToOverlay::Show {
-            model: serde_json::json!({"cells": [], "note": "Phase 1.3 renders"}),
-        })
-        .expect("Show serializes"),
+impl MouseBackend for ProdMouse {
+    type Error = MouseError;
+
+    fn move_rel(&mut self, dx: i32, dy: i32) -> Result<(), Self::Error> {
+        match self {
+            Self::Uinput(m) => m.move_rel(dx, dy),
+            Self::Disabled => Err(MouseError::Io("uinput unavailable".into())),
+        }
+    }
+
+    fn click(&mut self, button: MouseButton) -> Result<(), Self::Error> {
+        match self {
+            Self::Uinput(m) => m.click(button),
+            Self::Disabled => Err(MouseError::Io("uinput unavailable".into())),
+        }
+    }
+
+    fn scroll(&mut self, dx: i32, dy: i32) -> Result<(), Self::Error> {
+        match self {
+            Self::Uinput(m) => m.scroll(dx, dy),
+            Self::Disabled => Err(MouseError::Io("uinput unavailable".into())),
+        }
     }
 }
+
+/// Production overlay: GNOME socket backend, or a no-op if bind failed.
+enum ProdOverlay {
+    Gnome(Box<GnomeOverlay>),
+    Disabled,
+}
+
+impl ProdOverlay {
+    fn bind(path: &str) -> Self {
+        match GnomeOverlay::bind(path) {
+            Ok(o) => {
+                println!("mouselessd: overlay socket {path}");
+                Self::Gnome(Box::new(o))
+            }
+            Err(e) => {
+                eprintln!("mouselessd: overlay socket unavailable ({e}); typing unaffected");
+                Self::Disabled
+            }
+        }
+    }
+}
+
+impl OverlayBackend for ProdOverlay {
+    type Error = OverlayError;
+
+    fn show(&mut self, model: &GridModel) -> Result<(), Self::Error> {
+        match self {
+            Self::Gnome(o) => o.show(model),
+            Self::Disabled => Ok(()),
+        }
+    }
+
+    fn highlight(&mut self, index: u32) -> Result<(), Self::Error> {
+        match self {
+            Self::Gnome(o) => o.highlight(index),
+            Self::Disabled => Ok(()),
+        }
+    }
+
+    fn show_subgrid(&mut self, parent: u32, model: &GridModel) -> Result<(), Self::Error> {
+        match self {
+            Self::Gnome(o) => o.show_subgrid(parent, model),
+            Self::Disabled => Ok(()),
+        }
+    }
+
+    fn hide(&mut self) -> Result<(), Self::Error> {
+        match self {
+            Self::Gnome(o) => o.hide(),
+            Self::Disabled => Ok(()),
+        }
+    }
+
+    fn query_cursor(&mut self) -> Result<(), Self::Error> {
+        match self {
+            Self::Gnome(o) => o.query_cursor(),
+            Self::Disabled => Ok(()),
+        }
+    }
+
+    fn poll_events(&mut self) -> Vec<OverlayEvent> {
+        match self {
+            Self::Gnome(o) => {
+                o.poll();
+                o.drain_events()
+            }
+            Self::Disabled => Vec::new(),
+        }
+    }
+
+    fn last_cursor(&self) -> Option<CursorPos> {
+        match self {
+            Self::Gnome(o) => o.last_cursor(),
+            Self::Disabled => None,
+        }
+    }
+
+    fn last_layout(&self) -> Option<MonitorLayout> {
+        match self {
+            Self::Gnome(o) => o.last_layout(),
+            Self::Disabled => None,
+        }
+    }
+
+    fn is_connected(&self) -> bool {
+        match self {
+            Self::Gnome(o) => o.is_connected(),
+            Self::Disabled => false,
+        }
+    }
+}
+
+type ProdDaemon = Daemon<KanataSubscriber, ProdMouse, ProdOverlay, EvdevCellGrab>;
 
 fn parse_args() -> DaemonConfig {
     let mut cfg = DaemonConfig::default();
@@ -87,153 +211,168 @@ fn main() -> ExitCode {
         timeout: Duration::from_secs(2),
     };
 
-    let mut ipc = match IpcServer::bind(&cfg.socket_path) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("bind {}: {e}", cfg.socket_path);
-            return ExitCode::FAILURE;
-        }
-    };
-    println!("mouselessd: ipc socket {}", cfg.socket_path);
+    let overlay = ProdOverlay::bind(&cfg.socket_path);
+    let mouse = ProdMouse::create();
+    let mut daemon = Daemon::with_grab(
+        KanataSubscriber::new(tcp_cfg),
+        mouse,
+        overlay,
+        cfg,
+        EvdevCellGrab::acquire,
+    );
 
-    match UinputMouse::create() {
-        Ok(_) => println!("mouselessd: uinput mouseless-mouse ready"),
-        Err(e) => eprintln!("mouselessd: uinput unavailable ({e}); clicks disabled, overlay still tracks"),
-    }
-
-    let mut sub = KanataSubscriber::new(tcp_cfg);
     // Resync on (re)connect (plan §5): never assume the starting layer.
     let start = loop {
-        match sub.current_layer() {
+        match daemon.keyboard_mut().current_layer() {
             Ok(name) => break name,
             Err(e) => {
-                eprintln!("kanata TCP unavailable ({e}); retrying…");
+                eprintln!("mouselessd: kanata TCP unavailable ({e}); retrying…");
                 std::thread::sleep(Duration::from_secs(1));
             }
         }
     };
     println!("mouselessd: kanata layer at startup: {start}");
 
-    // Orchestration state uses fakes until the overlay geometry arrives
-    // (Phase 1.3); the REAL grab + TCP subscriber drive it below.
-    let mut daemon = Daemon::new(
-        mouseless_kbd::impls::FakeKeyboard::new(&start),
-        FakeMouse::default(),
-        FakeOverlay::default(),
-    );
-    if start == "lyr-mouseless" {
-        let _ = daemon.on_layer_event(LayerEvent::LayerChanged(start.clone()));
+    // A Shell may already be on the overlay layer when the daemon starts.
+    if start == OVERLAY_LAYER {
+        let _ = daemon.poll_overlay_events();
+        if let Err(e) = start_with_retry(&mut daemon) {
+            eprintln!("mouselessd: overlay start degraded: {e}");
+        } else if run_session(&mut daemon) {
+            let _ = daemon.on_kanata_lost();
+            return ExitCode::from(1);
+        }
     }
 
-    let mut last_clients = usize::MAX;
     loop {
-        ipc.poll_accept();
-        let n = ipc.client_count();
-        if n != last_clients {
-            println!("mouselessd: overlay clients: {n}");
-            last_clients = n;
-            // Late joiners missed earlier broadcasts (e.g. overlay reconnects
-            // after a Shell restart): replay current state. Idempotent frames
-            // make the extra send to existing clients a safe no-op.
-            if daemon.overlay_visible() {
-                ipc.broadcast(&show_frame());
-            } else {
-                ipc.broadcast(&hide_frame());
+        // Overlay reports must be current before a layer-event show.
+        let mut overlay_lost = false;
+        for ev in daemon.poll_overlay_events() {
+            if matches!(ev, OverlayEvent::Disconnected) {
+                overlay_lost = true;
             }
         }
-        let ev = match sub.next_layer_event() {
-            Ok(ev) => ev,
-            Err(KbdError::Unavailable(_)) => continue, // poll tick, stay alive
-            Err(KbdError::Busy) => continue,           // EBUSY-style, retry
+        if overlay_lost {
+            eprintln!("mouselessd: overlay disconnected; releasing grab, typing unaffected");
+            daemon.on_overlay_lost();
+        }
+
+        match daemon.keyboard_mut().next_layer_event() {
+            Ok(LayerEvent::LayerChanged(name)) if name == OVERLAY_LAYER => {
+                let _ = daemon.poll_overlay_events();
+                match start_with_retry(&mut daemon) {
+                    Ok(()) => {
+                        if run_session(&mut daemon) {
+                            let _ = daemon.on_kanata_lost();
+                            return ExitCode::from(1);
+                        }
+                    }
+                    Err(e) => eprintln!("mouselessd: overlay start degraded: {e}"),
+                }
+            }
+            Ok(_) => {
+                // Any other layer hides; idempotent if already hidden.
+                daemon.end_overlay();
+            }
+            Err(KbdError::Unavailable(_)) | Err(KbdError::Busy) => {}
             Err(KbdError::Io(msg)) => {
-                if msg.contains("EOF") || msg.contains("closed") || msg.contains("reset") {
+                if is_kanata_gone(&msg) {
                     eprintln!("mouselessd: kanata lost ({msg}); co-exit for supervisor restart");
-                    ipc.broadcast(&hide_frame());
+                    let _ = daemon.on_kanata_lost();
                     return ExitCode::from(1);
                 }
                 eprintln!("mouselessd: tcp ({msg}); backing off…");
                 std::thread::sleep(Duration::from_secs(1));
-                continue;
             }
-        };
-
-        if ev == LayerEvent::LayerChanged("lyr-mouseless".into()) {
-            let _ = daemon.on_layer_event(ev);
-            ipc.broadcast(&show_frame());
-            run_overlay_session(&mut sub, &mut ipc);
-            let _ = daemon.on_layer_event(LayerEvent::LayerChanged("base".into()));
-            ipc.broadcast(&hide_frame());
-        } else {
-            let _ = daemon.on_layer_event(ev);
-            ipc.broadcast(&hide_frame());
         }
     }
 }
 
-/// One overlay session: grab cells, log keys, exit on Escape.
-///
-/// The grab is held ONLY here (plan §5 rule 1). Without overlay geometry
-/// (Phase 1.3) clicks are logged, not executed — esc (or layer exit) ends
-/// the session and releases the grab.
-fn run_overlay_session(sub: &mut KanataSubscriber, ipc: &mut IpcServer) {
-    // EBUSY retry with timeout (plan §5 rule 5): never fatal, degrade to
-    // "overlay unavailable, typing unaffected" by bailing to base.
-    let grab = {
-        let mut attempt = 0;
-        loop {
-            match EvdevCellGrab::acquire() {
-                Ok(g) => break Some(g),
-                Err(KbdError::Busy) | Err(KbdError::Unavailable(_)) if attempt < 40 => {
-                    attempt += 1;
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-                Err(e) => {
-                    eprintln!("mouselessd: grab failed ({e}); overlay unavailable, typing unaffected");
-                    break None;
-                }
+/// Start the overlay, retrying `EBUSY` for up to ~2 s (plan §5 rule 5).
+fn start_with_retry(daemon: &mut ProdDaemon) -> Result<(), DaemonError> {
+    for _ in 0..40 {
+        match daemon.start_overlay() {
+            Ok(()) => return Ok(()),
+            Err(DaemonError::Kbd(KbdError::Busy)) => {
+                std::thread::sleep(Duration::from_millis(50));
             }
+            Err(e) => return Err(e),
         }
-    };
-    let mut grab = match grab {
-        Some(g) => g,
-        None => {
-            let _ = sub.set_layer("lyr-base");
-            return;
-        }
-    };
+    }
+    Err(DaemonError::Kbd(KbdError::Busy))
+}
 
-    let mut cell: Vec<char> = Vec::new();
+/// One overlay session. Returns `true` when kanata died (co-exit path).
+///
+/// The grab is held ONLY here (plan §5 rule 1). Esc/click/layer-exit all end
+/// the session; `end_overlay` releases the grab and restores the base layer.
+fn run_session(daemon: &mut ProdDaemon) -> bool {
+    // Tight idle timeout so grabbed keys are polled every few milliseconds;
+    // TCP data still wakes `read_line` immediately.
+    if let Err(e) = daemon
+        .keyboard_mut()
+        .set_read_timeout(Duration::from_millis(2))
+    {
+        eprintln!("mouselessd: session read timeout: {e}");
+    }
+
+    let mut kanata_gone = false;
     loop {
-        ipc.poll_accept();
-        // Layer exit from elsewhere (esc in kanata layer, restart) ends us.
-        match sub.next_layer_event() {
-            Ok(LayerEvent::LayerChanged(name)) if name != "lyr-mouseless" => break,
-            Ok(_) => {}
-            Err(KbdError::Unavailable(_)) => {}
-            Err(_) => break, // TCP trouble: drop grab, outer loop handles it
+        let mut overlay_lost = false;
+        for ev in daemon.poll_overlay_events() {
+            if matches!(ev, OverlayEvent::Disconnected) {
+                overlay_lost = true;
+            }
         }
-        match grab.next_key_press() {
-            Ok(Some(CellKey::Escape)) => break,
-            Ok(Some(CellKey::Space)) => {
-                println!("mouselessd: execute cell {cell:?} (clicks land in Phase 1.3)");
-                cell.clear();
-            }
-            Ok(Some(CellKey::Char(c))) => {
-                cell.push(c);
-                println!("mouselessd: cell so far: {cell:?}");
-                if cell.len() >= 2 {
-                    println!("mouselessd: cell {cell:?} selected (subgrid in Phase 2)");
+        if overlay_lost {
+            eprintln!("mouselessd: overlay disconnected mid-session; ending");
+            break;
+        }
+
+        match daemon.keyboard_mut().next_layer_event() {
+            Ok(LayerEvent::LayerChanged(name)) if name != OVERLAY_LAYER => break,
+            Ok(_) => {}
+            Err(KbdError::Unavailable(_)) | Err(KbdError::Busy) => {}
+            Err(KbdError::Io(msg)) => {
+                if is_kanata_gone(&msg) {
+                    kanata_gone = true;
+                } else {
+                    eprintln!("mouselessd: tcp during session ({msg}); ending session");
                 }
-            }
-            Ok(None) => {}
-            Err(e) => {
-                eprintln!("mouselessd: cell read ({e})");
                 break;
             }
         }
-        std::thread::sleep(Duration::from_millis(10));
+
+        match daemon.poll_cell_key() {
+            Ok(Some(key)) => match daemon.handle_cell_key(key) {
+                Ok(SessionStep::Continue) => {}
+                Ok(SessionStep::Clicked | SessionStep::Exit) => break,
+                Err(e) => {
+                    eprintln!("mouselessd: cell action failed ({e}); ending session");
+                    break;
+                }
+            },
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("mouselessd: cell read ({e}); ending session");
+                break;
+            }
+        }
+        std::thread::sleep(Duration::from_millis(1));
     }
-    // Explicit base switch is harmless if already there (idempotent).
-    let _ = sub.set_layer("lyr-base");
-    // `grab` drops here: drain + ungrab + close (audits G6/G7).
+
+    daemon.end_overlay();
+    // `end_overlay` already switched to base; this is a redundant guard for
+    // kanata restarts that missed the layer change.
+    if !kanata_gone {
+        let _ = daemon
+            .keyboard_mut()
+            .set_read_timeout(Duration::from_millis(500));
+    }
+    kanata_gone
+}
+
+/// Kanata TCP EOF/reset means the process died (kill switch, plan §7).
+fn is_kanata_gone(msg: &str) -> bool {
+    msg.contains("EOF") || msg.contains("closed") || msg.contains("reset")
 }
