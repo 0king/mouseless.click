@@ -7,7 +7,7 @@
 //! stays testable until then.
 
 use mouseless_cli::{CliError, Verb};
-use mouseless_kbd::{KanataTcpConfig, query_current_layer};
+use mouseless_kbd::{query_current_layer, KanataTcpConfig};
 use std::process::ExitCode;
 
 fn list_input_devices() {
@@ -49,18 +49,16 @@ fn main() -> ExitCode {
         }
     };
     match verb {
-        Verb::Status => {
-            match query_current_layer(&KanataTcpConfig::default()) {
-                Ok(name) => {
-                    println!("kanata layer: {name}");
-                    ExitCode::SUCCESS
-                }
-                Err(e) => {
-                    eprintln!("kanata TCP unavailable: {e}");
-                    ExitCode::FAILURE
-                }
+        Verb::Status => match query_current_layer(&KanataTcpConfig::default()) {
+            Ok(name) => {
+                println!("kanata layer: {name}");
+                ExitCode::SUCCESS
             }
-        }
+            Err(e) => {
+                eprintln!("kanata TCP unavailable: {e}");
+                ExitCode::FAILURE
+            }
+        },
         Verb::ListInputDevices => {
             list_input_devices();
             ExitCode::SUCCESS

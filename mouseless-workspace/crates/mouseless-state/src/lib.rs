@@ -307,7 +307,12 @@ mod tests {
     fn physics_converges_per_curve_with_fake_clock() {
         // Golden test per easing curve (plan §8 test #7): velocity must
         // converge monotonically toward the target.
-        for easing in [Easing::Loose, Easing::Natural, Easing::Snappy, Easing::Instant] {
+        for easing in [
+            Easing::Loose,
+            Easing::Natural,
+            Easing::Snappy,
+            Easing::Instant,
+        ] {
             let mut fm = FreeMode::new(FreeModeParams {
                 easing,
                 ..Default::default()

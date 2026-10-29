@@ -78,7 +78,10 @@ mod tests {
 
     #[test]
     fn delta_saturates_at_i32_edges() {
-        assert_eq!(compute_delta((i32::MAX, i32::MAX), (i32::MIN, 0)).0, i32::MAX);
+        assert_eq!(
+            compute_delta((i32::MAX, i32::MAX), (i32::MIN, 0)).0,
+            i32::MAX
+        );
         assert_eq!(
             compute_delta((i32::MIN, i32::MIN), (i32::MAX, 0)).0,
             i32::MIN
