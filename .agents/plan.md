@@ -303,9 +303,14 @@ Trait-boundary rules (enforced in review + CI):
   per G1), overlay IPC server (`/run/mouseless/mouselessd.sock` + `SO_PEERCRED`
   per G3, 1-page wire spec per G2),
   `mouseless-cli` (`show/hide/toggle`, `--list-input-devices`).
-- [ ] **1.3 GNOME overlay:** fullscreen Clutter actor via `addTopChrome`
+  _Daemon/IPC/grab/mouse/overlay-server side implemented 2026-10-29; remaining:
+  wire the `mouseless-cli` show/hide/toggle verbs to kanata TCP._
+- [x] **1.3 GNOME overlay:** fullscreen Clutter actor via `addTopChrome`
   (`affectsInputRegion: false`), 45+ ESM, geometry + cursor-pos report,
   grid/label/highlight render, idempotent show/hide, Shell-restart resilience.
+  _Implemented 2026-10-29 (`extension.js`/`ipc.js`/`render.js` + `impls/gnome.rs`
+  server); headless Shell smoke passed. Manual visual/fractional acceptance
+  remains part of Phase 1.4._
 - [ ] **1.4 End-to-end MVP:** tap Shift → overlay → 2 keys → left-click at cell
   center, zero leaked keystrokes; tests #1–#6, #8 green.
 

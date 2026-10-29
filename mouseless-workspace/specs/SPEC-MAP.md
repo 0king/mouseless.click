@@ -4,7 +4,9 @@
 > `.agents/plan.md`. This map is the index of the module specs; each module id
 > below maps 1:1 to `specs/SPEC-<id>.md`.
 >
-> Status snapshot: 2026-10-18 · `cargo test --workspace` = 35 tests green.
+> Status snapshot: 2026-10-29 · `cargo test --workspace` = 54 tests green;
+> Phase 1.3 overlay + daemon production wiring implemented (headless Shell
+> smoke passed). Manual visual/fractional acceptance and Phase-1.4 e2e open.
 
 ## Authority & document roles
 
@@ -52,11 +54,11 @@ core, state, ipc, kbd, mouse, platform      (foundations — mostly scaffolded)
 |---|---|---|
 | `core` | Implemented | Monitor-order/switch helpers (Phase 2.2). |
 | `state` | Partial | Phase-2 action semantics, auto-off logic, cell-selection FSM. |
-| `ipc` | Partial | `QueryCursor`/`CursorReply`/`Error` frames, `kind` validation, auth (G3), formal fuzz corpus. |
-| `kbd` | Partial | Resync-on-reconnect wiring in the daemon loop; EBUSY policy tests. |
+| `ipc` | Implemented (v1) | Phase-2/3 `client` messages (`Reload`/`Update`) not wired. |
+| `kbd` | Partial | Explicit reconnect-resync test; EBUSY policy tests; dedupe `RequestCurrentLayerName` path. |
 | `mouse` | Implemented | Hi-res wheel decision; click-accuracy verified only in e2e (Phase 1.4). |
-| `overlay` | Stub | Phase 1.3: extension rendering, IPC client, geometry/cursor reports. |
-| `daemon` | Partial | Production backends still faked in `main.rs`; SO_PEERCRED; grid model + click path; `tracing`. |
+| `overlay` | Implemented (1.3) | Manual visual/fractional-scale acceptance; mixed-scale multi-monitor origins (Phase 2.2). |
+| `daemon` | Implemented (MVP) | `tracing`, reconnect-resync test, CLI verbs, Phase-1.4 process e2e. |
 | `cli` | Partial | Verbs beyond `status`/`--list-input-devices` not wired to kanata TCP yet. |
 | `settings` | Stub | Entire Phase 3; build prereq `libgtk-4-dev libadwaita-1-dev`. |
 | `platform` | Partial | Extension install, `.desktop` deep links, `sysusers.d`, distro matrix. |

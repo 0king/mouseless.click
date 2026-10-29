@@ -2,8 +2,10 @@
 
 > Module: `ipc` · Paths: `crates/mouseless-ipc` · Depends on: — ·
 > Plan refs: §3 rule 3, §4 (contracts), §8 #8, audit G2/G3 · Matrix row: #8
-> Status as of 2026-10-18: **Partial** — envelope + core messages implemented;
-> `QueryCursor`/`CursorReply`/`Error` frames, `kind` validation, auth, fuzz corpus pending.
+> Status as of 2026-10-29: **Implemented (v1)** — typed grid/layout payloads,
+> `QueryCursor`/`CursorReply`/`Error`, `kind` validation, 1 MiB limit,
+> `SO_PEERCRED` auth, Hello timeout, and a checked-in malformed corpus.
+> Phase-2/3 `client` messages (`Reload`/`Update`) remain unimplemented.
 >
 > This document IS the 1-page wire spec deliverable required by audit G2.
 
@@ -101,10 +103,16 @@ daemon dies
   → overlay sees EOF, MUST hide the overlay and retry with backoff
 ```
 
-- Reconnect backoff (overlay): 500 ms doubling to 10 s, no jitter required.
+- Reconnect backoff (overlay): 500 ms doubling to 10 s, no jitter required; a
+  successfully delivered frame resets the delay to 500 ms.
 - No keepalive frames: local transport; daily traffic is change-driven.
+- The daemon broadcasts only to clients that completed `Hello`; a client that
+  stays silent past the 2 s handshake budget is closed without being counted
+  as connected. `is_connected()` requires at least one helloed client.
 - Multiple overlay clients MAY connect; the daemon broadcasts to all (only one
   is expected in practice). `Hello` replay covers late joiners.
+- The replay frame is the last `Show`/`ShowSubgrid` while visible (so a Shell
+  restart restores the subgrid), otherwise `Hide`.
 
 ## Version negotiation
 
@@ -119,14 +127,18 @@ This matches the implemented `decode()` policy: refuse newer, accept older.
 - Filesystem: `/run/mouseless` (0770, group `mouseless`) — only group members
   can open the socket.
 - Daemon MUST verify `SO_PEERCRED` on accept: peer uid allowed if
-  `uid == daemon euid` OR the uid is a member of the `mouseless` group
-  (resolved via `getgrouplist`). Disallowed → log + close, no frames parsed.
-- Implemented as a pure predicate (`peer_allowed(cred, policy) -> bool`) so the
-  policy is unit-testable without spawning peers with foreign uids.
-- **OQ-1:** plan §4 says "checks that the client is the daemon UID"; that would
-  reject the Shell extension running as the desktop user. Proposed reading
-  above (uid or group membership). Requires human sign-off because it shapes
-  the systemd/user model in `SPEC-platform.md`.
+  `uid == daemon euid` OR the peer's primary gid or any supplementary gid
+  (read from `/proc/<pid>/status`) equals the `mouseless` gid. Disallowed →
+  log + close, no frames parsed.
+- Implemented as a pure predicate (`peer_allowed(cred, groups, policy) -> bool`)
+  so the policy is unit-testable without spawning peers with foreign uids.
+  `group_gid("mouseless")` resolves the gid via `getgrnam`; when the group does
+  not exist the daemon falls back to uid-only auth.
+- **OQ-1 resolved (2026-10-29):** plan §4's "daemon UID" wording alone would
+  reject the Shell extension running as the desktop user. The accepted reading
+  is uid **or** `mouseless` group membership; the GNOME extension runs as the
+  session user, who is a member of `mouseless` on supported installs
+  (`SPEC-platform.md`).
 
 ## Robustness rules
 
@@ -134,9 +146,10 @@ This matches the implemented `decode()` policy: refuse newer, accept older.
   stays); version mismatch → `Error` + close; oversized line → close.
 - Senders never block forever: socket writes use a timeout; on timeout/EPIPE,
   drop the client (daemon) or reconnect (overlay).
-- Fuzz corpus: malformed set (empty, `{`, `not json`, truncated valid frames)
-  ships as test data; a `cargo-fuzz` target for `decode()` is desired but the
-  curated corpus is the blocking test (#8).
+- Fuzz corpus: `crates/mouseless-ipc/tests/corpus/malformed.ndjson` is checked
+  in and exercised by `checked_in_corpus_never_panics`; the inline test also
+  truncates every byte prefix of a valid frame. A `cargo-fuzz` target for
+  `decode()` remains desirable but the curated corpus is the blocking test (#8).
 
 ## Tech stack
 
@@ -166,11 +179,17 @@ envelope + message enums, `encode`/`decode`. When `client` messages land, add
 
 ## Testing strategy (#8, blocking)
 
-- Round-trips for every message type. *(Show/Hide/Report exist; add others)*
+- Round-trips for every v1 message type. *(exists)*
 - Newer `schema_version` refused; older accepted. *(exists)*
-- Malformed corpus + truncation of every valid frame never panics. *(exists, formalize as shared corpus)*
-- Phase 1.3: auth predicate unit tests; `Hello` timeout; late-join replay;
-  `QueryCursor` timeout falls back to last `Report`, aborts session if none.
+- Malformed corpus + truncation of every valid frame never panics. *(exists:
+  checked-in corpus plus inline truncation)*
+- Auth predicate unit tests, including `SO_PEERCRED` and `/proc` group reads.
+  *(exists)*
+- `Hello` timeout (2 s) and late-join replay. *(exists: daemon unit tests)*
+- `QueryCursor` timeout falls back to the last `Report`; aborts the session when
+  no cursor has ever been reported (`DaemonError::NoCursor`). *(exists in the
+  daemon click path)*
+- Client `Reload`/`Update` round-trips. *(deferred to Phase 2/3 with the CLI/GUI)*
 
 ## Boundaries
 
@@ -186,10 +205,13 @@ envelope + message enums, `encode`/`decode`. When `client` messages land, add
 - [x] Envelope round-trips with `schema_version` enforced.
 - [x] Newer schema refused; malformed input never panics.
 - [x] `Envelope` used by the daemon broadcast server (Phase 1.2).
-- [ ] `QueryCursor`/`CursorReply`/`Error` + `client` messages implemented and tested.
-- [ ] `kind` direction validation (drop mismatched, never close).
-- [ ] `SO_PEERCRED` predicate implemented + unit tests (audit G3).
-- [ ] 1 MiB line limit enforced with test.
-- [ ] Fuzz corpus file checked in and wired into #8.
-- [ ] Extension side implements Hello-first, backoff reconnects, EOF-hide
+- [x] `QueryCursor`/`CursorReply`/`Error` implemented and tested; `client`
+      messages (`Reload`/`Update`) are tracked for Phase 2/3.
+- [x] `kind` direction validation (drop mismatched, never close).
+- [x] `SO_PEERCRED` predicate implemented + unit tests (audit G3).
+- [x] 1 MiB line limit enforced on decode and on the accepted socket.
+- [x] Fuzz corpus file checked in and wired into #8.
+- [x] Extension side implements Hello-first, backoff reconnects, EOF-hide
       (owned jointly with `SPEC-overlay.md`).
+- [x] Daemon closes peers that do not send `Hello` within 2 s.
+- [x] Late-join replay restores `Show`/`ShowSubgrid` state, or `Hide`.

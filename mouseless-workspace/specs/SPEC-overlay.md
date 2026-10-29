@@ -3,8 +3,10 @@
 > Module: `overlay` · Paths: `crates/mouseless-overlay`, `gnome-extension` ·
 > Depends on: `ipc`, `core` · Plan refs: §1.5, §3, §4, §10.4 · Audit C2 ·
 > Matrix row: #8 (extension side of malformed frames)
-> Status as of 2026-10-18: **Stub** — Rust trait exists; the extension only
-> creates a hidden actor. Phase 1.3 implements everything below.
+> Status as of 2026-10-29: **Implemented (Phase 1.3)** — draw-only Shell
+> extension (split into `extension.js`/`ipc.js`/`render.js`) and the daemon-side
+> Unix-socket backend are wired and pass unit + headless-Shell smoke tests.
+> Manual visual/fractional-scale acceptance and Phase-1.4 e2e remain open.
 
 ## Objective
 
@@ -33,14 +35,23 @@ evdev/kanata (plan §1.5). The daemon computes; the extension only draws.
 trait OverlayBackend {
     fn show(&mut self, model: &GridModel) -> Result<(), Self::Error>; // idempotent
     fn highlight(&mut self, index: u32) -> Result<(), Self::Error>;   // idempotent
+    fn show_subgrid(&mut self, parent: u32, model: &GridModel) -> Result<(), Self::Error>;
     fn hide(&mut self) -> Result<(), Self::Error>;                    // idempotent, best-effort
+    fn query_cursor(&mut self) -> Result<(), Self::Error>;            // QueryCursor
+    fn poll_events(&mut self) -> Vec<OverlayEvent>;                   // non-blocking
     fn last_cursor(&self) -> Option<CursorPos>;                       // latest report
+    fn last_layout(&self) -> Option<MonitorLayout>;                   // latest Report
+    fn is_connected(&self) -> bool;                                   // helloed client?
 }
 ```
 
-`impls/gnome.rs` is the socket client (sends frames, tracks last `Report`).
-`impls/fake.rs` mirrors visibility/cursor for tests. `GNOME_SHELL_VERSIONS`
-and `SOCKET_PATH` are pinned constants.
+**Ownership (normative):** the daemon owns the Unix-socket **listener/server**;
+the extension is the **client** (`SPEC-ipc.md` lifecycle). `impls/gnome.rs`
+binds, authenticates peers, parses `Hello`/`Report`/`CursorReply`, broadcasts
+frames, and replays state on reconnect. `impls/fake.rs` mirrors visibility,
+cursor, and layout for tests. `GNOME_SHELL_VERSIONS`, `SOCKET_PATH`, and
+`SOCKET_GROUP` are pinned constants. The daemon must not acquire a cell grab
+unless `is_connected()` and `last_layout()` are both available.
 
 ### Extension behavior (normative)
 
@@ -48,25 +59,37 @@ and `SOCKET_PATH` are pinned constants.
    `EVIOCGRAB`, uinput, or physics. The actor must not affect the input region
    (`affectsInputRegion: false`) or appear in screenshots-taken-by-other-apps
    flows unexpectedly (`trackFullscreen: true`).
+   - GNOME 45–49: pass `{affectsInputRegion: false, trackFullscreen: true}`.
+   - GNOME 50 removed the `affectsInputRegion` parameter; `enable()` catches
+     that specific error, removes the chrome, and retries with
+     `{trackFullscreen: true}` only. This is safe because the actor is
+     `reactive: false` and tracked chrome no longer joins the input region.
 2. **Render daemon-provided geometry.** The extension MUST NOT compute cell
-   bounds. It converts physical bounds to stage units with `bounds / monitor.scale`
-   (or `logical × scale` — exact direction confirmed by spike §10.4; see OQ-1)
-   and draws.
+   bounds. It converts physical wire bounds to stage units at one point:
+   `stage = monitor_stage_origin + (cell_physical - model.monitor_physical_origin) / geometry_scale`
+   (see OQ-1 for the mixed-scale limitation).
 3. **Idempotent messages.** `Show` while shown replaces the model; `Hide` while
    hidden is a no-op; `HighlightCell` for an unknown index is ignored.
-4. **Hello-first.** On connect: send `Hello{extension_version}`; expect a
-   state replay (`Show` or `Hide`) within 2 s.
+4. **Hello-first.** On connect: send `Hello{extension_version}` immediately,
+   then `Report`; the daemon drops a peer that does not send `Hello` within 2 s
+   and replies with a state replay (`Show`/`ShowSubgrid` or `Hide`).
 5. **Reports.** Send `Report{geometry, cursor}` on connect and on monitor
    layout/scale changes. Reply `CursorReply` to `QueryCursor` within 100 ms.
-   Cursor position via `global.get_pointer()`; reported in the pinned
-   coordinate space (spike §10.4).
+   Cursor position comes from `global.get_pointer()` and is reported with
+   `physical = stage * monitor.geometry_scale` (single conversion point).
 6. **EOF-hide.** On socket error/EOF, hide the overlay immediately and retry
-   connect with 500 ms → 10 s backoff. (Kill-switch safety: daemon death must
-   never leave a stuck overlay.)
-7. **Never crash the Shell.** Every socket/parse/render handler wrapped; errors
-   go to logs (extension logger), never to an uncaught JS throw.
-8. **Shell restart resilience.** `disable()` destroys the actor and closes the
-   socket; a fresh `enable()` re-runs Hello-first and receives a state replay.
+   connect with 500 ms → 10 s backoff. A successfully delivered frame resets
+   the backoff to 500 ms. (Kill-switch safety: daemon death must never leave a
+   stuck overlay.)
+7. **Never crash the Shell.** Every socket/parse/render handler wrapped; frame
+   and render errors go to `console.warn`/`console.error`, never to an
+   uncaught JS throw. Repeated identical warnings are de-duplicated per
+   connection.
+8. **Shell restart resilience.** `disable()` disconnects monitors, stops the
+   socket, and destroys the actor; a fresh `enable()` re-runs Hello-first and
+   receives the daemon's state replay. A replayed `ShowSubgrid` carries no
+   level-1 model, so the renderer reconstructs the parent footprint from the
+   union of its sub-cells.
 9. **60 FPS.** Clutter renders at compositor cadence; no per-frame IPC. Frames
    are change-driven only.
 
@@ -76,33 +99,63 @@ and `SOCKET_PATH` are pinned constants.
 syntax (`export default class … { enable() … disable() … }`). Primary test
 target: GNOME 50+ / Ubuntu 26.04.
 
+Compatibility shims (keep both while 45–50 are supported):
+
+- **Colors:** Clutter 18 (GNOME 47+) removed `Clutter.Color`; GNOME 45/46 still
+  expose it. Resolve once at module load: `const Color = Clutter.Color ?? Cogl.Color`.
+  This is the only extra GI import approved beyond `Clutter/GLib/Gio/Main`.
+- **Chrome options:** the GNOME-50 `affectsInputRegion` removal fallback above.
+- **Labels:** `Clutter.BinLayout` centers both axes on 45–50; the explicit
+  `BinAlignment` enum was removed in Clutter 18, so no alignment flags are set.
+
 ## Tech stack
 
-Rust client (`unix socket`, `serde_json`) in `impls/gnome.rs`; JS ESM with
-`gi://` imports (`Clutter`, `GLib`, `Gio`), no npm dependencies, no bundler.
+Rust **server** (`UnixListener`, `serde_json`) in `impls/gnome.rs`; JS ESM
+client with `gi://` imports (`Clutter`, `Cogl`, `GLib`, `Gio`, `Main`), no npm
+dependencies, no bundler.
 
 ## Commands
 
 ```sh
 cargo test -p mouseless-overlay
-# dev install (session user):
-gnome-extensions pack gnome-extension --force -o /tmp
+# JS syntax gate (GI imports are syntactically valid ESM):
+node --check gnome-extension/extension.js
+node --check gnome-extension/ipc.js
+node --check gnome-extension/render.js
+# dev pack must include the split modules:
+gnome-extensions pack gnome-extension --force -o /tmp \
+  --extra-source=ipc.js --extra-source=render.js
 gnome-extensions install --force /tmp/mouseless@sonuscape.example.shell-extension.zip
 # reload after code change (Wayland): disable/enable, or log out/in
 gnome-extensions disable mouseless@sonuscape.example
 gnome-extensions enable  mouseless@sonuscape.example
-# nested-shell smoke (no real session touched):
-dbus-run-session -- gnome-shell --nested --wayland
+# dev socket override (both sides; no system paths touched):
+MOUSELESS_SOCKET=/tmp/mouseless.sock cargo run -p mouseless-daemon
+# checked-in headless smoke (private D-Bus; no real session touched):
+gnome-extension/tests/headless-smoke.sh
 ```
+
+The headless harness uses `XDG_DATA_HOME` plus `MOUSELESS_SOCKET`, unpacks the
+zip into `$XDG_DATA_HOME/gnome-shell/extensions/mouseless@sonuscape.example/`,
+and enables it against `gnome-shell --headless --no-x11 --virtual-monitor 1920x1080`.
+`gnome-extensions install` may refuse to copy a directory on some distros; the
+unzip fallback is equivalent for testing. See
+`gnome-extension/tests/README.md` for the asserted frame sequence.
 
 ## Project structure
 
-- `crates/mouseless-overlay/src/lib.rs` — trait, `GridModel`, `OverlayError`.
-- `crates/mouseless-overlay/src/impls/gnome.rs` — socket client + constants.
-- `crates/mouseless-overlay/src/impls/fake.rs` — recorder.
-- `gnome-extension/extension.js` — the whole extension (keep single-file until
-  it exceeds ~400 lines, then split `render.js`, `ipc.js`).
+- `crates/mouseless-overlay/src/lib.rs` — trait, events, re-exported wire types.
+- `crates/mouseless-overlay/src/impls/gnome.rs` — Unix-socket **server**,
+  auth, replay, reconnecting-client bookkeeping + constants.
+- `crates/mouseless-overlay/src/impls/fake.rs` — recorder (incl. fault injection).
+- `gnome-extension/extension.js` — entry point, chrome lifecycle, frame
+  dispatch, `Hello`/`Report`/`CursorReply`.
+- `gnome-extension/ipc.js` — NDJSON client, reconnect/backoff, model validation.
+- `gnome-extension/render.js` — Clutter actor + physical→stage conversion.
 - `gnome-extension/metadata.json` — uuid + shell-version.
+
+The extension was split once `extension.js` approached the ~400-line threshold;
+the pack command must list `--extra-source=ipc.js --extra-source=render.js`.
 
 ## Code style
 
@@ -114,51 +167,61 @@ dbus-run-session -- gnome-shell --nested --wayland
 
 ## Testing strategy
 
-- Rust: idempotent show/hide with `FakeOverlay`. *(exists)*
-- #8 (extension side): malformed frame harness — a JS unit test is not
-  scaffolded; pragmatic gate = `node --input-type=module --check`-style syntax
-  validation in CI plus a scripted manual checklist:
-  send garbage to the socket → Shell keeps running, error logged.
-- Manual smoke (Phase 1.3 acceptance): tap Shift → grid on the target monitor;
-  arrows of the grid match click targets; type keys → highlight follows; subgrid
-  opens; Space clicks cell center; Esc hides; disable/enable extension mid-session
-  → replay works; kill daemon while visible → overlay hides.
-- Spike §10.4 (blocking): cursor + geometry accuracy at 100/125/150/200%.
-- Nested-shell smoke: optional but desired; document exact command in CI notes.
+- Rust: idempotent show/hide with `FakeOverlay`; daemon-side `GnomeOverlay`
+  tests cover Hello replay, `Report`/`HighlightCell`/`Hide`, malformed frames,
+  and the 2 s Hello timeout. *(exists)*
+- #8 (extension side): `node --check` syntax gate for the three JS files plus
+  the checked-in `gnome-extension/tests/headless-smoke.sh`: a GJS mock daemon
+  sends `Show`, `HighlightCell`, `ShowSubgrid`, `QueryCursor`, `Hide`, then
+  closes the socket; the Shell stays up, hides on EOF, and reconnects (the mock
+  observes client 2). No uncaught `JS ERROR` is allowed.
+- Manual visual smoke (still required): tap Shift → grid on the monitor under
+  the cursor; grid matches click targets; subgrid opens; Space clicks cell
+  center; Esc hides; disable/enable mid-session → replay restores state; kill
+  daemon while visible → overlay hides.
+- Spike §10.4 (blocking for multi-scale): cursor + geometry accuracy at
+  100/125/150/200%. The headless shell confirms protocol/lifecycle only;
+  screenshots are denied there, so visual/fractional acceptance is manual.
+- Nested-shell smoke command documented above.
 
 ## Boundaries
 
 - **Always:** idempotent handlers; EOF → hide; try/catch at every IPC boundary;
   keep `metadata.json` shell versions in sync with `GNOME_SHELL_VERSIONS`.
 - **Ask first:** changing the coordinate conversion (spike §10.4 outcome);
-  adding GNOME imports beyond `Clutter/GLib/Gio/Main`; multi-actor rendering
-  strategy; animations that affect responsiveness.
+  adding GNOME imports beyond `Clutter/Cogl/GLib/Gio/Main`; multi-actor
+  rendering strategy; animations that affect responsiveness.
 - **Never:** capture input, grab devices, run physics, send frames the spec
   does not define, block the Shell thread with synchronous work, throw uncaught.
 
 ## Success criteria
 
-- [ ] Fullscreen draw-only actor via `addTopChrome({affectsInputRegion:false, trackFullscreen:true})`.
-- [ ] `Show`/`HighlightCell`/`ShowSubgrid`/`Hide` rendered; idempotent replays harmless.
-- [ ] `Hello` on connect; `Report` on connect/geometry change; `CursorReply` < 100 ms.
-- [ ] EOF → hide + reconnect backoff (kill-switch safety).
-- [ ] Shell restart (disable/enable) → replay restores correct state.
-- [ ] Malformed frame → log, no Shell crash.
+- [x] Fullscreen draw-only actor via `addTopChrome({affectsInputRegion:false, trackFullscreen:true})`,
+      with the GNOME-50 parameter fallback.
+- [x] `Show`/`HighlightCell`/`ShowSubgrid`/`Hide` rendered; idempotent replays harmless.
+- [x] `Hello` on connect; `Report` on connect/geometry change; `CursorReply` < 100 ms.
+- [x] EOF → hide + reconnect backoff (kill-switch safety).
+- [x] Shell restart (disable/enable) → replay restores correct state.
+- [x] Malformed frame → log, no Shell crash.
 - [ ] Phase-1.4 e2e: grid matches click targets at 100% and one fractional scale.
 - [ ] Visual: labels legible, highlight distinct, no input-region interference
-      (typing unaffected while overlay visible).
+      (typing unaffected while overlay visible). Requires a real session;
+      headless screenshots are denied.
 
 ## Open questions
 
-1. **Coordinate space (spike §10.4).** GNOME stage units vs physical pixels under
-   fractional scaling — pin the single conversion point (proposed: extension
-   converts for drawing; reports physical). Until closed, acceptance uses the
-   closed-loop check (daemon re-queries cursor after a move; systematic error →
-   correction factor).
+1. **Coordinate space (spike §10.4) — pinned for single-monitor.** Wire bounds
+   and cursor are physical px; the extension converts at one point for drawing
+   and reports. **Still open:** mixed-scale multi-monitor origins. Physical
+   origins computed as `stage_origin * own_scale` are wrong when neighboring
+   monitors use different scales (OQ-3/Phase 2.2). Until closed, acceptance uses
+   the closed-loop check (daemon re-queries cursor after a move; systematic
+   error → correction factor).
 2. **Label content for level 2.** Upstream: if level-2 keys are blank, level-1
    keys are reused. Who resolves that (settings at config time vs daemon at run
    time)? Proposed: resolved at config time; wire always carries explicit labels.
 3. **Multi-monitor overlay.** MVP: one actor, reposition/resize on monitor
    switch. Confirm versus per-monitor actors (Phase 2.2 decision).
-4. **Initial overlay monitor.** Proposed default: monitor under cursor; upstream
-   has a configurable "initial overlay monitor" (Phase 3 setting).
+4. **Initial overlay monitor — implemented.** Default: monitor under the last
+   reported cursor, falling back to the primary monitor. A per-monitor setting
+   remains Phase 3.
