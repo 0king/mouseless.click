@@ -342,6 +342,10 @@ where
         target: (i32, i32),
     ) -> Result<(), DaemonError> {
         let (dx, dy) = mouseless_mouse::compute_delta(target, (cursor.x, cursor.y));
+        println!(
+            "mouselessd: click target=({}, {}) cursor=({}, {}) delta=({}, {})",
+            target.0, target.1, cursor.x, cursor.y, dx, dy
+        );
         self.mouse.move_rel(dx, dy)?;
         self.mouse.click(button)?;
         let _ = self.machine.click();
