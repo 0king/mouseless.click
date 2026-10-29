@@ -292,11 +292,15 @@ Trait-boundary rules (enforced in review + CI):
 ## 9. Phase-by-Phase Implementation Plan
 
 ### Phase 1: Kanata-fronted grid MVP (Priority 1)
-- [ ] **1.1 Kanata base:** TCP port, `linux-output-device-name "kanata-mouseless"`,
+- [x] **1.1 Kanata base:** TCP port, `linux-output-device-name "kanata-mouseless"`,
   `linux-dev-names-exclude ("mouseless-mouse")`, `lyr-mouseless` (clean no-HRM),
   `ShiftLeft`-tap trigger (retained per C1 decision), NO `cmd` (audit W1);
   `--emergency-exit-code 1` + `Restart=always` (or `RestartForceExitStatus=SIGTERM`)
   per audit W2; verify `LayerChange` latency.
+  _Verified 2026-10-29: kanata 1.12.0 active, `127.0.0.1:7070` listening,
+  `kanata-mouseless` output present; layer changes and resync observed during
+  host e2e. `SupplementaryGroups=mouseless` added to the drop-in so the daemon
+  group does not drop kanata's `input`/`uinput` access._
 - [ ] **1.2 Thin daemon:** TCP subscriber + resync, RAII temp-grab cell reader
   (fresh fd per overlay, `EVIOCGKEY` + drain per G6/G7),
   `mouseless-core` grid math, uinput mouse deltas + `BTN_*` (flat-accel udev rule
@@ -309,10 +313,15 @@ Trait-boundary rules (enforced in review + CI):
   (`affectsInputRegion: false`), 45+ ESM, geometry + cursor-pos report,
   grid/label/highlight render, idempotent show/hide, Shell-restart resilience.
   _Implemented 2026-10-29 (`extension.js`/`ipc.js`/`render.js` + `impls/gnome.rs`
-  server); headless Shell smoke passed. Manual visual/fractional acceptance
-  remains part of Phase 1.4._
-- [ ] **1.4 End-to-end MVP:** tap Shift → overlay → 2 keys → left-click at cell
+  server); headless Shell smoke and host visual/fractional acceptance passed.
+  `trackFullscreen` chrome can be re-shown by GNOME after monitor/overview/
+  fullscreen changes; `render.js` re-hides it whenever no model is active._
+- [x] **1.4 End-to-end MVP:** tap Shift → overlay → 2 keys → left-click at cell
   center, zero leaked keystrokes; tests #1–#6, #8 green.
+  _Passed 2026-10-29 on GNOME 50.1: `k`/`k` clicked `(2580,945)` at 100% and
+  `(3060,945)` at 125%, with `REL_X/REL_Y/SYN` + `BTN_LEFT` on
+  `mouseless-mouse`; grab leak file 0 bytes; overlay hidden after every run.
+  Scale-change regression (125→100→125→100, no model) leaves the actor hidden._
 
 ### Phase 2: Custom free-mode physics + precision (Priority 2)
 - [ ] **2.1** `mouseless-state` free-mode loop (fixed-step tick, accel/easing/wheel,

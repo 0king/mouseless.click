@@ -3,10 +3,12 @@
 > Module: `overlay` · Paths: `crates/mouseless-overlay`, `gnome-extension` ·
 > Depends on: `ipc`, `core` · Plan refs: §1.5, §3, §4, §10.4 · Audit C2 ·
 > Matrix row: #8 (extension side of malformed frames)
-> Status as of 2026-10-29: **Implemented (Phase 1.3)** — draw-only Shell
-> extension (split into `extension.js`/`ipc.js`/`render.js`) and the daemon-side
-> Unix-socket backend are wired and pass unit + headless-Shell smoke tests.
-> Manual visual/fractional-scale acceptance and Phase-1.4 e2e remain open.
+> Status as of 2026-10-29: **Implemented (Phase 1.3); Phase-1.4 e2e verified**
+> — draw-only Shell extension (split into `extension.js`/`ipc.js`/`render.js`)
+> and the daemon-side Unix-socket backend are wired and pass unit +
+> headless-Shell smoke tests. Host e2e passed at 100% and 125% (grid/click
+> alignment, zero leaked keystrokes). Mixed-scale multi-monitor origins remain
+> open (OQ-1).
 
 ## Objective
 
@@ -92,6 +94,12 @@ unless `is_connected()` and `last_layout()` are both available.
    union of its sub-cells.
 9. **60 FPS.** Clutter renders at compositor cadence; no per-frame IPC. Frames
    are change-driven only.
+10. **No stray chrome.** `trackFullscreen: true` lets GNOME set the tracked
+    actor visible after monitor/scale, overview, or fullscreen changes. With no
+    model the renderer immediately re-hides its root, so an idle overlay can
+    never leave an empty dim layer on screen. With a model, `reposition()`
+    rebuilds and re-asserts visibility so a mid-session scale change keeps the
+    grid up.
 
 ### GNOME compatibility
 
@@ -175,13 +183,19 @@ the pack command must list `--extra-source=ipc.js --extra-source=render.js`.
   sends `Show`, `HighlightCell`, `ShowSubgrid`, `QueryCursor`, `Hide`, then
   closes the socket; the Shell stays up, hides on EOF, and reconnects (the mock
   observes client 2). No uncaught `JS ERROR` is allowed.
-- Manual visual smoke (still required): tap Shift → grid on the monitor under
-  the cursor; grid matches click targets; subgrid opens; Space clicks cell
-  center; Esc hides; disable/enable mid-session → replay restores state; kill
-  daemon while visible → overlay hides.
+- Manual visual smoke (passed 2026-10-29 on GNOME Shell 50.1): tap Shift →
+  grid on the monitor under the cursor; grid matches click targets; subgrid
+  opens; Space clicks cell center; Esc hides; disable/enable mid-session →
+  replay restores state; kill daemon while visible → overlay hides. The
+  100%/125% runs used a two-monitor host (1920×1080 + 1920×1080) and pressed
+  `k`/`k`: the daemon logged the expected cell centers and the grab leaked no
+  keystrokes (`leak.txt` 0 bytes). A 125% → 100% → 125% → 100% scale sequence
+  with no model left the actor hidden each time (regression guard).
 - Spike §10.4 (blocking for multi-scale): cursor + geometry accuracy at
-  100/125/150/200%. The headless shell confirms protocol/lifecycle only;
-  screenshots are denied there, so visual/fractional acceptance is manual.
+  100/125/150/200%. 100% and 125% verified on the host; 150/200% and
+  mixed-scale origins remain open. The headless shell confirms
+  protocol/lifecycle only; screenshots are denied there, so visual/fractional
+  acceptance is manual.
 - Nested-shell smoke command documented above.
 
 ## Boundaries
@@ -203,10 +217,12 @@ the pack command must list `--extra-source=ipc.js --extra-source=render.js`.
 - [x] EOF → hide + reconnect backoff (kill-switch safety).
 - [x] Shell restart (disable/enable) → replay restores correct state.
 - [x] Malformed frame → log, no Shell crash.
-- [ ] Phase-1.4 e2e: grid matches click targets at 100% and one fractional scale.
-- [ ] Visual: labels legible, highlight distinct, no input-region interference
-      (typing unaffected while overlay visible). Requires a real session;
-      headless screenshots are denied.
+- [x] Phase-1.4 e2e: grid matches click targets at 100% and one fractional
+      scale. Verified 2026-10-29 on GNOME 50.1 at 100% (`k`/`k` target
+      `(2580,945)`) and 125% (`(3060,945)`), zero leaked keystrokes.
+- [x] Visual: labels legible, highlight distinct, no input-region interference
+      (typing unaffected while overlay visible). Verified on the host
+      2026-10-29 at 100% and 125%; headless screenshots are denied.
 
 ## Open questions
 
