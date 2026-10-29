@@ -46,10 +46,19 @@ kanata --check --cfg "$CFG" || {
 }
 
 mkdir -p /etc/systemd/system/kanata.service.d
-cp "$DROPIN_SRC" /etc/systemd/system/kanata.service.d/mouseless.conf
+DROPIN_DST=/etc/systemd/system/kanata.service.d/mouseless.conf
+if [ -f "$DROPIN_DST" ]; then
+  cp -a "$DROPIN_DST" "$DROPIN_DST.bak.$(date +%Y%m%d-%H%M%S)"
+fi
+install -m 0644 "$DROPIN_SRC" "$DROPIN_DST"
 systemctl daemon-reload
+systemctl reset-failed kanata.service || true
 systemctl restart kanata.service
-sleep 1
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  systemctl is-active --quiet kanata.service && break
+  sleep 1
+done
 systemctl is-active kanata.service
+systemctl show kanata.service -p User -p Group -p SupplementaryGroups
 ss -tln | grep 7070 || echo "WARNING: nothing listening on 7070"
 grep -i -A1 'Name="kanata' /proc/bus/input/devices | head -4

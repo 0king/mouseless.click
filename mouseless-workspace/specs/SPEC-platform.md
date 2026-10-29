@@ -30,7 +30,7 @@ verifiable by a scripted runbook.
 |---|---|---|
 | `kanata/mouseless.kbd` | `/etc/kanata/mouseless.kbd` | `ml-tap` (`tap-hold-release 200 200` → `lyr-mouseless`) + clean overlay layer (`a s d f j k l ;`, `spc`, `esc`→base). |
 | `kanata/UNICFG-EDITS.md` + `apply-phase11.sh` | runbook (script backs up, edits, `kanata --check`, restarts) | The 3 unicfg edits: defcfg output name + mouse exclude, `@ml-tap` in `lyr-base`, `(include "mouseless.kbd")`. |
-| `systemd/kanata.service.d-override.conf` | `/etc/systemd/system/kanata.service.d/mouseless.conf` | TCP `-p 127.0.0.1:7070`, `--emergency-exit-code 1`, `Restart=on-failure` + `RestartForceExitStatus=SIGTERM` (audit W2). |
+| `systemd/kanata.service.d-override.conf` | `/etc/systemd/system/kanata.service.d/mouseless.conf` | TCP `-p 127.0.0.1:7070`, `--emergency-exit-code 1`, `Restart=on-failure` + `RestartForceExitStatus=SIGTERM` (audit W2), `SupplementaryGroups=mouseless` for `/dev/uinput`. |
 | `systemd/mouselessd.service` | `/etc/systemd/system/mouselessd.service` | `After=kanata.service`, no `Requires=`; `RuntimeDirectory=mouseless` (0770), `UMask=0007`; `Restart=on-failure`; sandboxing. |
 | `udev/99-mouseless.rules` | `/etc/udev/rules.d/99-mouseless.rules` | `uinput` group access + flat pointer accel for `mouseless-mouse` (audit G1). |
 | `.desktop` deep links (Phase 3) | `/usr/share/applications/` | `x-scheme-handler/mouseless` → settings/CLI. |
@@ -48,6 +48,11 @@ directly and ignores `--emergency-exit-code`; hence
 
 - Desktop user: member of `input` (grab `/dev/input`) and `mouseless` (socket +
   `/dev/uinput` via the udev rule). Documented in the runbook.
+- `kanata.service` runs as `kanata-svc` and gains `mouseless` through
+  `SupplementaryGroups=mouseless` in the drop-in. This extends, rather than
+  replaces, the account's database groups, so `input` + `uinput` membership is
+  preserved. Do not solve `/dev/uinput` access by widening the udev rule to a
+  shared system group.
 - Daemon runs as system user `mouselessd`, group `mouseless`.
 - Socket dir `/run/mouseless` created by `RuntimeDirectory` (0770).
 - No permanent grab; permissions scoped to temp-grab + uinput mouse (plan §10.7).
@@ -74,6 +79,7 @@ sudo ./platform/kanata/apply-phase11.sh
 # verify:
 kanata --check --cfg /etc/kanata/unicfg.kbd
 systemd-analyze verify platform/systemd/mouselessd.service
+systemctl show kanata -p User -p Group -p SupplementaryGroups
 ss -tln | grep 7070
 grep -A2 'Name="kanata-mouseless"' /proc/bus/input/devices
 # udev reload after rule edit:
@@ -128,6 +134,7 @@ sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=input
 - [x] Kanata drop-in with TCP + `SIGTERM` restart semantics (audit W2).
 - [x] `mouselessd.service` with `After=` (no `Requires=`), `RuntimeDirectory`, sandboxing.
 - [x] udev rules: uinput group access + flat accel for `mouseless-mouse`.
+- [x] Kanata drop-in grants `/dev/uinput` via `SupplementaryGroups=mouseless`.
 - [ ] `scripts/check-platform.sh` asserting #1/#5/#6 strings + cross-file name sync.
 - [ ] `systemd-analyze verify` wired into the checks.
 - [ ] Phase 1.3 extension install step added to the runbook
