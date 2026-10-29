@@ -91,6 +91,20 @@ impl MouseBackend for UinputMouse {
             .map_err(|e| MouseError::Io(e.to_string()))
     }
 
+    fn button_down(&mut self, button: MouseButton) -> Result<(), Self::Error> {
+        self.dev
+            .send(to_uinput_button(button), 1)
+            .and_then(|()| self.dev.synchronize())
+            .map_err(|e| MouseError::Io(e.to_string()))
+    }
+
+    fn button_up(&mut self, button: MouseButton) -> Result<(), Self::Error> {
+        self.dev
+            .send(to_uinput_button(button), 0)
+            .and_then(|()| self.dev.synchronize())
+            .map_err(|e| MouseError::Io(e.to_string()))
+    }
+
     fn scroll(&mut self, dx_lines: i32, dy_lines: i32) -> Result<(), Self::Error> {
         self.dev
             .send(Wheel::Horizontal, dx_lines)

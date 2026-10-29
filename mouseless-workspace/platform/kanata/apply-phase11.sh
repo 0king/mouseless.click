@@ -1,8 +1,9 @@
 #!/bin/sh
-# Mouseless Phase 1.1: apply kanata config + service drop-in.
+# Mouseless Phase 1.1 + Phase 2: apply kanata config + service drop-in.
 # Run from mouseless-workspace/ as: sudo ./platform/kanata/apply-phase11.sh
-# Backs up unicfg.kbd, applies the 3 UNICFG-EDITS.md changes, validates with
-# `kanata --check` (aborts on failure), then restarts kanata + shows TCP state.
+# Backs up unicfg.kbd, applies the 4 UNICFG-EDITS.md changes (output name,
+# @ml-tap, @ml-free-tap, include), validates with `kanata --check` (aborts on
+# failure), then restarts kanata + shows TCP state.
 set -eu
 
 REPO_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -29,6 +30,11 @@ for j in range(idx, idx+10):
     if lines[j].strip() == '_  _  _    _    _    _    _    _    _    _    _    _':
         if '@ml-tap' not in lines[j]:
             lines[j] = lines[j].replace('_', '@ml-tap', 1)
+        break
+# Free-mode trigger: first token of the row containing @sp (lctl slot).
+for j in range(idx, idx+12):
+    if '@sp' in lines[j] and '@ml-free-tap' not in lines[j]:
+        lines[j] = lines[j].replace('_', '@ml-free-tap', 1)
         break
 s = '\n'.join(lines)
 if '(include "mouseless.kbd")' not in s:

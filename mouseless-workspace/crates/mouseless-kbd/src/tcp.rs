@@ -50,6 +50,25 @@ pub fn query_current_layer(cfg: &KanataTcpConfig) -> Result<String, KbdError> {
     }
 }
 
+/// Send one `ChangeLayer` command over a short-lived connection (CLI verbs).
+///
+/// The daemon keeps its long-lived [`KanataSubscriber`] for session traffic;
+/// this helper is for `mouseless show/hide/toggle/enter-free-mode` and deep
+/// links, which must not depend on daemon state.
+pub fn send_layer_change(cfg: &KanataTcpConfig, name: &str) -> Result<(), KbdError> {
+    let mut stream = cfg
+        .connect()
+        .map_err(|e| KbdError::Io(format!("connect {}: {e}", cfg.addr())))?;
+    stream
+        .set_write_timeout(Some(cfg.timeout))
+        .map_err(|e| KbdError::Io(e.to_string()))?;
+    let cmd = serde_json::json!({ "ChangeLayer": { "new": name } });
+    stream
+        .write_all(cmd.to_string().as_bytes())
+        .and_then(|()| stream.write_all(b"\n"))
+        .map_err(|e| KbdError::Io(format!("ChangeLayer {name}: {e}")))
+}
+
 /// Parse one server line into a [`LayerEvent`]. Returns `None` for
 /// non-layer messages (config reload notices, message pushes).
 pub fn parse_server_line(line: &str) -> Option<LayerEvent> {
@@ -235,6 +254,28 @@ mod tests {
         };
         assert_eq!(query_current_layer(&cfg).unwrap(), "lyr-mouseless");
         h.join().unwrap();
+    }
+
+    #[test]
+    fn send_layer_change_writes_change_layer_json() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let h = std::thread::spawn(move || {
+            use std::io::BufRead;
+            let (s, _) = listener.accept().unwrap();
+            let mut r = std::io::BufReader::new(s);
+            let mut line = String::new();
+            r.read_line(&mut line).unwrap();
+            line
+        });
+        let cfg = KanataTcpConfig {
+            host: "127.0.0.1".into(),
+            port,
+            timeout: Duration::from_secs(2),
+        };
+        send_layer_change(&cfg, "lyr-free").unwrap();
+        let line = h.join().unwrap();
+        assert_eq!(line.trim(), "{\"ChangeLayer\":{\"new\":\"lyr-free\"}}");
     }
 
     #[test]

@@ -9,6 +9,10 @@ pub struct FakeMouse {
     pub moves: Vec<(i32, i32)>,
     /// Recorded `click` calls.
     pub clicks: Vec<MouseButton>,
+    /// Recorded `button_down` calls.
+    pub button_downs: Vec<MouseButton>,
+    /// Recorded `button_up` calls.
+    pub button_ups: Vec<MouseButton>,
     /// Recorded `scroll` calls.
     pub scrolls: Vec<(i32, i32)>,
 }
@@ -23,6 +27,16 @@ impl MouseBackend for FakeMouse {
 
     fn click(&mut self, button: MouseButton) -> Result<(), Self::Error> {
         self.clicks.push(button);
+        Ok(())
+    }
+
+    fn button_down(&mut self, button: MouseButton) -> Result<(), Self::Error> {
+        self.button_downs.push(button);
+        Ok(())
+    }
+
+    fn button_up(&mut self, button: MouseButton) -> Result<(), Self::Error> {
+        self.button_ups.push(button);
         Ok(())
     }
 

@@ -3,9 +3,9 @@
 > Module: `platform` · Paths: `platform/` · Depends on: — ·
 > Plan refs: §2.3, §5.6, §7, §8 #5/#6, §10.6 · Audits W2, G1 ·
 > Matrix rows: #1 (config assertion), #5 (udev rule), #6 (exclusions), part of #9
-> Status as of 2026-10-18: **Partial** — kanata include, service drop-ins, apply
-> script, udev rules, daemon unit exist; extension install, `.desktop` links,
-> `sysusers.d`, distro matrix pending.
+> Status as of 2026-10-29: **Partial** — kanata include (overlay + `lyr-free`),
+> service drop-ins, apply script, udev rules, daemon unit exist; extension
+> install, `.desktop` links, `sysusers.d`, distro matrix pending.
 
 ## Objective
 
@@ -28,8 +28,8 @@ verifiable by a scripted runbook.
 
 | File | Install path | Purpose |
 |---|---|---|
-| `kanata/mouseless.kbd` | `/etc/kanata/mouseless.kbd` | `ml-tap` (`tap-hold-release 200 200` → `lyr-mouseless`) + clean overlay layer (`a s d f j k l ;`, `spc`, `esc`→base). |
-| `kanata/UNICFG-EDITS.md` + `apply-phase11.sh` | runbook (script backs up, edits, `kanata --check`, restarts) | The 3 unicfg edits: defcfg output name + mouse exclude, `@ml-tap` in `lyr-base`, `(include "mouseless.kbd")`. |
+| `kanata/mouseless.kbd` | `/etc/kanata/mouseless.kbd` | `ml-tap` / `ml-free-tap` (`tap-hold-release 200 200` → `lyr-mouseless` / `lyr-free`), clean overlay layer (`a s d f j k l ;`, `spc`, `esc`→base), and the custom free-mode layer (`i/k/j/l`, boosts, buttons, wheel). |
+| `kanata/UNICFG-EDITS.md` + `apply-phase11.sh` | runbook (script backs up, edits, `kanata --check`, restarts) | The 4 unicfg edits: defcfg output name + mouse exclude, `@ml-tap` and `@ml-free-tap` in `lyr-base`, `(include "mouseless.kbd")`. |
 | `systemd/kanata.service.d-override.conf` | `/etc/systemd/system/kanata.service.d/mouseless.conf` | TCP `-p 127.0.0.1:7070`, `--emergency-exit-code 1`, `Restart=on-failure` + `RestartForceExitStatus=SIGTERM` (audit W2), `SupplementaryGroups=mouseless` for `/dev/uinput`. |
 | `systemd/mouselessd.service` | `/etc/systemd/system/mouselessd.service` | `After=kanata.service`, no `Requires=`; `RuntimeDirectory=mouseless` (0770), `UMask=0007`; `Restart=on-failure`; sandboxing. |
 | `udev/99-mouseless.rules` | `/etc/udev/rules.d/99-mouseless.rules` | `uinput` group access + flat pointer accel for `mouseless-mouse` (audit G1). |
@@ -104,9 +104,10 @@ sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=input
 ## Testing strategy (scripted assertions; runbook-style)
 
 - #1: a `scripts/check-platform.sh` (to add) greps the include for
-  `tap-hold-release 200 200`, plain cell keys in `lyr-mouseless`, and absence of
+  `tap-hold-release 200 200` on both `ml-tap` and `ml-free-tap`, plain cell keys
+  in `lyr-mouseless`, the `lyr-free` movement/button/wheel keys, and absence of
   `cmd`; greps `unicfg` after apply for `linux-output-device-name`,
-  `linux-dev-names-exclude`. Blocking.
+  `linux-dev-names-exclude`, `@ml-tap`, and `@ml-free-tap`. Blocking.
 - #5: same script asserts the flat-accel line exists for `mouseless-mouse`.
 - #6: exclusion assertions: kanata exclude contains `mouseless-mouse`; output
   name equals `mouseless-kbd::KANATA_OUTPUT_NAME` and the uinput name equals
@@ -131,6 +132,12 @@ sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=input
 ## Success criteria
 
 - [x] Kanata include + runbook + apply script with backup/validate/restart.
+- [x] `lyr-free` + `@ml-free-tap` include for custom free mode; validated with
+      `kanata --check` on 2026-10-29.
+- [x] Apply script replayed against a temp unicfg copy: all four edits land,
+      a second run is idempotent, and `kanata --check` passes.
+- [ ] Live `/etc/kanata` apply + kanata restart (sudo) and the Phase-2 smoke
+      matrix (free mode, drag/drop, nudge, monitor switch, cursor hide).
 - [x] Kanata drop-in with TCP + `SIGTERM` restart semantics (audit W2).
 - [x] `mouselessd.service` with `After=` (no `Requires=`), `RuntimeDirectory`, sandboxing.
 - [x] udev rules: uinput group access + flat accel for `mouseless-mouse`.

@@ -17,15 +17,62 @@ use crate::KbdError;
 /// Stable kanata virtual-output name (must match `linux-output-device-name`).
 pub const KANATA_OUTPUT_NAME: &str = "kanata-mouseless";
 
-/// A key press read from the grabbed device.
+/// A key read from the grabbed device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellKey {
-    /// Cell character (`a s d f j k l ;`).
+    /// Cell/free-mode character (`a s d f j k l ; i r e q w m , . /`).
     Char(char),
-    /// Execute at virtual cursor.
+    /// Execute at virtual cursor / left mouse button in free mode.
     Space,
-    /// Exit overlay.
+    /// Exit overlay or free mode.
     Escape,
+    /// Left Shift press/release (monitor switching, right-click modifier).
+    ShiftLeft,
+    /// Right Shift press/release (monitor switching).
+    ShiftRight,
+    /// Up arrow (subgrid nudge).
+    ArrowUp,
+    /// Down arrow (subgrid nudge).
+    ArrowDown,
+    /// Left arrow (subgrid nudge).
+    ArrowLeft,
+    /// Right arrow (subgrid nudge).
+    ArrowRight,
+}
+
+/// Modifier state at the time of a key event.
+///
+/// Physical modifiers are already held on the seat; the daemon only needs
+/// them to choose drag/right-click behavior and to avoid treating a Shift
+/// used as a modifier as a monitor-switch tap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Modifiers {
+    /// Shift held.
+    pub shift: bool,
+    /// Control held.
+    pub ctrl: bool,
+    /// Alt held.
+    pub alt: bool,
+    /// Super/Meta held.
+    pub meta: bool,
+}
+
+impl Modifiers {
+    /// Whether any modifier is held.
+    pub fn any(&self) -> bool {
+        self.shift || self.ctrl || self.alt || self.meta
+    }
+}
+
+/// One press or release from the grabbed device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyEvent {
+    /// Translated key.
+    pub key: CellKey,
+    /// `true` = press, `false` = release.
+    pub pressed: bool,
+    /// Modifier state after applying this event.
+    pub modifiers: Modifiers,
 }
 
 /// Translate a kernel key code to a [`CellKey`]. `None` = not an overlay key
@@ -41,10 +88,37 @@ pub fn translate_key(code: evdev::KeyCode) -> Option<CellKey> {
         KeyCode::KEY_K => CellKey::Char('k'),
         KeyCode::KEY_L => CellKey::Char('l'),
         KeyCode::KEY_SEMICOLON => CellKey::Char(';'),
+        // Free-mode keys (plan §2.4 / upstream mapping).
+        KeyCode::KEY_I => CellKey::Char('i'),
+        KeyCode::KEY_R => CellKey::Char('r'),
+        KeyCode::KEY_E => CellKey::Char('e'),
+        KeyCode::KEY_Q => CellKey::Char('q'),
+        KeyCode::KEY_W => CellKey::Char('w'),
+        KeyCode::KEY_M => CellKey::Char('m'),
+        KeyCode::KEY_COMMA => CellKey::Char(','),
+        KeyCode::KEY_DOT => CellKey::Char('.'),
+        KeyCode::KEY_SLASH => CellKey::Char('/'),
         KeyCode::KEY_SPACE => CellKey::Space,
         KeyCode::KEY_ESC => CellKey::Escape,
+        KeyCode::KEY_LEFTSHIFT => CellKey::ShiftLeft,
+        KeyCode::KEY_RIGHTSHIFT => CellKey::ShiftRight,
+        KeyCode::KEY_UP => CellKey::ArrowUp,
+        KeyCode::KEY_DOWN => CellKey::ArrowDown,
+        KeyCode::KEY_LEFT => CellKey::ArrowLeft,
+        KeyCode::KEY_RIGHT => CellKey::ArrowRight,
         _ => return None,
     })
+}
+
+fn update_modifiers(modifiers: &mut Modifiers, code: evdev::KeyCode, pressed: bool) {
+    use evdev::KeyCode;
+    match code {
+        KeyCode::KEY_LEFTSHIFT | KeyCode::KEY_RIGHTSHIFT => modifiers.shift = pressed,
+        KeyCode::KEY_LEFTCTRL | KeyCode::KEY_RIGHTCTRL => modifiers.ctrl = pressed,
+        KeyCode::KEY_LEFTALT | KeyCode::KEY_RIGHTALT => modifiers.alt = pressed,
+        KeyCode::KEY_LEFTMETA | KeyCode::KEY_RIGHTMETA => modifiers.meta = pressed,
+        _ => {}
+    }
 }
 
 /// Find the `/dev/input/eventN` path of the device named `name`.
@@ -64,6 +138,8 @@ pub fn find_output_device(name: &str) -> Result<std::path::PathBuf, KbdError> {
 /// overlay is visible. See module docs for the full contract.
 pub struct EvdevCellGrab {
     device: Option<evdev::Device>,
+    pending: std::collections::VecDeque<KeyEvent>,
+    modifiers: Modifiers,
 }
 
 impl EvdevCellGrab {
@@ -74,6 +150,8 @@ impl EvdevCellGrab {
             .map_err(|e| KbdError::Io(format!("open {}: {e}", path.display())))?;
         let mut grab = Self {
             device: Some(device),
+            pending: std::collections::VecDeque::new(),
+            modifiers: Modifiers::default(),
         };
         let device = grab
             .device
@@ -96,32 +174,59 @@ impl EvdevCellGrab {
         Self::acquire_named(KANATA_OUTPUT_NAME)
     }
 
-    /// Drain one pending key-press event (non-blocking). Returns `None` when
-    /// no complete press is pending. Releases (value 0) and repeats (value 2)
-    /// are consumed silently; unknown keys map to `None` via [`translate_key`].
-    pub fn next_key_press(&mut self) -> Result<Option<CellKey>, KbdError> {
+    /// Drain one pending key event (non-blocking). Presses and releases are
+    /// both returned; autorepeat (value 2) is ignored because the free-mode
+    /// loop ticks continuously while a key is held.
+    pub fn next_key_event(&mut self) -> Result<Option<KeyEvent>, KbdError> {
+        if let Some(ev) = self.pending.pop_front() {
+            return Ok(Some(ev));
+        }
         let device = self
             .device
             .as_mut()
             .ok_or_else(|| KbdError::Unavailable("grab released".into()))?;
-        let mut out = None;
-        for ev in device
+        let events = device
             .fetch_events()
-            .map_err(|e| KbdError::Io(format!("fetch: {e}")))?
-        {
-            if let evdev::EventSummary::Key(_, code, 1) = ev.destructure() {
-                if out.is_none() {
-                    out = translate_key(code);
-                    // A press of an unknown key still counts as consumed; keep
-                    // draining the batch but report None for it.
-                    if translate_key(code).is_none() {
-                        out = None;
-                        break;
+            .map_err(|e| KbdError::Io(format!("fetch: {e}")))?;
+        for ev in events {
+            if let evdev::EventSummary::Key(_, code, value) = ev.destructure() {
+                match value {
+                    0 => {
+                        update_modifiers(&mut self.modifiers, code, false);
+                        if let Some(key) = translate_key(code) {
+                            self.pending.push_back(KeyEvent {
+                                key,
+                                pressed: false,
+                                modifiers: self.modifiers,
+                            });
+                        }
                     }
+                    1 => {
+                        update_modifiers(&mut self.modifiers, code, true);
+                        if let Some(key) = translate_key(code) {
+                            self.pending.push_back(KeyEvent {
+                                key,
+                                pressed: true,
+                                modifiers: self.modifiers,
+                            });
+                        }
+                    }
+                    // Autorepeat: ignored (the daemon ticks while held).
+                    _ => {}
                 }
             }
         }
-        Ok(out)
+        Ok(self.pending.pop_front())
+    }
+
+    /// Legacy press-only poll. Releases are consumed and discarded.
+    pub fn next_key_press(&mut self) -> Result<Option<CellKey>, KbdError> {
+        while let Some(ev) = self.next_key_event()? {
+            if ev.pressed {
+                return Ok(Some(ev.key));
+            }
+        }
+        Ok(None)
     }
 }
 
@@ -139,6 +244,10 @@ impl Drop for EvdevCellGrab {
 impl crate::CellKeySource for EvdevCellGrab {
     fn next_key_press(&mut self) -> Result<Option<CellKey>, KbdError> {
         self.next_key_press()
+    }
+
+    fn next_key_event(&mut self) -> Result<Option<KeyEvent>, KbdError> {
+        self.next_key_event()
     }
 
     fn held(&self) -> bool {
@@ -160,8 +269,18 @@ mod tests {
         );
         assert_eq!(translate_key(KeyCode::KEY_SPACE), Some(CellKey::Space));
         assert_eq!(translate_key(KeyCode::KEY_ESC), Some(CellKey::Escape));
-        assert_eq!(translate_key(KeyCode::KEY_Q), None); // not an overlay key
-        assert_eq!(translate_key(KeyCode::KEY_LEFTSHIFT), None);
+        assert_eq!(translate_key(KeyCode::KEY_Q), Some(CellKey::Char('q')));
+        assert_eq!(translate_key(KeyCode::KEY_Z), None); // not an overlay key
+        assert_eq!(
+            translate_key(KeyCode::KEY_LEFTSHIFT),
+            Some(CellKey::ShiftLeft)
+        );
+        assert_eq!(
+            translate_key(KeyCode::KEY_RIGHTSHIFT),
+            Some(CellKey::ShiftRight)
+        );
+        assert_eq!(translate_key(KeyCode::KEY_UP), Some(CellKey::ArrowUp));
+        assert_eq!(translate_key(KeyCode::KEY_SLASH), Some(CellKey::Char('/')));
     }
 
     #[test]

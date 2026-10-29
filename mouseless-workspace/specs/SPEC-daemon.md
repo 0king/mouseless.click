@@ -3,25 +3,28 @@
 > Module: `daemon` · Paths: `crates/mouseless-daemon` · Depends on: `kbd`, `mouse`,
 > `overlay`, `state`, `core`, `ipc` · Plan refs: §1.2, §5, §6, §7, §8 #2/#3/#6/#10 ·
 > Matrix rows: #2, #3, #6, #10 (owner); supports #4, #5, #8, #9
-> Status as of 2026-10-29: **Implemented (Phase 1.3 MVP)** — real kanata TCP,
-> `EvdevCellGrab`, uinput mouse, GNOME socket server, grid/subgrid models, FSM,
-> click path, degrade modes, and kill-switch co-exit are wired. Remaining gaps:
-> `tracing` (prints today), explicit reconnect-resync verification (matrix #3),
-> `mouseless-cli` show/hide/toggle verbs, and Phase-1.4 process-level e2e.
+> Status as of 2026-10-29: **Implemented (Phase 1.3 MVP + Phase 2)** — real
+> kanata TCP, `EvdevCellGrab`, uinput mouse, GNOME socket server, grid/subgrid
+> models, FSM, click path, multi-click/drag/nudge/monitor/cursor-hide actions,
+> custom 8 ms free-mode loop, degrade modes, and kill-switch co-exit are wired.
+> Remaining gaps: `tracing` (prints today), process-level kill-switch/e2e tests,
+> and live-host smoke after the Phase-2 kanata apply.
 
 ## Objective
 
 `mouselessd` is thin: it wires backends together and owns only the single-flight
-overlay machine, the grab lifecycle, the click path, and the kill switch. All
-math is `core`, all decisions are `state`, all I/O is in the backends.
+overlay machine, the grab lifecycle, the click/drag/nudge action path, the
+free-mode tick, and the kill switch. All math is `core`, all decisions are
+`state`, all I/O is in the backends.
 
 ## Scope
 
 - In (Phase 1.2/1.4): TCP subscribe + resync, layer→show/hide, grab lifecycle,
   grid model to the extension, click execution, kill-switch co-exit, degraded
   modes, `SO_PEERCRED` server (all implemented); `tracing` remains.
-- In (Phase 2): physics loop wiring, `ActionIntent` execution, continuous mode,
-  multi-monitor switching, free-mode engine selection flag.
+- In (Phase 2): physics loop wiring, `ActionIntent` execution, multi-click
+  cadence, drag/drop, subgrid nudges, continuous mode, multi-monitor switching,
+  cursor hiding, free-mode engine selection flag. *(implemented 2026-10-29)*
 - In (Phase 3): config apply (`Reload`/`Update`) with validate-then-apply (shared
   with `settings`).
 - Out: any backend logic (plan §1.2).
@@ -34,59 +37,103 @@ math is `core`, all decisions are `state`, all I/O is in the backends.
 pub fn on_layer_event(&mut self, ev: LayerEvent) -> Result<(), DaemonError>;
 pub fn start_overlay(&mut self) -> Result<(), DaemonError>; // grab + show, or degrade
 pub fn end_overlay(&mut self);                              // drop grab + hide + base
+pub fn start_free_mode(&mut self) -> Result<(), DaemonError>; // grab, no overlay
+pub fn end_free_mode(&mut self);                              // release buttons + base
 pub fn on_overlay_lost(&mut self);                          // Shell crash/restart
 pub fn poll_overlay_events(&mut self) -> Vec<OverlayEvent>;
-pub fn handle_cell_key(&mut self, key: CellKey) -> Result<SessionStep, DaemonError>;
+pub fn poll_key_event(&mut self) -> Result<Option<KeyEvent>, DaemonError>;
+pub fn handle_key_event_at(&mut self, ev: KeyEvent, now_ms: u64) -> Result<SessionStep, DaemonError>;
+pub fn tick(&mut self, now_ms: u64) -> Result<(), DaemonError>;
+pub fn tick_now(&mut self) -> Result<(), DaemonError>;
+pub fn session_active(&self) -> bool;                      // overlay OR free OR grab
 pub fn click_relative(&mut self, b: MouseButton, cur: CursorPos, target: (i32,i32)) -> Result<(), DaemonError>;
 pub fn on_kanata_lost(&mut self) -> DaemonError;   // release + hide + signal co-exit
 pub fn keyboard_mut(&mut self) -> &mut K;          // event loop polls the backend
 ```
 
 - `lyr-mouseless` → show + acquire `CellGrab` when a helloed overlay and a
-  layout exist; otherwise degrade without grabbing. Any other layer → hide +
-  drop grab. Both directions are idempotent.
+  layout exist; otherwise degrade without grabbing. `lyr-free` → custom
+  free-mode grab without showing the overlay. `lyr-mouse` → release/teardown
+  without forcing base (kanata chose its own fallback layer). Any other layer →
+  hide + drop grab. All directions are idempotent.
 - Duplicate/missed `LayerChange` MUST NOT desync (single-flight, one mutex or
   single-threaded ownership — current design is single-threaded, keep it).
 - Kill switch (plan §7): TCP EOF/reset → release grab (RAII), best-effort
   `Hide` broadcast, `ExitCode 1` to let the supervisor restart the stack.
 
-### Session event loop (production path, `main.rs`)
+### Session event loops (production path, `main.rs`)
 
-Per iteration (single thread, no async for MVP):
+Single-threaded; `next_layer_event` uses a 500 ms idle / 2 ms session read
+timeout. A session returns the layer that ended it, and the idle loop applies
+that transition (so `lyr-mouse` is not overridden by a forced base).
 
 ```text
-1. overlay.poll_events()                  → accept/Hello/Report/Disconnected
-2. poll keyboard (500 ms TCP read timeout) → layer events
-3. on lyr-mouseless: start_overlay:
-     - require is_connected() + last_layout(); else degrade
-       (no grab, set base, log loudly; typing unaffected)
-     - pick monitor under cursor (fallback primary), build GridModel via core
-     - acquire EvdevCellGrab (EBUSY retried by main ≤ ~2 s)
-     - show; if show fails, release the grab + degrade (no orphan grab)
-4. session loop (2 ms TCP read timeout):
-     - overlay disconnect → end session
-     - kanata layer != lyr-mouseless → end session
-     - poll grab key presses, apply the FSM (below)
-5. click path: QueryCursor (≤ 100 ms) → fall back to last Report
-               → target = core::subcell_center/cell_center
-               → mouse::compute_delta → move_rel → click(button)
-               → end_overlay (drop grab, hide, base layer)
-6. every exit path: grab Drop drains + ungrabs; hide is best-effort; set base
-   idempotently. Idle read timeout returns to 500 ms when the session ends.
+idle loop:
+  poll overlay events (Disconnected -> on_overlay_lost)
+  wait for LayerChange (500 ms)
+  lyr-mouseless -> start_overlay_with_retry (EBUSY ≤ ~2 s) -> overlay loop
+  lyr-free      -> start_free_with_retry    (EBUSY ≤ ~2 s) -> free loop
+  otherwise     -> daemon.on_layer_event (base restore; lyr-mouse teardown only)
+
+overlay loop (2 ms TCP read):
+  overlay disconnect -> end
+  layer != lyr-mouseless -> return that layer to the idle loop
+  drain grabbed press/release events; handle_key_event
+  tick_now every 8 ms (multi-click deadline)
+  session_active()==false -> end; end_overlay on every exit path
+
+free loop (2 ms TCP read):
+  overlay disconnect -> keep running (relative motion), hide overlay only
+  layer == lyr-free -> continue; other layer -> return it to the idle loop
+  drain grabbed press/release events; handle_free_key_event
+  tick_now every 8 ms -> physics move/scroll + auto-off
+  Esc/auto-off/uinput failure -> end_free_mode (release held buttons, base)
 ```
 
-### MVP cell FSM (Phase 1.3, OQ-2 resolved)
+### Action semantics (Phase 2)
+
+- `ActionIntent` is the only state→backend boundary: `Move`, `Click {button,
+  count}`, `DragBegin`, `DragTo`, `DragRelease`, `Wheel`, `CursorHide`.
+- Multi-click: `count` is the logical ordinal (1..=3); the daemon emits one
+  native down/up pair per click and lets the compositor coalesce. The
+  overlay/grab stays alive for `multi_click_threshold_ms`; continuous mode
+  resets to level 1 instead of ending.
+- Drag: Alt on the final key begins/continues a drag; the final key without Alt
+  moves and drops. Esc releases at the current cursor.
+- Nudge: optional `hold_subgrid_for_nudge`; step = sub-cell size /
+  `nudges_per_cell`; release clicks at the nudged target.
+- Shift tap ≤ `MONITOR_SWITCH_TAP_MS` switches monitors by x order unless Shift
+  was used as the right-click modifier.
+- `hide_cursor_on_click` moves to the configured corner after the click.
+
+### Custom free-mode input path
+
+`free_mode_engine = custom` (default) uses the dedicated `lyr-free` layer:
+kanata emits the mapped letters, the daemon holds the same temporary grab as
+the overlay, and `mouseless-state` advances physics on a fixed 8 ms tick.
+Held buttons are tracked by `FreeModeSession` and released on every teardown.
+`free_mode_engine = kanata` leaves `lyr-mouse` authoritative; `lyr-free` is then
+ignored and the daemon restores base so letters cannot leak.
+
+### Cell/action FSM (Phase 2)
 
 | Input | State | Effect |
 |---|---|---|
 | `a s d f j k l ;` | level 1 | select that cell, render its 4×2 subgrid |
-| same keys | subgrid | click that sub-cell's center |
-| Space | selected cell | click the level-1 cell center |
-| Esc | any | exit, release grab, hide, restore base |
+| same keys | subgrid | click that sub-cell's center (or press-move, release-click with `hold_subgrid_for_nudge`) |
+| Space | selected / none | click the level-1 cell center / the configured initial action target |
+| Arrow keys | nudge-held | move by sub-cell size / `nudges_per_cell`, clamped to the monitor |
+| Shift tap ≤200 ms | any | switch monitor by x order, unless Shift was used as a modifier |
+| Shift + final key | subgrid | right click instead of left |
+| Alt + final key | subgrid | begin or continue a drag |
+| final key without Alt | dragging | move to the target and drop |
+| Esc | any | release a drag at the current cursor, exit, release grab, hide, base |
 | layer change | any | exit (kanata already left the layer) |
 
 Keys while grabbed are consumed by evdev and never reach kanata/compositor, so
 there is no leaked keystroke path. The subgrid uses the same key set by default.
+Multi-click keeps the session alive for the threshold; continuous mode resets to
+level 1 instead of ending.
 
 ### Production wiring (no fakes on production paths)
 
@@ -101,10 +148,13 @@ daemon degrades instead of grabbing with nowhere to draw.
 
 `DaemonConfig` carries: kanata addr, socket path, **grid config** (MVP default:
 4×2 level-1 cells keyed `a s d f / j k l ;`, subgrid 4×2 with the same keys,
-target = sub-cell center on the second key, cell center on Space), and backend
-names. Free-mode params/feature flags arrive with Phase 2. Until Phase-3
-`config.yaml` exists, defaults live in code + `--kanata`/`--socket` + the
-`MOUSELESS_SOCKET` env override. Config precedence: CLI > env > defaults.
+target = sub-cell center on the second key, cell center on Space), backend
+names, free-mode engine (`custom | kanata`) + `FreeModeParams`/`WheelParams`,
+`multi_click_threshold_ms`, `nudges_per_cell`, `hold_subgrid_for_nudge`,
+`continuous_mode`, `hide_cursor_on_click`, `cursor_hide_corner`,
+`hold_for_right_button`, `hold_for_drag`, and `initial_action_location`.
+Until Phase-3 `config.yaml` exists, defaults live in code + `--kanata`/`--socket`
++ the `MOUSELESS_SOCKET` env override. Config precedence: CLI > env > defaults.
 
 ### Error handling & observability (plan §6, SKILL-05)
 
@@ -112,7 +162,8 @@ names. Free-mode params/feature flags arrive with Phase 2. Until Phase-3
   `CellGrab`/`EvdevCellGrab` and kanata subscriber paths were cleaned up; tests
   may still `unwrap`. A CI `deny` lint is still pending.
 - Timeouts on every external call: TCP connect 2 s, grab `EBUSY` retry ≤ ~2 s,
-  `QueryCursor` 100 ms; session TCP read timeout 2 ms (500 ms idle).
+  `QueryCursor` 100 ms; session TCP read timeout 2 ms (500 ms idle); fixed
+  8 ms physics/multi-click tick with a 1 ms sleep cap.
 - `tracing` with correlation IDs is **not yet implemented**; the binary still
   uses `println!/eprintln!`. Tracked as the main observability gap.
 - Degraded modes: overlay missing → no grab; uinput missing → no clicks, overlay
@@ -122,7 +173,7 @@ names. Free-mode params/feature flags arrive with Phase 2. Until Phase-3
 ## Tech stack
 
 Rust 2021; `serde`/`serde_json`, `thiserror`. Sync single-thread loop for MVP;
-Phase-2 physics may use a dedicated tick (thread or tokio task) — see OQ-3.
+Phase-2 physics runs on the loop's fixed 8 ms tick (OQ-3, resolved).
 
 ## Commands
 
@@ -171,6 +222,14 @@ MOUSELESS_SOCKET=/tmp/mouseless.sock cargo run -p mouseless-daemon -- --kanata 1
   covered; uinput-absent wrapper is production-only)*
 - Phase 1.4 e2e: tap Shift → overlay → 2 keys → click at sub-cell center,
   zero leaked keystrokes (assert no cell key reaches the fake compositor side).
+- Phase 2 action tests (`crates/mouseless-daemon/src/lib.rs`): multi-click
+  cadence + tick expiry, continuous reset, drag begin/continue/drop, Esc drag
+  cancel, Shift monitor switch, Shift-as-right-click does not switch, nudge
+  math + release click, cursor-hide corner, free-mode move/wheel/buttons,
+  auto-off button release, Esc exit, `lyr-mouse` ignored without base restore.
+- Phase 2 state tests (`crates/mouseless-state`): easing convergence, 2-D
+  movement, wheel carry, auto-off boundaries, click counter, drag state,
+  nudge steps, overlay machine idempotency.
 
 ## Boundaries
 
@@ -192,6 +251,12 @@ MOUSELESS_SOCKET=/tmp/mouseless.sock cargo run -p mouseless-daemon -- --kanata 1
 - [x] Post-grab show failure releases the grab and restores base.
 - [x] Session loop: first key opens subgrid; second key clicks sub-cell center;
       Space clicks cell center; Esc exits.
+- [x] Phase 2 actions: multi-click/continuous, drag/drop, nudges, modifier
+      clicks, monitor switching, cursor hiding.
+- [x] Custom free mode: `lyr-free` + temporary grab + fixed 8 ms physics tick,
+      held-button release on every teardown, `lyr-mouse` fallback preserved.
+- [x] `mouseless-cli` show/hide/toggle/enter-free-mode/exit-free-mode speak
+      kanata TCP; fake-TCP tests in `crates/mouseless-cli/tests/kanata_verbs.rs`.
 - [x] `SO_PEERCRED` server check (audit G3) wired in the GNOME overlay backend.
 - [ ] Explicit `RequestCurrentLayerName` resync on the same connection after
       reconnect (matrix #3). Kanata 1.12 pushes `LayerChange` on connect and
@@ -210,9 +275,11 @@ MOUSELESS_SOCKET=/tmp/mouseless.sock cargo run -p mouseless-daemon -- --kanata 1
 2. **MVP grid default — resolved (2026-10-29).** 4×2 both levels, keys
    `a s d f j k l ;`; second key clicks the sub-cell center; Space clicks the
    level-1 cell center; Esc exits.
-3. **Threading/tick** — MVP single-thread with 500 ms idle / 2 ms session TCP
-   read timeouts and a 1 ms session sleep; Phase-2 physics wants a fixed 8 ms
-   tick. Decide then: dedicated tick thread vs tokio timer (plan allows either,
-   audit G5: do not async-color the physics core).
+3. **Threading/tick — resolved (2026-10-29).** MVP stays single-threaded with
+   500 ms idle / 2 ms session TCP read timeouts and a fixed 8 ms tick
+   (`FREE_MODE_TICK`) driven from the session loop; the 1 ms sleep cap bounds
+   jitter without busy-spinning. The physics core stays sync/uncolored (audit
+   G5). Revisit a dedicated thread/tokio timer only if measured jitter affects
+   feel.
 4. **Initial monitor choice for `Show` — implemented.** Monitor under the last
    reported cursor, falling back to primary (Phase 3 exposes a setting).

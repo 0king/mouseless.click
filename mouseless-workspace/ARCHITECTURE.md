@@ -7,32 +7,37 @@ config value, never a core refactor.
 | Crate | Role | Backends |
 |---|---|---|
 | `mouseless-core` | Pure grid math (cell→pixel, layouts, scale-aware). Zero I/O. | — |
-| `mouseless-state` | State machine (`Normal→Overlay→Subgrid→Click`, `FreeMode`) + physics; `Clock` trait (real/fake). I/O-free. | — |
+| `mouseless-state` | State machine (`Normal→Overlay→Subgrid→Click`), action intents (multi-click/drag/nudge), `FreeModeSession` physics; `Clock` trait (real/fake). I/O-free. | — |
 | `mouseless-ipc` | Versioned JSON protocol (`schema_version`; negotiate/refuse), newline-delimited envelopes. | — |
 | `mouseless-kbd` | `KeyboardBackend` (layer events, `set_layer`, resync, reload) + `CellGrab` RAII contract. | `impls/kanata.rs` (TCP); future `keyd`, `evdev_raw` |
-| `mouseless-mouse` | `MouseBackend` (`move_rel`/`click`/`scroll`) + `compute_delta` (saturating). | `impls/uinput.rs` (identity); future `libei` |
+| `mouseless-mouse` | `MouseBackend` (`move_rel`/`click`/`button_down`/`button_up`/`scroll`) + `compute_delta` (saturating). | `impls/uinput.rs` (identity); future `libei` |
 | `mouseless-overlay` | `OverlayBackend` (`show`/`highlight`/`show_subgrid`/`hide`, reports), draw-only; daemon-side Unix-socket server. | `impls/gnome.rs` (server + JSON); GNOME extension is the client; future `wlr`, `x11` |
-| `mouseless-daemon` | `mouselessd`: thin orchestration (single-flight machine + grab lifecycle + click path + kill-switch co-exit). | — |
-| `mouseless-cli` | `mouseless` verbs with deep-link parity + `--list-input-devices`. | — |
+| `mouseless-daemon` | `mouselessd`: thin orchestration (single-flight machine, grab lifecycle, action execution, overlay/free session loops, 8 ms tick, kill-switch co-exit). | — |
+| `mouseless-cli` | `mouseless` verbs with deep-link parity + kanata TCP layer switching + `--list-input-devices`. | — |
 | `mouseless-gtk` | Settings stub → Phase-3 `Adw.PreferencesWindow`. | — |
 
 ## Data flow (plan §2.4)
 
 ```text
-physical kbd → kanata (grab, HRM, tap-dance, lyr-mouse free-mode)
+physical kbd → kanata (grab, HRM, tap-dance, lyr-mouse fallback)
                  │ virtual kbd "kanata-mouseless"
                  ├──→ compositor/apps (normal typing)
-                 └──→ mouselessd (TEMP grab only during overlay)
+                 └──→ mouselessd (TEMP grab during overlay OR custom free mode)
 mouselessd → uinput "mouseless-mouse" (REL deltas + BTN_*/WHEEL)
 mouselessd ↔ kanata TCP 127.0.0.1:port (LayerChange / ChangeLayer)
 mouselessd ↔ GNOME extension /run/mouseless/mouselessd.sock (JSON)
 ```
 
-No `cmd` anywhere (audit W1). `EvdevCellGrab` owns a fresh fd per overlay with
-`EVIOCGKEY` + drain (audits G6/G7). Flat pointer accel for `mouseless-mouse`
-(audit G1). Socket auth via `SO_PEERCRED` (audit G3); the daemon listens and
-the GNOME extension connects, sends `Hello`/`Report`, and receives
-`Show`/`HighlightCell`/`ShowSubgrid`/`Hide` plus state replay on reconnect.
+No `cmd` anywhere (audit W1). `EvdevCellGrab` owns a fresh fd per overlay/free
+session with `EVIOCGKEY` + drain (audits G6/G7). Flat pointer accel for
+`mouseless-mouse` (audit G1). Socket auth via `SO_PEERCRED` (audit G3); the
+daemon listens and the GNOME extension connects, sends `Hello`/`Report`, and
+receives `Show`/`HighlightCell`/`ShowSubgrid`/`Hide` plus state replay on
+reconnect.
+
+Phase 2 free mode uses a dedicated `lyr-free` kanata layer (`@ml-free-tap` on
+ControlLeft); the daemon holds the same temporary grab and runs an 8 ms physics
+tick. `lyr-mouse` remains authoritative when `free_mode_engine = kanata`.
 
 Phase 1.3 extension layout: `gnome-extension/extension.js` (lifecycle +
 dispatch), `ipc.js` (NDJSON client/reconnect), `render.js` (Clutter actor and
@@ -51,6 +56,11 @@ resolved with a `Cogl.Color` fallback for GNOME 47+.
 - #4 geometry goldens: `mouseless-core` 1080p/4K/vertical/scale tests
 - #5 REL deltas: `compute_delta` clamp + fake-mouse tests
 - #7 physics goldens: per-easing-curve convergence with `ManualClock`
+- Phase 2 actions: daemon multi-click/continuous/drag/nudge/monitor/cursor-hide
+  tests + state `actions.rs` unit tests
+- Free mode: daemon move/wheel/button/auto-off/Esc tests + `lyr-free` config
+  validation (`kanata --check`)
 - #8 IPC: version negotiate/refuse, 1 MiB limit, checked-in malformed corpus,
   Hello timeout, and overlay-server malformed-frame tests
 - #10 kill switch: `on_kanata_lost` grab-release + co-exit test
+- CLI: fake-kanata TCP tests for show/enter-free-mode/toggle/status + exit codes

@@ -5,6 +5,8 @@
 
 use thiserror::Error;
 
+use mouseless_kbd::{BASE_LAYER, FREE_MODE_LAYER, OVERLAY_LAYER};
+
 /// CLI errors (surfaced with a clear message, never a stack trace).
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CliError {
@@ -59,6 +61,32 @@ impl Verb {
             Verb::ListInputDevices => "mouseless://list-input-devices",
         }
     }
+
+    /// Kanata layer this verb switches to, when the target is unconditional.
+    ///
+    /// `toggle` needs the current layer first and therefore returns `None`;
+    /// see [`toggle_target`]. Layer switches (never direct daemon frames) keep
+    /// kanata as the single source of truth (SPEC-cli).
+    pub fn layer_change(&self) -> Option<&'static str> {
+        match self {
+            Verb::Show => Some(OVERLAY_LAYER),
+            Verb::Hide | Verb::ExitFreeMode => Some(BASE_LAYER),
+            Verb::EnterFreeMode => Some(FREE_MODE_LAYER),
+            Verb::Toggle | Verb::Status | Verb::ListInputDevices => None,
+        }
+    }
+}
+
+/// Target layer for `toggle`: hide a visible overlay, otherwise show it.
+///
+/// Free mode is not the overlay, so toggling from `lyr-free` shows the grid
+/// (ending free mode through the normal layer transition).
+pub fn toggle_target(current_layer: &str) -> &'static str {
+    if current_layer == OVERLAY_LAYER {
+        BASE_LAYER
+    } else {
+        OVERLAY_LAYER
+    }
 }
 
 #[cfg(test)]
@@ -81,5 +109,24 @@ mod tests {
     #[test]
     fn unknown_verb_prints_usage() {
         assert_eq!(Verb::parse("frobnicate"), Err(CliError::Usage));
+    }
+
+    #[test]
+    fn verbs_map_to_kanata_layers() {
+        assert_eq!(Verb::Show.layer_change(), Some(OVERLAY_LAYER));
+        assert_eq!(Verb::Hide.layer_change(), Some(BASE_LAYER));
+        assert_eq!(Verb::EnterFreeMode.layer_change(), Some(FREE_MODE_LAYER));
+        assert_eq!(Verb::ExitFreeMode.layer_change(), Some(BASE_LAYER));
+        assert_eq!(Verb::Toggle.layer_change(), None);
+        assert_eq!(Verb::Status.layer_change(), None);
+        assert_eq!(Verb::ListInputDevices.layer_change(), None);
+    }
+
+    #[test]
+    fn toggle_target_hides_only_a_visible_overlay() {
+        assert_eq!(toggle_target(OVERLAY_LAYER), BASE_LAYER);
+        assert_eq!(toggle_target(FREE_MODE_LAYER), OVERLAY_LAYER);
+        assert_eq!(toggle_target(BASE_LAYER), OVERLAY_LAYER);
+        assert_eq!(toggle_target("lyr-mouse"), OVERLAY_LAYER);
     }
 }

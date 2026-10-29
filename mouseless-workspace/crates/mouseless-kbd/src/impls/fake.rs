@@ -1,13 +1,13 @@
 //! In-memory fake backend for deterministic tests (plan §8 #1–#3, #10).
 
-use crate::{CellKey, KbdError, KeyboardBackend, LayerEvent};
+use crate::{CellKey, KbdError, KeyEvent, KeyboardBackend, LayerEvent, Modifiers};
 use std::collections::VecDeque;
 
 /// Fake cell grab: scripted keys, no `/dev/input` access (daemon tests).
 #[derive(Debug, Default)]
 pub struct FakeCellGrab {
     held: bool,
-    keys: VecDeque<CellKey>,
+    events: VecDeque<KeyEvent>,
 }
 
 impl FakeCellGrab {
@@ -15,19 +15,37 @@ impl FakeCellGrab {
     pub fn new() -> Self {
         Self {
             held: true,
-            keys: VecDeque::new(),
+            events: VecDeque::new(),
         }
     }
 
     /// Queue a key press for the daemon session loop to poll.
     pub fn push_key(&mut self, key: CellKey) {
-        self.keys.push_back(key);
+        self.push_event(KeyEvent {
+            key,
+            pressed: true,
+            modifiers: Modifiers::default(),
+        });
+    }
+
+    /// Queue a full press/release event with modifiers.
+    pub fn push_event(&mut self, event: KeyEvent) {
+        self.events.push_back(event);
     }
 }
 
 impl crate::CellKeySource for FakeCellGrab {
     fn next_key_press(&mut self) -> Result<Option<CellKey>, KbdError> {
-        Ok(self.keys.pop_front())
+        while let Some(event) = self.events.pop_front() {
+            if event.pressed {
+                return Ok(Some(event.key));
+            }
+        }
+        Ok(None)
+    }
+
+    fn next_key_event(&mut self) -> Result<Option<KeyEvent>, KbdError> {
+        Ok(self.events.pop_front())
     }
 
     fn held(&self) -> bool {

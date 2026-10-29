@@ -4,9 +4,10 @@
 > `.agents/plan.md`. This map is the index of the module specs; each module id
 > below maps 1:1 to `specs/SPEC-<id>.md`.
 >
-> Status snapshot: 2026-10-29 · `cargo test --workspace` = 54 tests green;
-> Phase 1.3 overlay + daemon production wiring implemented (headless Shell
-> smoke passed). Manual visual/fractional acceptance and Phase-1.4 e2e open.
+> Status snapshot: 2026-10-29 · `cargo test --workspace` = 99 tests green;
+> Phase 1.3 overlay + Phase 2 custom free mode/action semantics implemented
+> (headless Shell smoke and Phase-1.4 host e2e/visual acceptance passed). Live
+> free-mode smoke waits on the sudo kanata apply.
 
 ## Authority & document roles
 
@@ -43,7 +44,7 @@ core, state, ipc, kbd, mouse, platform      (foundations — mostly scaffolded)
    → overlay                                (Phase 1.3)
    → daemon + cli                           (Phase 1.2 completion)
    → Phase 1.4 e2e MVP acceptance
-   → state Phase 2 (physics wiring, action semantics)
+   → state Phase 2 (physics wiring, action semantics) — implemented
    → settings Phase 3 (GTK, presets, config lifecycle)
    → Phase 4 (keyd/evdev_raw, libei, wlr/x11, AT-SPI labels)
 ```
@@ -52,16 +53,16 @@ core, state, ipc, kbd, mouse, platform      (foundations — mostly scaffolded)
 
 | Module id | Status | Primary gap |
 |---|---|---|
-| `core` | Implemented | Monitor-order/switch helpers (Phase 2.2). |
-| `state` | Partial | Phase-2 action semantics, auto-off logic, cell-selection FSM. |
+| `core` | Implemented | Mixed-scale multi-monitor origin e2e (Phase 2.2, manual). |
+| `state` | Implemented (Phase 2) | Live-host tuning of easing/auto-off; Phase-4 label mode. |
 | `ipc` | Implemented (v1) | Phase-2/3 `client` messages (`Reload`/`Update`) not wired. |
-| `kbd` | Partial | Explicit reconnect-resync test; EBUSY policy tests; dedupe `RequestCurrentLayerName` path. |
+| `kbd` | Implemented (Phase 2) | Live evdev grab/EBUSY smoke after the kanata config is applied. |
 | `mouse` | Implemented | Hi-res wheel decision; click-accuracy verified only in e2e (Phase 1.4). |
-| `overlay` | Implemented (1.3) | Manual visual/fractional-scale acceptance; mixed-scale multi-monitor origins (Phase 2.2). |
-| `daemon` | Implemented (MVP) | `tracing`, reconnect-resync test, CLI verbs, Phase-1.4 process e2e. |
-| `cli` | Partial | Verbs beyond `status`/`--list-input-devices` not wired to kanata TCP yet. |
+| `overlay` | Implemented (1.3) | Mixed-scale multi-monitor origin e2e (Phase 2.2, manual). |
+| `daemon` | Implemented (Phase 2) | Live free-mode/drag/nudge/monitor/cursor-hide smoke. |
+| `cli` | Implemented (Phase 2) | Phase-3 `reload`; richer `status` needs a daemon client message. |
 | `settings` | Stub | Entire Phase 3; build prereq `libgtk-4-dev libadwaita-1-dev`. |
-| `platform` | Partial | Extension install, `.desktop` deep links, `sysusers.d`, distro matrix. |
+| `platform` | Partial | Live `lyr-free` apply (sudo), extension install, `.desktop` deep links, `sysusers.d`, distro matrix. |
 
 ## Blocking test matrix → owners (plan §8, SKILL-07)
 

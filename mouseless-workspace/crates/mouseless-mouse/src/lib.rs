@@ -48,6 +48,10 @@ pub trait MouseBackend {
     fn move_rel(&mut self, dx: i32, dy: i32) -> Result<(), Self::Error>;
     /// Emit a button click (down + up).
     fn click(&mut self, button: MouseButton) -> Result<(), Self::Error>;
+    /// Press a button and keep it held (drag start / free-mode hold).
+    fn button_down(&mut self, button: MouseButton) -> Result<(), Self::Error>;
+    /// Release a held button (drag drop / free-mode release).
+    fn button_up(&mut self, button: MouseButton) -> Result<(), Self::Error>;
     /// Emit a wheel scroll in lines (positive = up/right).
     fn scroll(&mut self, dx_lines: i32, dy_lines: i32) -> Result<(), Self::Error>;
 }
@@ -93,9 +97,13 @@ mod tests {
         let mut m = FakeMouse::default();
         m.move_rel(10, -5).unwrap();
         m.click(MouseButton::Left).unwrap();
+        m.button_down(MouseButton::Left).unwrap();
+        m.button_up(MouseButton::Left).unwrap();
         m.scroll(0, 3).unwrap();
         assert_eq!(m.moves, vec![(10, -5)]);
         assert_eq!(m.clicks, vec![MouseButton::Left]);
+        assert_eq!(m.button_downs, vec![MouseButton::Left]);
+        assert_eq!(m.button_ups, vec![MouseButton::Left]);
         assert_eq!(m.scrolls, vec![(0, 3)]);
     }
 }

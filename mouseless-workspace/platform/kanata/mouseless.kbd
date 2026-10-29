@@ -1,28 +1,49 @@
-;; Mouseless overlay layer for kanata (Phase 1.1).
+;; Mouseless overlay + custom free-mode layers for kanata (Phase 2).
 ;; Installed as /etc/kanata/mouseless.kbd, sourced from unicfg.kbd via
 ;;   (include "mouseless.kbd")
 ;; Requires in unicfg.kbd (see UNICFG-EDITS.md):
-;; - lyr-base: lsft slot (`_`) replaced with `@ml-tap` (ShiftLeft tap trigger)
+;; - lyr-base: lsft slot replaced with `@ml-tap` (overlay trigger)
+;; - lyr-base: lctl slot replaced with `@ml-free-tap` (free-mode trigger)
 ;; - defcfg: linux-output-device-name + linux-dev-names-exclude
 ;; Design notes (audit C1, user-accepted): ShiftLeft tap (<200 ms) switches to
-;; lyr-mouseless; holding ShiftLeft behaves as plain lsft. The live config's
-;; `concurrent-tap-hold yes` already makes fast Shift+key count as hold, which
-;; is the main misfire mitigation; ShiftRight is untouched for capitals.
+;; lyr-mouseless; ControlLeft tap (<200 ms) switches to lyr-free. Holding either
+;; behaves as the plain modifier. `concurrent-tap-hold yes` is required so fast
+;; modifier+key input resolves as a hold; both triggers are configurable here.
 
 (defalias
   ;; ShiftLeft tap -> overlay; hold -> left shift (tap-hold-release matches
   ;; the HRM style used in unicfg.kbd).
   ml-tap (tap-hold-release 200 200 (layer-switch lyr-mouseless) lsft)
+  ;; ControlLeft tap -> custom free mode; hold -> left control.
+  ml-free-tap (tap-hold-release 200 200 (layer-switch lyr-free) lctl)
 )
 
 ;; Clean no-HRM overlay layer: plain cell letters + space; esc exits to base.
-;; Every other key is transparent (`_`) so modifiers/passthrough keep working.
+;; Modifiers are explicit so the base aliases (`@ml-tap`, `@ml-free-tap`, `@sp`)
+;; cannot fire while the overlay is open; the daemon needs the real press/release
+;; events for Shift monitor-switching and Alt drag.
 ;; Column counts mirror defsrc exactly (13/14/14/13/12/7).
 (deflayer lyr-mouseless
   (layer-switch lyr-base) _ _ _ _ _ _ _ _ _ _ _ _
   _ _ _ _ _ _ _ _ _ _ _ _ _ _
   _ _ _ _ _ _ _ _ _ _ _ _ _ _
   _ a s d f _ _ j k l ; _ _
-  _ _ _ _ _ _ _ _ _ _ _ _
-  _ _ _ spc _ _ _
+  lsft _ _ _ _ _ _ _ _ _ _ rsft
+  lctl lmet lalt spc ralt rctl rmet
+)
+
+;; Custom free mode: the daemon grabs this layer's output and runs its own
+;; physics. Emit exactly the letters `mouseless-kbd` translates; XX blocks all
+;; other keys so base HRM/layer aliases cannot fire while free mode is active.
+;; Modifiers stay explicit for future modifier+button chords and to keep the
+;; physical modifier state visible to the grab.
+;; Mapping: i/k/j/l move, s/d/f boost, a decel, space left button,
+;; r/e/q/w right/middle/back/forward, m/,/.// wheel, esc exits to base.
+(deflayer lyr-free
+  (layer-switch lyr-base) XX XX XX XX XX XX XX XX XX XX XX XX
+  XX XX XX XX XX XX XX XX XX XX XX XX XX XX
+  XX q w e r XX XX XX i XX XX XX XX XX
+  XX a s d f XX XX j k l XX XX XX
+  lsft XX XX XX XX XX XX m , . / rsft
+  lctl lmet lalt spc ralt rctl rmet
 )

@@ -2,8 +2,10 @@
 
 > Module: `kbd` · Paths: `crates/mouseless-kbd` · Depends on: — ·
 > Plan refs: §1.1, §2, §5, §7, §8 #1–3 · Matrix rows: #1, #2, #3 (with `daemon`)
-> Status as of 2026-10-18: **Partial** — trait, kanata TCP subscriber, and evdev
-> grab implemented; resync-on-reconnect wiring and EBUSY policy tests pending.
+> Status as of 2026-10-29: **Implemented (Phase 2)** — trait, kanata TCP
+> subscriber, reconnect resync (connect-time push), evdev press/release grab
+> with modifier tracking, and free-mode key translation are implemented; live
+> EBUSY/evdev smoke waits on the kanata config apply.
 
 ## Objective
 
@@ -137,8 +139,10 @@ grep -A2 'Name="kanata-mouseless"' /proc/bus/input/devices
 - [x] `EvdevCellGrab` fresh fd, `EVIOCGKEY` pre-check, drain-on-drop, ungrab.
 - [x] `translate_key` pinned mapping; device-absent → `Unavailable`.
 - [x] Backoff 100 ms → 5 s cap.
-- [ ] Daemon loop resyncs with `RequestCurrentLayerName` after every reconnect
-      and reconciles overlay state (matrix #3, joint with `SPEC-daemon.md`).
+- [x] Reconnect resync via kanata's connect-time `LayerChange`
+      (`reconnect_resyncs_from_connect_time_layer_push`). The explicit
+      `RequestCurrentLayerName` on the same connection remains a hardening item.
+- [x] Press/release events with modifier state and free-mode key translation.
 - [ ] Hermetic fake-evdev tests proving: grab never opens twice concurrently;
       no event survives release; held-key path retries then degrades.
 - [ ] Fake-TCP test: server drops mid-overlay → daemon sees EOF → `KanataLost`

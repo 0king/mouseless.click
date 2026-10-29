@@ -3,8 +3,10 @@
 > Module: `cli` · Paths: `crates/mouseless-cli` · Depends on: `kbd` (kanata TCP),
 > `ipc` (Phase 3 client verbs) · Plan refs: §4 (contracts), SKILL-08 (parity) ·
 > Matrix row: #3 (as a ChangeLayer producer, indirectly)
-> Status as of 2026-10-18: **Partial** — parsing + parity table + `status` +
-> `--list-input-devices` work; state-changing verbs are not wired yet.
+> Status as of 2026-10-29: **Implemented (Phase 1.2 + Phase 2 verbs)** — parsing,
+> parity table, `status`, `--list-input-devices`, and all layer-changing verbs
+> speak kanata TCP. `toggle` queries the current layer first. Free-mode verbs
+> target `lyr-free` (custom engine); `lyr-mouse` remains the kanata fallback.
 
 ## Objective
 
@@ -31,9 +33,9 @@ when the GUI is not wanted.
 | `show` | `show-overlay` | `ChangeLayer lyr-mouseless` (let kanata + daemon drive the rest) | `mouseless://show-overlay` |
 | `hide` | `hide-overlay` | `ChangeLayer lyr-base` | `mouseless://hide-overlay` |
 | `toggle` | `toggle-overlay` | Query current layer, then show-or-hide | `mouseless://toggle-overlay` |
-| `enter-free-mode` | — | MVP: `ChangeLayer lyr-mouse` (kanata engine). Phase 2: daemon command when `free_mode_engine=custom` (OQ-1) | `mouseless://enter-free-mode` |
-| `exit-free-mode` | — | MVP: `ChangeLayer lyr-base`; Phase 2: daemon command (OQ-1) | `mouseless://exit-free-mode` |
-| `status` | — | Print kanata layer + daemon socket reachability + device summary | `mouseless://status` |
+| `enter-free-mode` | — | `ChangeLayer lyr-free` (custom engine; the daemon starts physics on the layer event). `lyr-mouse` remains the kanata fallback | `mouseless://enter-free-mode` |
+| `exit-free-mode` | — | `ChangeLayer lyr-base` | `mouseless://exit-free-mode` |
+| `status` | — | Print `kanata: <layer>` (daemon/device summary deferred to Phase 3) | `mouseless://status` |
 | `--list-input-devices` | — | Parse `/proc/bus/input/devices`, tag kanata/mouseless entries | `mouseless://list-input-devices` |
 | `reload` (Phase 3) | — | Send `Reload` client frame to the daemon | — |
 
@@ -46,8 +48,10 @@ reacts to `LayerChange`. A direct `Show` frame would desync kanata.
 - `0` success; `1` operational failure (kanata TCP unavailable, daemon
   unreachable, bad device list); `2` usage error (unknown verb/args).
 - Human-readable single lines on stdout; errors on stderr with a clear message
-  (no stack traces). Keep output stable enough for scripts:
-  `status` prints `kanata: <layer>`, `daemon: <ok|unreachable>`, `devices: <n>`.
+  (no stack traces). Keep output stable enough for scripts: layer changes print
+  `mouseless: layer <name>`; `status` prints `kanata: <layer>`.
+- Daemon reachability and the device count in `status` need a Phase-3 `Status`
+  client message; until then `--list-input-devices` covers diagnostics.
 - Timeouts: kanata queries ≤ 3 s; daemon socket ops ≤ 1 s.
 
 ### Input device listing
@@ -85,9 +89,10 @@ cargo run -p mouseless-cli -- --list-input-devices
 
 - Parity test: every verb ↔ deep link round-trip. *(exists)*
 - Unknown verb → usage, exit 2. *(exists as parse test)*
-- Phase 1.2 completion: verb handlers against a fake kanata TCP server
-  (show → observes `ChangeLayer lyr-mouseless`; toggle → queries layer first).
-- `status` against fake TCP + missing socket → prints `unreachable`, exit 1.
+- Fake-kanata TCP tests (`tests/kanata_verbs.rs`): show/enter-free-mode →
+  observed `ChangeLayer`; toggle → queries layer first; status → prints the
+  reported layer; unreachable kanata → exit 1. *(exists)*
+- `--help` documents the exit-code contract. *(exists)*
 - `--list-input-devices` parsing against a fixture file.
 
 ## Boundaries
@@ -104,18 +109,20 @@ cargo run -p mouseless-cli -- --list-input-devices
 - [x] `Verb::parse` + `deep_link` parity table with tests.
 - [x] `status` queries live kanata TCP; failure exits 1 with message.
 - [x] `--list-input-devices` works permission-free with tags.
-- [ ] `show/hide/toggle` actually switch layers (fake-TCP tests + live smoke).
-- [ ] Free-mode verbs wired (MVP: `lyr-mouse`; Phase 2 decision below).
+- [x] `show/hide/toggle/enter-free-mode/exit-free-mode` switch layers
+      (fake-TCP tests; live smoke after the Phase-2 kanata apply).
+- [x] Free-mode verbs wired (`lyr-free` for the custom engine; `lyr-mouse`
+      remains available as the kanata fallback).
+- [x] Output/exit-code contract documented in `--help` and README.
 - [ ] Phase 3: `reload` client verb; `.desktop` deep links installed by platform.
-- [ ] Output/exit-code contract documented in `--help`.
 
 ## Open questions
 
-1. **Free-mode verbs under `free_mode_engine=custom`.** There is no kanata layer
-   signal for the custom engine yet (see `SPEC-state.md` OQ-4). Until the
-   custom input path is designed, `enter/exit-free-mode` must either (a) stay
-   mapped to kanata's `lyr-mouse` (MVP), or (b) gain a daemon client message.
-   Proposed: (a) for MVP; revisit with OQ-4.
+1. **Free-mode verbs under `free_mode_engine=custom` — resolved (2026-10-29).**
+   The CLI switches to `lyr-free`; kanata remains the single source of truth and
+   the daemon starts/stops physics on the resulting `LayerChange`. No direct
+   daemon client message is needed. `free_mode_engine=kanata` keeps
+   `lyr-mouse` as the manual/fallback layer.
 2. **`toggle` race.** Query-then-switch is two round-trips; kanata has no atomic
    toggle. Accept the race (local, sub-ms) unless misfires appear.
 3. **`status` depth.** Should it query the overlay client count from the daemon

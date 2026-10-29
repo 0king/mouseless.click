@@ -45,7 +45,28 @@ MOUSELESS_SOCKET=/tmp/mouseless.sock cargo run -p mouseless-daemon -- \
   --kanata 127.0.0.1:7070
 ```
 
-`mouseless-gtk` is a stub until `apt install libgtk-4-dev libadwaita-1-dev`
-(plan §10.5); the real `Adw.PreferencesWindow` app lands in Phase 3. The
-settings/CLI show/hide verbs and the Phase-1.4 end-to-end acceptance remain
-open; see `specs/SPEC-MAP.md` for module status.
+## CLI
+
+`mouseless` switches layers through kanata TCP (`--kanata HOST:PORT` or
+`MOUSELESS_KANATA`, default `127.0.0.1:7070`):
+
+```sh
+cargo run -p mouseless-cli -- show|hide|toggle
+cargo run -p mouseless-cli -- enter-free-mode|exit-free-mode
+cargo run -p mouseless-cli -- status
+cargo run -p mouseless-cli -- --list-input-devices
+```
+
+Usage errors exit `2`; kanata/daemon operational failures exit `1`.
+
+## Phase status
+
+Phases 1.2/1.3/1.4 and Phase 2 (custom free-mode physics, multi-click,
+drag/drop, nudges, modifier clicks, monitor switching, cursor hiding) are
+implemented and covered by 99 hermetic tests; the Phase-1.4 host e2e and
+visual/fractional acceptance passed on 2026-10-29. The live host still needs
+the Phase-2 kanata include applied (`platform/kanata/UNICFG-EDITS.md`, requires
+sudo) before the free-mode smoke matrix. `mouseless-gtk` is a stub until
+`apt install libgtk-4-dev libadwaita-1-dev` (plan §10.5); the real
+`Adw.PreferencesWindow` app lands in Phase 3. See `specs/SPEC-MAP.md` for
+per-module status.

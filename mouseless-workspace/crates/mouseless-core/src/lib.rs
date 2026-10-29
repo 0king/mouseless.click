@@ -67,6 +67,78 @@ pub struct Monitor {
     pub scale: f64,
 }
 
+/// Screen corner used for cursor hiding after a click.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Corner {
+    /// Top-left corner.
+    TopLeft,
+    /// Top-right corner.
+    TopRight,
+    /// Bottom-left corner.
+    BottomLeft,
+    /// Bottom-right corner.
+    BottomRight,
+}
+
+/// Direction for multi-monitor switching (monitors ordered by x position).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MonitorDirection {
+    /// Previous monitor in x order (wraps).
+    Left,
+    /// Next monitor in x order (wraps).
+    Right,
+}
+
+/// Target point for cursor hiding: `inset` physical pixels inside `corner`.
+///
+/// The inset keeps the pointer on-screen and inside the monitor edge, so the
+/// next cursor query still reports the hidden corner rather than a clamp.
+pub fn cursor_hide_target(monitor: &Monitor, corner: Corner, inset: f64) -> Point {
+    let inset = inset.max(0.0);
+    let left = monitor.x as f64 + inset;
+    let top = monitor.y as f64 + inset;
+    let right = monitor.x as f64 + monitor.w as f64 - inset;
+    let bottom = monitor.y as f64 + monitor.h as f64 - inset;
+    match corner {
+        Corner::TopLeft => Point { x: left, y: top },
+        Corner::TopRight => Point { x: right, y: top },
+        Corner::BottomLeft => Point { x: left, y: bottom },
+        Corner::BottomRight => Point {
+            x: right,
+            y: bottom,
+        },
+    }
+}
+
+/// Select the monitor adjacent to `current` in x order, wrapping at the ends.
+///
+/// `monitors` is the extension-reported layout order; `current` indexes that
+/// slice. Returns the index of the chosen monitor, or `None` for an empty
+/// layout. Ties on x are broken by y so the order is deterministic.
+pub fn select_monitor(
+    monitors: &[Monitor],
+    current: usize,
+    direction: MonitorDirection,
+) -> Option<usize> {
+    if monitors.is_empty() {
+        return None;
+    }
+    let mut order: Vec<usize> = (0..monitors.len()).collect();
+    order.sort_by(|&a, &b| {
+        monitors[a]
+            .x
+            .cmp(&monitors[b].x)
+            .then_with(|| monitors[a].y.cmp(&monitors[b].y))
+    });
+    let current = current.min(order.len().saturating_sub(1));
+    let pos = order.iter().position(|&i| i == current).unwrap_or(0);
+    let next = match direction {
+        MonitorDirection::Left => (pos + order.len() - 1) % order.len(),
+        MonitorDirection::Right => (pos + 1) % order.len(),
+    };
+    Some(order[next])
+}
+
 /// Grid configuration for one overlay level.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GridConfig {
@@ -280,6 +352,80 @@ mod tests {
         };
         let c = subcell_bounds(&parent, &sub, CellId { col: 1, row: 1 }).center();
         assert_eq!(c, Point { x: 480.0, y: 405.0 });
+    }
+
+    #[test]
+    fn cursor_hide_target_insets_each_corner() {
+        let m = monitor_1080p();
+        assert_eq!(
+            cursor_hide_target(&m, Corner::TopLeft, 1.0),
+            Point { x: 1.0, y: 1.0 }
+        );
+        assert_eq!(
+            cursor_hide_target(&m, Corner::TopRight, 1.0),
+            Point { x: 1919.0, y: 1.0 }
+        );
+        assert_eq!(
+            cursor_hide_target(&m, Corner::BottomLeft, 1.0),
+            Point { x: 1.0, y: 1079.0 }
+        );
+        assert_eq!(
+            cursor_hide_target(&m, Corner::BottomRight, 1.0),
+            Point {
+                x: 1919.0,
+                y: 1079.0
+            }
+        );
+        // Negative inset is clamped to the monitor edge.
+        assert_eq!(
+            cursor_hide_target(&m, Corner::TopLeft, -5.0),
+            Point { x: 0.0, y: 0.0 }
+        );
+    }
+
+    #[test]
+    fn monitor_switch_orders_by_x_and_wraps() {
+        let monitors = [
+            Monitor {
+                x: 1920,
+                y: 0,
+                w: 1080,
+                h: 1920,
+                scale: 1.0,
+            },
+            Monitor {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+                scale: 1.0,
+            },
+            Monitor {
+                x: 3000,
+                y: 0,
+                w: 1920,
+                h: 1080,
+                scale: 1.0,
+            },
+        ];
+        // x order is index 1, 0, 2.
+        assert_eq!(
+            select_monitor(&monitors, 1, MonitorDirection::Right),
+            Some(0)
+        );
+        assert_eq!(
+            select_monitor(&monitors, 0, MonitorDirection::Right),
+            Some(2)
+        );
+        assert_eq!(
+            select_monitor(&monitors, 2, MonitorDirection::Right),
+            Some(1)
+        );
+        assert_eq!(
+            select_monitor(&monitors, 1, MonitorDirection::Left),
+            Some(2)
+        );
+        assert_eq!(select_monitor(&[], 0, MonitorDirection::Right), None);
     }
 
     #[test]

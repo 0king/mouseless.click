@@ -2,7 +2,8 @@
 
 > Module: `core` · Paths: `crates/mouseless-core` · Depends on: — ·
 > Plan refs: §1.8, §4 (geometry), §8 #4 · Matrix row: #4
-> Status as of 2026-10-18: **Implemented** for Phase-1 scope; Phase-2 helpers pending.
+> Status as of 2026-10-29: **Implemented** — Phase-1 grid math plus the Phase-2
+> monitor-order/switch and cursor-hide corner helpers.
 
 ## Objective
 
@@ -85,8 +86,9 @@ file until Phase-2 monitor helpers land, then split `monitor.rs` if needed.
 - [x] Subgrid center nests correctly inside parent cells.
 - [ ] A click target computed here lands within tolerance in the Phase-1.4 e2e
       test at all four scale factors (blocked by `overlay`/`daemon`).
-- [ ] Phase 2.2: `select_monitor(direction)` helper with x-order semantics
-      (upstream: tap ShiftLeft/ShiftRight switches monitors left/right).
+- [x] Phase 2.2: `select_monitor(direction)` helper with x-order semantics
+      (upstream: tap ShiftLeft/ShiftRight switches monitors left/right);
+      `cursor_hide_target(corner)` covers cursor hiding.
 
 ## Open questions
 
@@ -95,9 +97,9 @@ file until Phase-2 monitor helpers land, then split `monitor.rs` if needed.
    reports stage/logical coordinates, the conversion point (extension vs daemon)
    must be pinned at ONE boundary. Current assumption: extension reports
    physical px (`logical × scale`), daemon math is physical throughout.
-2. **Monitor switch ordering.** Upstream orders monitors by x position for
-   left/right switching. Behavior for vertically stacked monitors sharing an x
-   (or wrapped-around switching) needs a decision before Phase 2.2.
+2. **Monitor switch ordering — resolved (2026-10-29).** Monitors are ordered
+   by x, ties broken by y; left/right wrap at the ends. Vertically stacked
+   monitors sharing an x therefore use the deterministic y tie-break.
 3. **Grid margins.** MVP tiles the full monitor. If upstream-style inset/padding
    is wanted, it must be added here (and rendered by the extension) — not faked
    in either side.

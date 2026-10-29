@@ -85,7 +85,7 @@ only if kanata swallows it or something downstream grabs it. Per-key `cmd` could
 swallow, but forks per press. Therefore: kanata's overlay layer stays plain
 letters (zero suppression work for kanata); **suppression happens downstream via
 temporary exclusive grab** of kanata's virtual output, held only while the overlay
-is visible (see §5).
+or custom free-mode session is active (see §5).
 
 ### 2.3 Required kanata changes
 
@@ -99,6 +99,12 @@ is visible (see §5).
   `ShiftRight` remains fully usable for capitals; tap/hold/chord/interrupt matrix
   in test #1 must stay green. Double-tap / `Shift+Mod` tap / CapsLock alternatives
   considered and deferred.
+- New layer `lyr-free` for custom free mode: `i/k/j/l` move, `s/d/f` boost,
+  `a` decel, `space` left button, `r/e/q/w` right/middle/back/forward,
+  `m/,/.//` wheel, `esc` → base; all other keys `XX`. Trigger: `ControlLeft` tap
+  (`@ml-free-tap`, `tap-hold-release 200 200`) in `lyr-base`; hold stays `lctl`.
+  Configurable/documented; `lyr-mouse` remains the `free_mode_engine=kanata`
+  fallback.
 - No `cmd` hooks of any kind (audit W1). No `kanata_cmd_allowed`, no
   `danger-enable-cmd`, no `/usr/local/bin` helpers, no sandbox relaxation.
 - `kanata.service`: append TCP flag, e.g. `-p 127.0.0.1:7070` (localhost only);
@@ -172,10 +178,9 @@ Trait-boundary rules (enforced in review + CI):
   geometry for cell centers, cursor pos for REL-delta computation since Linux has no
   absolute warp); renders grid/labels/highlight at 60 FPS from daemon frames.
 - **State (`mouseless-state`):** `Normal → Overlay → Subgrid → Click`, plus
-  `FreeMode` (custom physics loop, fixed-step tick with injectable `Clock` —
-  tokio timer for daemon I/O, dedicated thread or tokio task for the tick; do not
-  async-color the physics core) and drag handling.
-  `free_mode_engine` flag selects custom vs kanata-native motion.
+  `FreeModeSession` (custom physics, fixed 8 ms tick driven by the daemon loop,
+  injectable `Clock`; the physics core stays sync/uncolored) and drag/action
+  state. `free_mode_engine` flag selects custom vs kanata-native motion.
 - **Mouse (`mouseless-mouse` → uinput `mouseless-mouse`):** REL deltas computed
   from extension reports. Requires flat pointer acceleration for accuracy
   (audit G1): ship udev rule `ENV{LIBINPUT_ATTR_POINTER_ACCEL}="flat"` (or
@@ -209,15 +214,16 @@ Trait-boundary rules (enforced in review + CI):
 ## 5. Race-Avoidance Rules (normative — no boot-order dependency)
 
 1. **Never grab at startup.** Exclusive grab of `kanata-mouseless` happens only
-   while the overlay is visible, via an RAII `CellGrab` guard whose `Drop`
-   implementation always releases the grab and best-effort notifies hide.
-   Guard owns its fd: open `/dev/input/eventX` fresh on each overlay invocation,
-   close on `Drop` (audit G7 — never reuse an fd across overlays or the kernel
-   per-client buffer replays stale typing / `SYN_DROPPED`). On acquire, snapshot
-   `EVIOCGKEY` and if a key is already down, wait for release or synthesize the
-   matching key-up to the compositor before grabbing; on release, drain the fd
-   before close so no partial press/release pair leaks (audit G6 — stuck/phantom
-   keys). Kernel guarantees grab release on fd close, even on SIGKILL.
+   while the overlay or custom free-mode session is active, via an RAII
+   `CellGrab` guard whose `Drop` implementation always releases the grab and
+   best-effort notifies hide. Guard owns its fd: open `/dev/input/eventX` fresh
+   on each session invocation, close on `Drop` (audit G7 — never reuse an fd
+   across sessions or the kernel per-client buffer replays stale typing /
+   `SYN_DROPPED`). On acquire, snapshot `EVIOCGKEY` and if a key is already down,
+   wait for release or synthesize the matching key-up to the compositor before
+   grabbing; on release, drain the fd before close so no partial press/release
+   pair leaks (audit G6 — stuck/phantom keys). Kernel guarantees grab release on
+   fd close, even on SIGKILL.
 2. **LayerChange→grab race ACCEPTED (audit W3, user-accepted).** Daemon learns
    about `lyr-mouseless` over TCP after kanata switches; a cell key pressed
    within ~5 ms of the switch can beat the grab. Accepted for MVP as rare in
@@ -301,14 +307,14 @@ Trait-boundary rules (enforced in review + CI):
   `kanata-mouseless` output present; layer changes and resync observed during
   host e2e. `SupplementaryGroups=mouseless` added to the drop-in so the daemon
   group does not drop kanata's `input`/`uinput` access._
-- [ ] **1.2 Thin daemon:** TCP subscriber + resync, RAII temp-grab cell reader
+- [x] **1.2 Thin daemon:** TCP subscriber + resync, RAII temp-grab cell reader
   (fresh fd per overlay, `EVIOCGKEY` + drain per G6/G7),
   `mouseless-core` grid math, uinput mouse deltas + `BTN_*` (flat-accel udev rule
   per G1), overlay IPC server (`/run/mouseless/mouselessd.sock` + `SO_PEERCRED`
   per G3, 1-page wire spec per G2),
   `mouseless-cli` (`show/hide/toggle`, `--list-input-devices`).
-  _Daemon/IPC/grab/mouse/overlay-server side implemented 2026-10-29; remaining:
-  wire the `mouseless-cli` show/hide/toggle verbs to kanata TCP._
+  _Daemon/IPC/grab/mouse/overlay-server implemented 2026-10-29; CLI layer verbs
+  now speak kanata TCP with fake-TCP tests and exit codes 0/1/2._
 - [x] **1.3 GNOME overlay:** fullscreen Clutter actor via `addTopChrome`
   (`affectsInputRegion: false`), 45+ ESM, geometry + cursor-pos report,
   grid/label/highlight render, idempotent show/hide, Shell-restart resilience.
@@ -324,10 +330,15 @@ Trait-boundary rules (enforced in review + CI):
   Scale-change regression (125→100→125→100, no model) leaves the actor hidden._
 
 ### Phase 2: Custom free-mode physics + precision (Priority 2)
-- [ ] **2.1** `mouseless-state` free-mode loop (fixed-step tick, accel/easing/wheel,
+- [x] **2.1** `mouseless-state` free-mode loop (fixed-step tick, accel/easing/wheel,
   auto-off) behind `free_mode_engine=custom`; kanata `lyr-mouse` kept as fallback.
-- [ ] **2.2** Subgrid nudging, drag & drop, multi-click cadence, modifier clicks,
+  _Implemented 2026-10-29: `machine.rs`/`physics.rs`/`actions.rs`, `lyr-free` +
+  `@ml-free-tap`, temporary grab, 8 ms daemon tick, auto-off/held-button release.
+  Unit tests green; live host smoke still needs the sudo kanata config apply._
+- [x] **2.2** Subgrid nudging, drag & drop, multi-click cadence, modifier clicks,
   multi-monitor switching, continuous mode, cursor hiding; tests #4, #5, #7 green.
+  _Implemented 2026-10-29 in `mouseless-daemon`/`mouseless-state`/`mouseless-core`
+  with 28 daemon tests; CLI verbs + fake-TCP tests wired._
 
 ### Phase 3: GTK4 Settings GUI & Presets (Priority 3)
 - [ ] **3.1** `mouseless-gtk` (`Adw.PreferencesWindow`): live preview, keybinding

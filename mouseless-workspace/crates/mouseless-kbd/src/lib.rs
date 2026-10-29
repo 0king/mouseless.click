@@ -13,12 +13,27 @@ pub mod grab;
 pub mod impls;
 pub mod tcp;
 
-pub use grab::{find_output_device, translate_key, CellKey, EvdevCellGrab, KANATA_OUTPUT_NAME};
+pub use grab::{
+    find_output_device, translate_key, CellKey, EvdevCellGrab, KeyEvent, Modifiers,
+    KANATA_OUTPUT_NAME,
+};
 pub use impls::{FakeCellGrab, FakeKeyboard, KanataTcpConfig};
 
-pub use tcp::{backoff_for_attempt, parse_server_line, query_current_layer, KanataSubscriber};
+pub use tcp::{
+    backoff_for_attempt, parse_server_line, query_current_layer, send_layer_change,
+    KanataSubscriber,
+};
 
 use thiserror::Error;
+
+/// Base layer restored on every exit path (idempotent).
+pub const BASE_LAYER: &str = "lyr-base";
+/// Overlay layer (kanata include).
+pub const OVERLAY_LAYER: &str = "lyr-mouseless";
+/// Custom free-mode layer (kanata include, Phase 2).
+pub const FREE_MODE_LAYER: &str = "lyr-free";
+/// Kanata-native free-mode fallback layer (`free_mode_engine = kanata`).
+pub const KANATA_FREE_MODE_LAYER: &str = "lyr-mouse";
 
 /// Keyboard backend errors (timeout, reconnect, grab contention).
 #[derive(Debug, Error)]
@@ -67,6 +82,17 @@ pub trait KeyboardBackend {
 pub trait CellKeySource {
     /// Non-blocking poll for one cell key press.
     fn next_key_press(&mut self) -> Result<Option<CellKey>, KbdError>;
+    /// Non-blocking poll for one press/release event with modifier state.
+    ///
+    /// The default preserves press-only backends; evdev and the fake override
+    /// it with real release tracking.
+    fn next_key_event(&mut self) -> Result<Option<KeyEvent>, KbdError> {
+        Ok(self.next_key_press()?.map(|key| KeyEvent {
+            key,
+            pressed: true,
+            modifiers: Modifiers::default(),
+        }))
+    }
     /// Whether the exclusive grab is currently held.
     fn held(&self) -> bool;
 }
