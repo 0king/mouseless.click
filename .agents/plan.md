@@ -351,6 +351,10 @@ Trait-boundary rules (enforced in review + CI):
   full-error steps alternated across the target forever. Half-error steps are
   stable for gains up to ~2 and land in one step at gain 2. Keep the fast path
   sleep-free; the 20 ms settle wait only runs on a genuine stale reply._
+  _libinput accelerates every relative pointer, including `kanata-mouseless`;
+  kanata feels unaffected because it is steered as a relative nudge, not an
+  absolute target. Do not disable the user's global acceleration to work
+  around this._
   _See `mouseless-workspace/specs/SPEC-daemon.md` §Movement control loop._
 
 ### Phase 3: GTK4 Settings GUI & Presets (Priority 3)

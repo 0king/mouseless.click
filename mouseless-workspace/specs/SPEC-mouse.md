@@ -59,8 +59,11 @@ fn scroll(&mut self, dx_lines: i32, dy_lines: i32) -> Result<(), Self::Error>;
   or make it dance. The historical flat-accel udev property
   (`LIBINPUT_ATTR_POINTER_ACCEL`) is **not honored by libinput** and is no
   longer relied upon; libinput documents `LIBINPUT_ATTR_*` as private API.
-  See `SPEC-daemon.md` §Movement control loop for the live trace, the ~2×
-  gain postmortem, and the latency budget.
+  Acceleration applies to every relative pointer, including `kanata-mouseless`;
+  kanata feels unaffected because the user steers relative nudges rather than
+  commanding an absolute target. See `SPEC-daemon.md` §Movement control loop
+  for the live trace, the ~2× gain postmortem, the pointer-pipeline
+  explanation, and the latency budget.
 
 ### Degraded mode
 

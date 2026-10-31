@@ -178,6 +178,42 @@ reproduces the 2× gain; `damped_step_halves_and_floors` pins the control law;
 the cross-monitor, sub-unity gain, stale-reply, and stuck-cursor tests cover
 the remaining matrix row #5 cases.
 
+### Why every relative pointer is accelerated (and kanata is not exempt)
+
+The pointer pipeline is layered: device → evdev → libinput (inside the
+compositor) → GNOME Shell pointer → `global.get_pointer()`. libinput applies
+the adaptive acceleration curve to **relative** devices, i.e. anything that
+reports `REL_X`/`REL_Y`. Absolute devices (touchscreens, tablets) bypass it
+because they already report a position.
+
+Both virtual devices are relative pointers: `kanata-mouseless` (`EV=7`, `REL`
+includes X/Y) and `mouseless-mouse` (`EV=7`, `REL=143`). They therefore share
+the same acceleration curve. Kanata does not appear affected because it is used
+as a *relative nudge*: the user watches the cursor and keeps steering.
+Acceleration is perceived as speed, and there is no target pixel to miss. A
+fixed number of kanata `movemouse` steps issued at different speeds would show
+the same speed-dependent displacement.
+
+The daemon is an *absolute-position* client: it commands "put the cursor on
+cell center (x, y), then click". Any gain ≠ 1 is therefore positional error.
+The 64 px steps land in the fast part of the curve where the observed gain is
+~2×; near the target the remaining error is small and the overshoot is most
+visible, which is why the dance looked like a ~50 px wobble rather than a huge
+miss.
+
+Alternatives and why they are not used:
+
+| Option | Why rejected |
+|---|---|
+| Global `accel-profile=flat` (GNOME) | Changes the user's normal mouse feel; violates the "do not override defaults without asking" rule. |
+| Per-device `LIBINPUT_ATTR_POINTER_ACCEL` udev property | Private libinput API; not honored (confirmed on the reference host). |
+| Absolute `EV_ABS` uinput device | Bypasses acceleration, but needs desktop-wide coordinate mapping across monitors/scales, may be treated as a tablet/touchscreen, and still needs closed-loop verification for rounding. Larger risk for no user-visible gain. |
+| Fixed per-step sleeps / frame pacing | Adds latency without changing the gain; the reply was already fresh. |
+
+Closed-loop half-error stepping is backend-agnostic: it works with the
+compositor's real gain (up to ~2×) and with any future `MouseBackend`, and it
+keeps the fast path sleep-free.
+
 ### Custom free-mode input path
 
 `free_mode_engine = custom` (default) uses the dedicated `lyr-free` layer:
