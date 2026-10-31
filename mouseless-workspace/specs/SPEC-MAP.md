@@ -72,7 +72,7 @@ core, state, ipc, kbd, mouse, platform      (foundations — mostly scaffolded)
 | 2 | Temp-grab lifecycle | `kbd` + `daemon` | Fake-evdev: release on every path (incl. panic/kill); `EVIOCGKEY` pre-check; drain; fresh fd per overlay. |
 | 3 | Layer ↔ daemon ↔ overlay sync | `kbd` + `daemon` | Fake-TCP: missed/duplicate `LayerChange`; reconnect resync. |
 | 4 | Cell→pixel incl. scale | `core` | Goldens: 100/125/150/200%, 1080p/4K, vertical, offsets. |
-| 5 | REL-delta + flat accel | `mouse` + `platform` | Clamp/offset unit tests; udev flat-accel rule assertion. |
+| 5 | REL-delta + closed-loop movement | `mouse` + `daemon` | Clamp/offset unit tests; cross-monitor, acceleration-gain damping, stale-reply, and stalled-cursor regressions. |
 | 6 | Loop prevention | `platform` + `kbd`/`mouse` | Both startup orders; exclusion assertions (output name, mouse name). |
 | 7 | Free-mode tick determinism | `state` | Fixed-step goldens per easing curve (`loose/natural/snappy/instant`). |
 | 8 | IPC schema + malformed frames | `ipc` + `daemon` | Version negotiation; fuzz corpus; never panic. |

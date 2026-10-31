@@ -114,8 +114,13 @@ kanata owns interception. The old "Slint UI" agent is replaced by the GTK agent.
    while overlay is visible; fresh fd per overlay, `EVIOCGKEY` pre-check, drain
    on release (audits G6/G7); `Drop` always releases. `EBUSY` → retry with timeout.
 4. **Daemon → Mouse (uinput):** `move_rel(dx, dy)`, `click(btn)`, `scroll()`
-   on `mouseless-mouse` (kanata-excluded). Flat accel udev rule required (audit G1).
-   Deltas computed from extension reports.
+   on `mouseless-mouse` (kanata-excluded). Movement is closed-loop: bounded REL
+   steps carrying half of the remaining error (the compositor's acceleration
+   gain is up to ~2×), then a cursor re-query after each step. No flat-accel
+   udev rule is required (the old `LIBINPUT_ATTR_POINTER_ACCEL` rule was
+   ineffective), and full-error steps are forbidden because they overshoot and
+   make the cursor dance around the target. Keep the fast path sleep-free: the
+   stale-reply wait is exceptional, never per-step frame pacing.
 5. **Daemon ↔ Overlay (Unix socket, versioned JSON):** path
    `/run/mouseless/mouselessd.sock` (`RuntimeDirectory=mouseless`), `SO_PEERCRED`
    check (audit G3);

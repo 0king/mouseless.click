@@ -6,5 +6,5 @@
 mod fake;
 mod gnome;
 
-pub use fake::FakeOverlay;
+pub use fake::{FakeOverlay, SharedCursor, SharedCursorReplies};
 pub use gnome::{GnomeOverlay, GNOME_SHELL_VERSIONS, SOCKET_GROUP, SOCKET_PATH};

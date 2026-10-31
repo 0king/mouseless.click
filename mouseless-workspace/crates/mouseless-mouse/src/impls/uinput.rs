@@ -2,8 +2,8 @@
 //!
 //! Creates `mouseless-mouse` (vendor [`VENDOR_ID_SONUSCAPE`]) with REL X/Y,
 //! vertical/horizontal wheel, and all five buttons. The device MUST stay
-//! covered by kanata `linux-dev-names-exclude` (loop prevention, plan §8 #6)
-//! and by the flat-accel udev rule (audit G1).
+//! covered by kanata `linux-dev-names-exclude` (loop prevention, plan §8 #6).
+//! Absolute accuracy is closed-loop in the daemon (bounded steps + re-query).
 //!
 //! Creation needs `/dev/uinput` write access (`mouseless` group + udev rule,
 //! plan §10.6). Without it [`UinputMouse::create`] fails and the daemon

@@ -29,11 +29,18 @@ mouselessd ↔ GNOME extension /run/mouseless/mouselessd.sock (JSON)
 ```
 
 No `cmd` anywhere (audit W1). `EvdevCellGrab` owns a fresh fd per overlay/free
-session with `EVIOCGKEY` + drain (audits G6/G7). Flat pointer accel for
-`mouseless-mouse` (audit G1). Socket auth via `SO_PEERCRED` (audit G3); the
-daemon listens and the GNOME extension connects, sends `Hello`/`Report`, and
-receives `Show`/`HighlightCell`/`ShowSubgrid`/`Hide` plus state replay on
-reconnect.
+session with `EVIOCGKEY` + drain (audits G6/G7). Pointer movement is closed-loop:
+the daemon emits bounded REL steps (≤64 px) carrying half of the remaining error
+(the compositor's acceleration gain is up to ~2×), waits for the compositor
+report to change after each step, and re-queries the cursor until it settles
+within 2 px, so acceleration, monitor-edge clamping, and stale pre-motion
+replies cannot strand a click or make it oscillate. The half-error law is a
+deliberate response to the compositor's ~2× acceleration gain; see
+`specs/SPEC-daemon.md` §Movement control loop for the trace, postmortem, and
+latency budget. Socket auth via
+`SO_PEERCRED` (audit G3); the daemon listens and the GNOME extension connects,
+sends `Hello`/`Report`, and receives
+`Show`/`HighlightCell`/`ShowSubgrid`/`Hide` plus state replay on reconnect.
 
 Phase 2 free mode uses a dedicated `lyr-free` kanata layer (`@ml-free-tap` on
 ControlLeft); the daemon holds the same temporary grab and runs an 8 ms physics
@@ -54,7 +61,9 @@ resolved with a `Cogl.Color` fallback for GNOME 47+.
 - #3 layer resync: `FakeKeyboard` missed/dupe `LayerChange` tests + subscriber
   reconnect test (connect-time push); explicit same-connection query pending
 - #4 geometry goldens: `mouseless-core` 1080p/4K/vertical/scale tests
-- #5 REL deltas: `compute_delta` clamp + fake-mouse tests
+- #5 REL deltas: `compute_delta` clamp + fake-mouse tests; closed-loop
+  cross-monitor, acceleration-gain damping, stale-reply, and stalled-cursor
+  regressions with a shared `CursorMouse`/`FakeOverlay` cursor
 - #7 physics goldens: per-easing-curve convergence with `ManualClock`
 - Phase 2 actions: daemon multi-click/continuous/drag/nudge/monitor/cursor-hide
   tests + state `actions.rs` unit tests

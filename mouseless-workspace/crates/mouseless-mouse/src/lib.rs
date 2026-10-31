@@ -5,10 +5,10 @@
 //! `BTN_*`/wheel computed from extension-supplied cursor position, because
 //! Linux kanata `setmouse`/`SetMouse` cannot absolute-position (plan §2.1).
 //!
-//! Accuracy contract (audit G1): the `mouseless-mouse` device MUST use a flat
-//! pointer-acceleration profile (udev
-//! `ENV{LIBINPUT_ATTR_POINTER_ACCEL}="flat"` in `platform/`), otherwise
-//! libinput distorts large deltas and clicks land off-target.
+//! Accuracy contract (audit G1): absolute positioning is closed-loop in the
+//! daemon — bounded REL steps with a cursor re-query after each step. No flat
+//! pointer-acceleration profile is required (libinput does not honor
+//! `LIBINPUT_ATTR_POINTER_ACCEL`; the old udev rule was removed).
 
 pub mod impls;
 

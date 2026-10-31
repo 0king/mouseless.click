@@ -181,11 +181,11 @@ Trait-boundary rules (enforced in review + CI):
   `FreeModeSession` (custom physics, fixed 8 ms tick driven by the daemon loop,
   injectable `Clock`; the physics core stays sync/uncolored) and drag/action
   state. `free_mode_engine` flag selects custom vs kanata-native motion.
-- **Mouse (`mouseless-mouse` → uinput `mouseless-mouse`):** REL deltas computed
-  from extension reports. Requires flat pointer acceleration for accuracy
-  (audit G1): ship udev rule `ENV{LIBINPUT_ATTR_POINTER_ACCEL}="flat"` (or
-  equivalent `ACCEL_PROFILE=flat`) scoped to `mouseless-mouse` in `platform/`.
-  Without this, libinput accel distorts large deltas and clicks land off-target.
+- **Mouse (`mouseless-mouse` → uinput `mouseless-mouse`):** absolute clicks via
+  closed-loop bounded REL steps computed from extension reports (daemon-owned).
+  The original flat-accel udev plan (audit G1) was tested and found ineffective:
+  libinput does not honor `LIBINPUT_ATTR_POINTER_ACCEL`, so accuracy is corrected
+  by re-querying the cursor after each step instead.
 - **Settings (`mouseless-gtk`):** grid/appearance editor, monitor assignment,
   keybinding reference, presets (Standard, Quick-Select+Free-Mode), deep links
   (`mouseless://toggle-overlay` etc. via `.desktop` + `x-scheme-handler`), writes
@@ -286,7 +286,7 @@ Trait-boundary rules (enforced in review + CI):
 | 2 | Temp-grab lifecycle | Stuck grab = dead keyboard; stuck/phantom keys, stale fd buffer (G6/G7) | Fake-evdev tests: show/hide, error mid-overlay, panic, kill-switch → assert release on EVERY path; `EVIOCGKEY` pre-check + drain-on-release; fresh fd per overlay |
 | 3 | Layer↔daemon↔overlay sync | Ghost overlay / desync after kanata restart | Fake-TCP-server tests: missed/duplicate `LayerChange`, reconnect resync |
 | 4 | Cell→pixel incl. scale (100/125/150/200%, 1080p/4K, vertical) | Clicks land off-target | Golden geometry tests per layout |
-| 5 | REL-delta from extension cursor pos | Overflow/clamp/multi-monitor offset bugs; libinput accel distortion (G1) | Unit tests incl. negative/large deltas, per-monitor offsets; flat-accel udev rule assertion |
+| 5 | REL-delta from extension cursor pos | Overflow/clamp/multi-monitor offset bugs; libinput accel distortion (G1) | Unit tests incl. negative/large deltas, per-monitor offsets; closed-loop bounded-step regressions (cross-monitor clamp, acceleration convergence, stalled cursor) |
 | 6 | Loop prevention (exclude `mouseless-mouse`, stable output name) | Event feedback loop resurgence | Startup-ordering tests (both orders) + exclusion assertions |
 | 7 | Free-mode tick determinism | Easing/accel drift | Fixed-step golden tests per curve (`loose/natural/snappy/instant`) |
 | 8 | IPC schema + malformed frames | Daemon/extension crash on bad JSON | Version-negotiation + fuzz/corpus tests on the socket parser |
@@ -309,8 +309,9 @@ Trait-boundary rules (enforced in review + CI):
   group does not drop kanata's `input`/`uinput` access._
 - [x] **1.2 Thin daemon:** TCP subscriber + resync, RAII temp-grab cell reader
   (fresh fd per overlay, `EVIOCGKEY` + drain per G6/G7),
-  `mouseless-core` grid math, uinput mouse deltas + `BTN_*` (flat-accel udev rule
-  per G1), overlay IPC server (`/run/mouseless/mouselessd.sock` + `SO_PEERCRED`
+  `mouseless-core` grid math, uinput mouse deltas + `BTN_*` (closed-loop bounded
+  steps; the flat-accel rule was later removed as ineffective), overlay IPC server
+  (`/run/mouseless/mouselessd.sock` + `SO_PEERCRED`
   per G3, 1-page wire spec per G2),
   `mouseless-cli` (`show/hide/toggle`, `--list-input-devices`).
   _Daemon/IPC/grab/mouse/overlay-server implemented 2026-10-29; CLI layer verbs
@@ -339,6 +340,18 @@ Trait-boundary rules (enforced in review + CI):
   multi-monitor switching, continuous mode, cursor hiding; tests #4, #5, #7 green.
   _Implemented 2026-10-29 in `mouseless-daemon`/`mouseless-state`/`mouseless-core`
   with 28 daemon tests; CLI verbs + fake-TCP tests wired._
+  _Movement hardening 2026-10-31: `move_to` is closed-loop (≤64 px REL steps,
+  half-error damping for the compositor's ~2× acceleration gain, 2 px
+  tolerance, stale-reply guard, `MoveStalled` on no progress). Regression tests
+  reproduce the live dual-monitor clamp at x=1920, sub-unity acceleration
+  drift, the ~2× gain oscillation, a stale pre-motion `CursorReply`, and a
+  stuck cursor; 34 daemon tests green._
+  _Postmortem: the post-click dance was not a stale reply. A live
+  socket/uinput harness showed the compositor doubling each step, so
+  full-error steps alternated across the target forever. Half-error steps are
+  stable for gains up to ~2 and land in one step at gain 2. Keep the fast path
+  sleep-free; the 20 ms settle wait only runs on a genuine stale reply._
+  _See `mouseless-workspace/specs/SPEC-daemon.md` §Movement control loop._
 
 ### Phase 3: GTK4 Settings GUI & Presets (Priority 3)
 - [ ] **3.1** `mouseless-gtk` (`Adw.PreferencesWindow`): live preview, keybinding
@@ -364,8 +377,8 @@ Trait-boundary rules (enforced in review + CI):
    `/run/mouseless/mouselessd.sock` via `RuntimeDirectory=mouseless`, mode 0770,
    `SO_PEERCRED` check; write 1-page IPC wire spec first (G2/G3).
 4. Extension cursor-pos + geometry report accuracy at 100/150/200% scale.
-5. Flat-accel udev rule for `mouseless-mouse` (G1): verify large REL deltas land
-   on cell center with no libinput distortion.
+5. Closed-loop cursor movement (G1): verify cross-monitor moves and accelerated
+   deltas settle within 2 px; the flat-accel udev rule was removed as ineffective.
 6. `apt install libgtk-4-dev libadwaita-1-dev` for the Rust GTK build.
 7. Permissions path: `mouseless` group + udev `uinput` rule + `input` membership
    (same as upstream), scoped to temp-grab + uinput mouse (no permanent grab).

@@ -43,6 +43,46 @@ pub const CURSOR_QUERY_TIMEOUT: Duration = Duration::from_millis(100);
 pub const MONITOR_SWITCH_TAP_MS: u64 = 200;
 /// Fixed physics tick for custom free mode (SPEC-daemon OQ-3).
 pub const FREE_MODE_TICK: Duration = Duration::from_millis(8);
+/// Largest single REL step used by closed-loop [`Daemon::move_to`].
+///
+/// The compositor applies pointer acceleration and clamps large one-shot
+/// deltas at monitor edges, so a single huge `REL_X` can stop at the boundary
+/// (the cursor-trapped-at-x=1920 regression). Bounded steps keep every event
+/// in the range that crosses edges, and the next iteration re-queries the
+/// cursor before moving again.
+pub const MAX_MOVE_STEP: i32 = 64;
+/// Divisor applied to the remaining error before emitting a REL step.
+///
+/// The compositor's pointer acceleration has an observed gain of up to ~2×
+/// (a 64 px request moves ~128 px). Sending the full error therefore
+/// overshoots, reverses, and oscillates around the target (the live post-click
+/// "dance"). Half-error steps are stable for gains up to ~2 and still land in
+/// one step when the gain is 2; when the gain is ~1 the error halves per step.
+pub const MOVE_DAMPING_DIVISOR: i32 = 2;
+/// Smallest REL step emitted for a remaining error above tolerance.
+///
+/// A sub-unity acceleration gain can truncate a 1 px request to zero, which
+/// would look like a stalled cursor 3 px from the target. Two pixels survive
+/// both sub-unity gains and a 2× gain (which lands within tolerance).
+pub const MOVE_MIN_STEP: i32 = 2;
+/// Acceptable final cursor error after a move, in physical pixels.
+pub const MOVE_TOLERANCE_PX: i32 = 2;
+/// Maximum closed-loop iterations: 256 × 64 px covers a 16K-pixel desktop.
+pub const MAX_MOVE_ITERATIONS: u32 = 256;
+/// Consecutive no-progress queries tolerated before declaring a stalled move.
+///
+/// One stale report is normal (the compositor may answer before applying the
+/// last REL event); eight in a row means the cursor is not following.
+pub const MAX_STALLED_STEPS: u32 = 8;
+/// Maximum time to wait for a stale cursor report to change after a step.
+///
+/// A `QueryCursor` sent immediately after `move_rel` can be answered before
+/// the compositor applies the motion. The first reply is normally fresh; if it
+/// still equals the pre-move position, wait for a change so the next delta is
+/// not computed from the stale value.
+pub const MOVE_SETTLE_TIMEOUT: Duration = Duration::from_millis(20);
+/// Poll interval while waiting for a fresh cursor report.
+pub const MOVE_SETTLE_POLL: Duration = Duration::from_millis(2);
 
 /// Daemon errors (all fallible ops return `Result` with context, plan §6).
 #[derive(Debug, Error)]
@@ -62,6 +102,14 @@ pub enum DaemonError {
     /// Kanata died (TCP EOF/reset) — caller must release + co-exit (plan §7).
     #[error("kanata connection lost; co-exit for supervisor restart")]
     KanataLost,
+    /// Cursor never reached the target within the closed-loop budget.
+    #[error("cursor stalled at {cursor:?} moving to {target:?}")]
+    MoveStalled {
+        /// Requested absolute target in physical pixels.
+        target: (i32, i32),
+        /// Last cursor position reported by the overlay.
+        cursor: (i32, i32),
+    },
     /// No overlay client: do not grab; restore base so typing is unaffected.
     #[error("overlay unavailable; typing unaffected")]
     OverlayUnavailable,
@@ -948,17 +996,74 @@ where
         }
     }
 
+    /// Move the cursor to an absolute physical-pixel target, closed-loop.
+    ///
+    /// One large `REL` delta is unreliable: the compositor's pointer
+    /// acceleration makes it land short, and a delta that would cross a
+    /// monitor edge is clamped at that edge (the live "cursor trapped on the
+    /// external monitor" regression). Instead, emit bounded steps and
+    /// re-query the cursor after each one until the target is within
+    /// [`MOVE_TOLERANCE_PX`]. Failure is explicit ([`DaemonError::MoveStalled`])
+    /// so callers never click at a guessed position.
     fn move_to(&mut self, to: Point) -> Result<(), DaemonError> {
-        let cursor = self
+        let debug = std::env::var_os("MOUSELESS_DEBUG_MOVE").is_some();
+        let target = (to.x.round() as i32, to.y.round() as i32);
+        let start = self
             .refresh_cursor(CURSOR_QUERY_TIMEOUT)
             .ok_or(DaemonError::NoCursor)?;
-        let target = (to.x.round() as i32, to.y.round() as i32);
-        let (dx, dy) = mouseless_mouse::compute_delta(target, (cursor.x, cursor.y));
+        let mut cursor = start;
+        let mut steps = 0u32;
+        let mut stalled = 0u32;
+        loop {
+            let (dx, dy) = mouseless_mouse::compute_delta(target, (cursor.x, cursor.y));
+            if dx.saturating_abs() <= MOVE_TOLERANCE_PX && dy.saturating_abs() <= MOVE_TOLERANCE_PX
+            {
+                break;
+            }
+            if steps >= MAX_MOVE_ITERATIONS {
+                return Err(DaemonError::MoveStalled {
+                    target,
+                    cursor: (cursor.x, cursor.y),
+                });
+            }
+            let step = (damped_step(dx), damped_step(dy));
+            let from = cursor;
+            self.mouse.move_rel(step.0, step.1)?;
+            steps += 1;
+            let next = self
+                .refresh_cursor_after_move(cursor)
+                .ok_or(DaemonError::NoCursor)?;
+            if debug {
+                eprintln!(
+                    "mouselessd: move step={steps} from=({}, {}) sent=({}, {}) reported=({}, {})",
+                    from.x, from.y, step.0, step.1, next.x, next.y
+                );
+            }
+            if next == cursor {
+                stalled += 1;
+                if stalled >= MAX_STALLED_STEPS {
+                    return Err(DaemonError::MoveStalled {
+                        target,
+                        cursor: (next.x, next.y),
+                    });
+                }
+            } else {
+                stalled = 0;
+            }
+            cursor = next;
+        }
         println!(
-            "mouselessd: move target=({}, {}) cursor=({}, {}) delta=({}, {})",
-            target.0, target.1, cursor.x, cursor.y, dx, dy
+            "mouselessd: move target=({}, {}) cursor=({}, {}) delta=({}, {}) steps={} settled=({}, {})",
+            target.0,
+            target.1,
+            start.x,
+            start.y,
+            target.0.saturating_sub(start.x),
+            target.1.saturating_sub(start.y),
+            steps,
+            cursor.x,
+            cursor.y
         );
-        self.mouse.move_rel(dx, dy)?;
         Ok(())
     }
 
@@ -979,22 +1084,52 @@ where
     }
 
     /// Click at the extension-reported cursor offset by the target and hide.
+    ///
+    /// Movement uses the same closed-loop [`Self::move_to`] as every other
+    /// path; `cursor` is only the pre-move snapshot used for logging.
     pub fn click_relative(
         &mut self,
         button: MouseButton,
         cursor: CursorPos,
         target: (i32, i32),
     ) -> Result<(), DaemonError> {
-        let (dx, dy) = mouseless_mouse::compute_delta(target, (cursor.x, cursor.y));
         println!(
-            "mouselessd: click target=({}, {}) cursor=({}, {}) delta=({}, {})",
-            target.0, target.1, cursor.x, cursor.y, dx, dy
+            "mouselessd: click target=({}, {}) cursor=({}, {})",
+            target.0, target.1, cursor.x, cursor.y
         );
-        self.mouse.move_rel(dx, dy)?;
+        self.move_to(Point {
+            x: target.0 as f64,
+            y: target.1 as f64,
+        })?;
         self.mouse.click(button)?;
         let _ = self.machine.click();
         self.end_overlay();
         Ok(())
+    }
+
+    /// Query the cursor after a REL step, guarding against a stale reply.
+    ///
+    /// The first reply is normally fresh (the extension answers after the
+    /// compositor applied the step). If it still equals `previous`, the reply
+    /// may predate the motion: poll until the position changes or
+    /// [`MOVE_SETTLE_TIMEOUT`] expires. This is only a guard; the closed loop
+    /// itself is stabilized by [`MOVE_DAMPING_DIVISOR`].
+    fn refresh_cursor_after_move(&mut self, previous: CursorPos) -> Option<CursorPos> {
+        let first = self.refresh_cursor(CURSOR_QUERY_TIMEOUT)?;
+        if first != previous {
+            return Some(first);
+        }
+        let deadline = Instant::now() + MOVE_SETTLE_TIMEOUT;
+        loop {
+            if Instant::now() >= deadline {
+                return Some(first);
+            }
+            std::thread::sleep(MOVE_SETTLE_POLL);
+            let next = self.refresh_cursor(CURSOR_QUERY_TIMEOUT)?;
+            if next != previous {
+                return Some(next);
+            }
+        }
     }
 
     /// Ask the extension for a fresh cursor position, waiting up to `timeout`.
@@ -1116,6 +1251,23 @@ where
             .as_millis()
             .min(u64::MAX as u128) as u64
     }
+}
+
+/// One damped REL component for [`Daemon::move_to`].
+///
+/// Halves the error (stable under the compositor's ~2× acceleration) and
+/// enforces a two-pixel floor so a sub-unity gain cannot swallow the last few
+/// pixels and masquerade as a stalled cursor.
+fn damped_step(delta: i32) -> i32 {
+    let half = delta / MOVE_DAMPING_DIVISOR;
+    let step = if delta == 0 {
+        0
+    } else if half.saturating_abs() < MOVE_MIN_STEP {
+        delta.signum() * MOVE_MIN_STEP
+    } else {
+        half
+    };
+    step.clamp(-MAX_MOVE_STEP, MAX_MOVE_STEP)
 }
 
 fn map_button(button: Button) -> MouseButton {
@@ -1250,7 +1402,7 @@ mod tests {
     use mouseless_ipc::{CursorPos, MonitorInfo};
     use mouseless_kbd::impls::{FakeCellGrab, FakeKeyboard};
     use mouseless_mouse::impls::FakeMouse;
-    use mouseless_overlay::impls::FakeOverlay;
+    use mouseless_overlay::impls::{FakeOverlay, SharedCursor, SharedCursorReplies};
 
     fn layout_1080p() -> MonitorLayout {
         MonitorLayout {
@@ -1294,19 +1446,194 @@ mod tests {
         }
     }
 
+    /// Live dual-monitor layout: external HDMI primary on the right,
+    /// built-in eDP secondary on the left (the regression setup).
+    fn layout_live_dual() -> MonitorLayout {
+        MonitorLayout {
+            monitors: vec![
+                MonitorInfo {
+                    monitor: Monitor {
+                        x: 1920,
+                        y: 0,
+                        w: 1920,
+                        h: 1080,
+                        scale: 1.0,
+                    },
+                    primary: true,
+                },
+                MonitorInfo {
+                    monitor: Monitor {
+                        x: 0,
+                        y: 0,
+                        w: 1920,
+                        h: 1080,
+                        scale: 1.0,
+                    },
+                    primary: false,
+                },
+            ],
+        }
+    }
+
     fn fake_grab() -> Result<FakeCellGrab, KbdError> {
         Ok(FakeCellGrab::new())
     }
 
-    type TestDaemon = Daemon<FakeKeyboard, FakeMouse, FakeOverlay, FakeCellGrab>;
+    /// Mouse fake that moves the shared cursor, modeling the compositor loop.
+    ///
+    /// The live compositor applies pointer acceleration and clamps large
+    /// one-shot REL deltas at monitor edges. Both behaviors are configurable
+    /// so regression tests can reproduce them deterministically.
+    struct CursorMouse {
+        cursor: SharedCursor,
+        /// Maximum movement applied by one `move_rel` event.
+        max_step: i32,
+        /// Acceleration factor as `numerator / denominator`.
+        scale: (i32, i32),
+        /// Monitor boundary that a one-shot delta larger than `max_step`
+        /// cannot cross (the live "cursor trapped at x=1920" bug).
+        barrier_x: Option<i32>,
+        /// When true, `move_rel` is recorded but never changes the cursor
+        /// (stale/broken compositor report).
+        stuck: bool,
+        /// When set, every effective `move_rel` pushes the pre-move position
+        /// as a one-shot reply, modeling the extension answering `QueryCursor`
+        /// before the compositor applied the motion.
+        stale_replies: Option<SharedCursorReplies>,
+        moves: Vec<(i32, i32)>,
+        clicks: Vec<MouseButton>,
+        /// Cursor position at each `click`, in order.
+        click_positions: Vec<(i32, i32)>,
+        button_downs: Vec<MouseButton>,
+        button_ups: Vec<MouseButton>,
+        scrolls: Vec<(i32, i32)>,
+    }
+
+    impl CursorMouse {
+        fn new(cursor: SharedCursor) -> Self {
+            Self {
+                cursor,
+                max_step: i32::MAX,
+                scale: (1, 1),
+                barrier_x: None,
+                stuck: false,
+                stale_replies: None,
+                moves: Vec::new(),
+                clicks: Vec::new(),
+                click_positions: Vec::new(),
+                button_downs: Vec::new(),
+                button_ups: Vec::new(),
+                scrolls: Vec::new(),
+            }
+        }
+
+        fn position(&self) -> (i32, i32) {
+            self.cursor.borrow().map(|c| (c.x, c.y)).unwrap_or_default()
+        }
+
+        /// Every REL event must stay inside the daemon's bounded-step budget.
+        fn assert_bounded(&self) {
+            assert!(
+                self.moves
+                    .iter()
+                    .all(|(dx, dy)| dx.saturating_abs() <= MAX_MOVE_STEP
+                        && dy.saturating_abs() <= MAX_MOVE_STEP),
+                "unbounded REL step: {:?}",
+                self.moves
+            );
+        }
+    }
+
+    impl MouseBackend for CursorMouse {
+        type Error = MouseError;
+
+        fn move_rel(&mut self, dx: i32, dy: i32) -> Result<(), Self::Error> {
+            self.moves.push((dx, dy));
+            if self.stuck {
+                return Ok(());
+            }
+            let mut guard = self.cursor.borrow_mut();
+            let Some(pos) = guard.as_mut() else {
+                return Ok(());
+            };
+            let before = (pos.x, pos.y);
+            let mut moved = false;
+            if let Some(barrier) = self.barrier_x {
+                // One-shot large delta: stop at the monitor edge (live bug).
+                if dx < -self.max_step && pos.x >= barrier && pos.x.saturating_add(dx) < barrier {
+                    pos.x = barrier;
+                    moved = true;
+                } else if dx > self.max_step
+                    && pos.x < barrier
+                    && pos.x.saturating_add(dx) >= barrier
+                {
+                    pos.x = barrier - 1;
+                    moved = true;
+                }
+            }
+            if !moved {
+                let sx = dx.clamp(-self.max_step, self.max_step) * self.scale.0 / self.scale.1;
+                let sy = dy.clamp(-self.max_step, self.max_step) * self.scale.0 / self.scale.1;
+                pos.x = pos.x.saturating_add(sx);
+                pos.y = pos.y.saturating_add(sy);
+            }
+            let after = (pos.x, pos.y);
+            drop(guard);
+            if after != before {
+                if let Some(replies) = &self.stale_replies {
+                    replies.borrow_mut().push_back(CursorPos {
+                        x: before.0,
+                        y: before.1,
+                    });
+                }
+            }
+            Ok(())
+        }
+
+        fn click(&mut self, button: MouseButton) -> Result<(), Self::Error> {
+            self.clicks.push(button);
+            let pos = self.position();
+            self.click_positions.push(pos);
+            Ok(())
+        }
+
+        fn button_down(&mut self, button: MouseButton) -> Result<(), Self::Error> {
+            self.button_downs.push(button);
+            Ok(())
+        }
+
+        fn button_up(&mut self, button: MouseButton) -> Result<(), Self::Error> {
+            self.button_ups.push(button);
+            Ok(())
+        }
+
+        fn scroll(&mut self, dx_lines: i32, dy_lines: i32) -> Result<(), Self::Error> {
+            self.scrolls.push((dx_lines, dy_lines));
+            Ok(())
+        }
+    }
+
+    type TestDaemon = Daemon<FakeKeyboard, CursorMouse, FakeOverlay, FakeCellGrab>;
 
     fn daemon_with(config: DaemonConfig, layout: MonitorLayout) -> TestDaemon {
+        daemon_with_mouse(config, layout, CursorPos { x: 320, y: 270 }, |overlay| {
+            CursorMouse::new(overlay.cursor_handle())
+        })
+    }
+
+    fn daemon_with_mouse(
+        config: DaemonConfig,
+        layout: MonitorLayout,
+        cursor: CursorPos,
+        make_mouse: impl FnOnce(&FakeOverlay) -> CursorMouse,
+    ) -> TestDaemon {
         let mut overlay = FakeOverlay::default();
         overlay.set_layout(layout);
-        overlay.set_cursor(CursorPos { x: 320, y: 270 });
+        overlay.set_cursor(cursor);
+        let mouse = make_mouse(&overlay);
         Daemon::with_grab(
             FakeKeyboard::new(BASE_LAYER),
-            FakeMouse::default(),
+            mouse,
             overlay,
             config,
             fake_grab,
@@ -1321,6 +1648,14 @@ mod tests {
             },
             layout_1080p(),
         )
+    }
+
+    fn assert_near(actual: (i32, i32), expected: (i32, i32)) {
+        assert!(
+            (actual.0 - expected.0).abs() <= MOVE_TOLERANCE_PX
+                && (actual.1 - expected.1).abs() <= MOVE_TOLERANCE_PX,
+            "cursor {actual:?} is not within {MOVE_TOLERANCE_PX}px of {expected:?}"
+        );
     }
 
     fn key(c: char) -> KeyEvent {
@@ -1432,8 +1767,10 @@ mod tests {
             d.handle_cell_key(CellKey::Char('d')).unwrap(),
             SessionStep::Clicked
         );
-        // Target (300, 135) minus fake cursor (320, 270).
-        assert_eq!(d.mouse.moves, vec![(-20, -135)]);
+        // Target (300, 135); the closed loop settles within tolerance.
+        assert_near(d.mouse.position(), (300, 135));
+        assert_eq!(d.mouse.click_positions.len(), 1);
+        assert_near(d.mouse.click_positions[0], (300, 135));
         assert_eq!(d.mouse.clicks, vec![MouseButton::Left]);
         assert!(!d.overlay_visible());
         assert!(!d.grab_held());
@@ -1450,8 +1787,8 @@ mod tests {
             d.handle_cell_key(CellKey::Space).unwrap(),
             SessionStep::Clicked
         );
-        // Cell center (240, 270) minus cursor (320, 270).
-        assert_eq!(d.mouse.moves, vec![(-80, 0)]);
+        // Cell center (240, 270), within the closed-loop tolerance.
+        assert_near(d.mouse.position(), (240, 270));
         assert!(!d.overlay_visible());
     }
 
@@ -1464,8 +1801,8 @@ mod tests {
             d.handle_cell_key(CellKey::Space).unwrap(),
             SessionStep::Clicked
         );
-        // Screen center (960, 540) minus cursor (320, 270).
-        assert_eq!(d.mouse.moves, vec![(640, 270)]);
+        // Screen center (960, 540), within the closed-loop tolerance.
+        assert_near(d.mouse.position(), (960, 540));
         assert_eq!(d.mouse.clicks, vec![MouseButton::Left]);
     }
 
@@ -1863,6 +2200,208 @@ mod tests {
     }
 
     #[test]
+    fn damped_step_halves_and_floors() {
+        assert_eq!(damped_step(80), 40);
+        assert_eq!(damped_step(-80), -40);
+        assert_eq!(damped_step(3), 2);
+        assert_eq!(damped_step(-3), -2);
+        assert_eq!(damped_step(1000), MAX_MOVE_STEP);
+        assert_eq!(damped_step(-1000), -MAX_MOVE_STEP);
+        assert_eq!(damped_step(0), 0);
+    }
+
+    #[test]
+    fn move_to_crosses_to_builtin_when_large_deltas_are_clamped() {
+        // Regression: a single large REL delta stopped at the external
+        // monitor's left edge (x=1920), so overlay clicks on the built-in
+        // never landed. Small free-mode steps crossed fine.
+        let mut d = daemon_with_mouse(
+            DaemonConfig {
+                multi_click_threshold_ms: 0,
+                ..Default::default()
+            },
+            layout_live_dual(),
+            CursorPos { x: 3060, y: 405 },
+            |overlay| CursorMouse {
+                max_step: 64,
+                barrier_x: Some(1920),
+                ..CursorMouse::new(overlay.cursor_handle())
+            },
+        );
+        d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
+            .unwrap();
+        assert_eq!(d.active_monitor().unwrap().x, 1920);
+
+        // Tap Left Shift: external (right) -> built-in (left).
+        d.handle_key_event_at(
+            KeyEvent {
+                key: CellKey::ShiftLeft,
+                pressed: true,
+                modifiers: Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
+            },
+            100,
+        )
+        .unwrap();
+        d.handle_key_event_at(
+            KeyEvent {
+                key: CellKey::ShiftLeft,
+                pressed: false,
+                modifiers: Modifiers::default(),
+            },
+            150,
+        )
+        .unwrap();
+        assert_eq!(d.active_monitor().unwrap().x, 0);
+
+        // Cell 'a' + subcell 'd' => (300, 135) on the built-in.
+        d.handle_cell_key(CellKey::Char('a')).unwrap();
+        assert_eq!(
+            d.handle_cell_key(CellKey::Char('d')).unwrap(),
+            SessionStep::Clicked
+        );
+
+        let clicked = d.mouse.click_positions[0];
+        assert!(
+            clicked.0 < 1920,
+            "click landed on the wrong monitor: {clicked:?}"
+        );
+        assert!((clicked.0 - 300).abs() <= 2, "x off target: {clicked:?}");
+        assert!((clicked.1 - 135).abs() <= 2, "y off target: {clicked:?}");
+        assert_eq!(d.mouse.clicks, vec![MouseButton::Left]);
+        d.mouse.assert_bounded();
+    }
+
+    #[test]
+    fn move_to_converges_on_external_monitor_under_pointer_acceleration() {
+        // Regression: the compositor applied ~0.9x acceleration, so the
+        // one-shot delta from (2903, 923) landed ~16 px short in x and
+        // ~52 px short in y of the (3060, 405) target.
+        let mut d = daemon_with_mouse(
+            DaemonConfig::default(),
+            layout_live_dual(),
+            CursorPos { x: 2903, y: 923 },
+            |overlay| CursorMouse {
+                scale: (9, 10),
+                ..CursorMouse::new(overlay.cursor_handle())
+            },
+        );
+        d.execute_action(ActionIntent::Move {
+            to: Point {
+                x: 3060.0,
+                y: 405.0,
+            },
+        })
+        .unwrap();
+        let (x, y) = d.mouse.position();
+        assert!((x - 3060).abs() <= 2, "x off target: {x}");
+        assert!((y - 405).abs() <= 2, "y off target: {y}");
+        assert!(
+            d.mouse.moves.len() > 1,
+            "expected closed-loop corrections, got {:?}",
+            d.mouse.moves
+        );
+        d.mouse.assert_bounded();
+    }
+
+    #[test]
+    fn move_to_reports_stalled_cursor_instead_of_clicking() {
+        // A stale/broken cursor report must fail loudly after a few
+        // no-progress steps, not fire hundreds of blind REL events or click.
+        let mut d = daemon_with_mouse(
+            DaemonConfig::default(),
+            layout_1080p(),
+            CursorPos { x: 320, y: 270 },
+            |overlay| CursorMouse {
+                stuck: true,
+                ..CursorMouse::new(overlay.cursor_handle())
+            },
+        );
+        let err = d
+            .execute_action(ActionIntent::Move {
+                to: Point { x: 800.0, y: 600.0 },
+            })
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            DaemonError::MoveStalled {
+                target: (800, 600),
+                cursor: (320, 270),
+            }
+        ));
+        assert_eq!(d.mouse.moves.len(), MAX_STALLED_STEPS as usize);
+        assert!(d.mouse.clicks.is_empty());
+    }
+
+    #[test]
+    fn move_to_does_not_oscillate_under_two_times_pointer_acceleration() {
+        // Live regression: the compositor applied ~2× acceleration, so
+        // sending the full remaining error overshot to the other side of the
+        // target, reversed forever, and the post-click cursor visibly danced.
+        // Half-error (damped) steps must land instead of alternating.
+        let mut d = daemon_with_mouse(
+            DaemonConfig::default(),
+            layout_1080p(),
+            CursorPos { x: 320, y: 270 },
+            |overlay| CursorMouse {
+                scale: (2, 1),
+                ..CursorMouse::new(overlay.cursor_handle())
+            },
+        );
+        d.execute_action(ActionIntent::Move {
+            to: Point { x: 400.0, y: 270.0 },
+        })
+        .unwrap();
+        let (x, y) = d.mouse.position();
+        assert!((x - 400).abs() <= MOVE_TOLERANCE_PX, "x off target: {x}");
+        assert!((y - 270).abs() <= MOVE_TOLERANCE_PX, "y off target: {y}");
+        assert!(
+            d.mouse.moves.len() < MAX_MOVE_ITERATIONS as usize,
+            "did not converge: {:?}",
+            d.mouse.moves
+        );
+        d.mouse.assert_bounded();
+    }
+
+    #[test]
+    fn move_to_waits_out_a_stale_cursor_reply() {
+        // Regression: `QueryCursor` was answered before the compositor
+        // applied the last REL step. Reusing that value made the closed loop
+        // reverse direction and oscillate around the target (the live
+        // post-click ~50 px "dance"). Every step must wait for a changed
+        // report instead of trusting the first reply.
+        let mut d = daemon_with_mouse(
+            DaemonConfig::default(),
+            layout_1080p(),
+            CursorPos { x: 320, y: 270 },
+            |overlay| CursorMouse {
+                stale_replies: Some(overlay.cursor_reply_handle()),
+                ..CursorMouse::new(overlay.cursor_handle())
+            },
+        );
+        d.execute_action(ActionIntent::Move {
+            to: Point { x: 400.0, y: 270.0 },
+        })
+        .unwrap();
+        let (x, y) = d.mouse.position();
+        assert!((x - 400).abs() <= MOVE_TOLERANCE_PX, "x off target: {x}");
+        assert!((y - 270).abs() <= MOVE_TOLERANCE_PX, "y off target: {y}");
+        assert!(
+            d.mouse.moves.iter().all(|(dx, _)| *dx > 0),
+            "cursor reversed direction: {:?}",
+            d.mouse.moves
+        );
+        assert!(
+            d.mouse.moves.len() > 1,
+            "expected damped corrections, got {:?}",
+            d.mouse.moves
+        );
+        d.mouse.assert_bounded();
+    }
+
+    #[test]
     fn shift_used_for_right_click_does_not_switch_monitor() {
         let mut d = daemon_with(
             DaemonConfig {
@@ -1924,9 +2463,7 @@ mod tests {
             SessionStep::Continue
         );
         assert!(d.held_subcell.is_some());
-        assert_eq!(d.mouse.moves.last().copied(), Some((-20, -135)));
-        // The extension reports the cursor at the target after the move.
-        d.overlay_mut().set_cursor(CursorPos { x: 300, y: 135 });
+        assert_near(d.mouse.position(), (300, 135));
         // Right nudge: 120 / 4 = 30 px.
         assert_eq!(
             d.handle_key_event_at(
@@ -1940,7 +2477,8 @@ mod tests {
             .unwrap(),
             SessionStep::Continue
         );
-        assert_eq!(d.mouse.moves.last().copied(), Some((30, 0)));
+        // The nudge target is the sub-cell center plus one quarter cell.
+        assert_near(d.mouse.position(), (330, 135));
         // Release the held subgrid key: click at the nudged target.
         assert_eq!(
             d.handle_key_event_at(release('d'), 300).unwrap(),
@@ -1965,10 +2503,11 @@ mod tests {
             .unwrap();
         d.handle_cell_key(CellKey::Char('a')).unwrap();
         d.handle_cell_key(CellKey::Char('d')).unwrap();
-        // First move to the sub-cell, then a second move toward the corner.
-        assert_eq!(d.mouse.moves.len(), 2);
-        assert!(d.mouse.moves[1].0 > 0);
-        assert!(d.mouse.moves[1].1 < 0);
+        // Closed-loop moves settle on the sub-cell, then on the corner.
+        assert!(d.mouse.moves.len() > 2);
+        assert_eq!(d.mouse.click_positions.len(), 1);
+        assert_near(d.mouse.click_positions[0], (300, 135));
+        assert_near(d.mouse.position(), (1919, 1));
     }
 
     #[test]

@@ -105,6 +105,78 @@ free loop (2 ms TCP read):
 - Shift tap ≤ `MONITOR_SWITCH_TAP_MS` switches monitors by x order unless Shift
   was used as the right-click modifier.
 - `hide_cursor_on_click` moves to the configured corner after the click.
+- Movement (`Move`, `DragTo`, `CursorHide`, and legacy `click_relative`) is
+  closed-loop: `move_to` refreshes the cursor, emits REL steps of at most
+  `MAX_MOVE_STEP` (64 px), and re-queries after each step, settling within
+  `MOVE_TOLERANCE_PX` (2 px). Each step carries only half of the remaining
+  error (`MOVE_DAMPING_DIVISOR` 2, with a `MOVE_MIN_STEP` 2 px floor) because
+  the compositor's pointer acceleration has an observed gain of up to ~2×: a
+  64 px request moves ~128 px. Sending the full error overshoots, reverses,
+  and alternates around the target — the live post-click "dance". Half-error
+  steps are stable for gains up to ~2 and still land in one step at gain 2;
+  the floor prevents a sub-unity gain from truncating the last few pixels to
+  zero. A single large delta is also unsafe at monitor edges: the compositor
+  clamps a delta that would cross an edge at that edge (the live
+  cursor-trapped-at-x=1920 regression). If the first cursor reply still equals
+  the pre-move position it may predate the motion, so the daemon waits up to
+  `MOVE_SETTLE_TIMEOUT` (20 ms) for a change before computing the next delta.
+  A move with no progress for `MAX_STALLED_STEPS` (8) queries, or one
+  exceeding `MAX_MOVE_ITERATIONS` (256), returns `DaemonError::MoveStalled`;
+  callers MUST NOT click at a guessed position.
+
+### Movement control loop (post-click oscillation postmortem)
+
+**Symptom (2026-10-31).** After a subcell click the cursor visibly danced
+within ~50 px of the target before settling; some sessions ended with
+`cell action failed (cursor stalled at ... moving to ...)`. It reproduced on
+both monitors and with repeated clicks on the same cell.
+
+**Investigation.** A live harness impersonated the daemon socket, created a
+uinput pointer, and replayed the closed loop against the real GNOME extension
+(`global.get_pointer()`). The extension's first reply after every `move_rel`
+was fresh — there was no stale-frame lag. The trace showed the compositor
+applying a speed-dependent gain of up to ~2×:
+
+| from | sent | reported | actual |
+|---|---|---|---|
+| (2526,138) | (54,-3) | (2634,132) | (+108,-6) |
+| (2634,132) | (-54,3) | (2526,138) | (-108,+6) |
+
+**Root cause.** `move_to` computed `step = target - cursor` and assumed unity
+gain. With a ~2× gain the applied step is ~2× the error, so the cursor lands
+the same distance on the other side of the target; the next step flips sign
+and the loop alternates forever. The stall detector eventually reports
+`MoveStalled` after `MAX_MOVE_ITERATIONS` (256), or after a run of identical
+reports. The earlier "stale `CursorReply`" hypothesis was wrong: waiting for a
+changed report did not fix the dance because the reply was already current.
+
+**Fix.** Send half of the remaining error:
+`step = clamp(error / 2, ±MAX_MOVE_STEP)`, with a `MOVE_MIN_STEP` 2 px floor.
+For a plant gain `g`, the error multiplier per step is `|1 - g/2|`:
+
+- `g = 2` → lands in one step;
+- `g = 1` → halves per step (geometric convergence);
+- `g < 1` → shrinks by `1 - g/2` per step;
+- `g` up to ~2 is stable; the observed ~2× gain is the design point.
+
+The 2 px floor keeps a sub-unity gain from truncating a 1 px request to zero
+and masquerading as a stall. `MAX_MOVE_STEP` stays 64 px so monitor-edge
+clamping cannot trap a single event. Do **not** replace this with a fixed
+per-step sleep, a stability window, or a full-error step: the first two were
+tried and only added latency, and the last one is the bug.
+
+**Performance.** The fast path is one `QueryCursor` per step and no
+unconditional sleep. The 20 ms settle wait is only entered when the first
+reply still equals the pre-move position (a genuine stale reply). A normal
+in-monitor click is ~2–6 steps; the live harness measured ~5 ms per step
+(≈10–30 ms), and a 1900 px cross-monitor move ~19 steps (≈100 ms). The app is
+expected to feel instantaneous: keep the fast path allocation-free and
+sleep-free, and do not add fixed frame pacing to "improve" accuracy.
+
+**Regression coverage.** `move_to_does_not_oscillate_under_two_times_pointer_acceleration`
+reproduces the 2× gain; `damped_step_halves_and_floors` pins the control law;
+the cross-monitor, sub-unity gain, stale-reply, and stuck-cursor tests cover
+the remaining matrix row #5 cases.
 
 ### Custom free-mode input path
 
@@ -166,6 +238,11 @@ Until Phase-3 `config.yaml` exists, defaults live in code + `--kanata`/`--socket
   8 ms physics/multi-click tick with a 1 ms sleep cap.
 - `tracing` with correlation IDs is **not yet implemented**; the binary still
   uses `println!/eprintln!`. Tracked as the main observability gap.
+- `MOUSELESS_DEBUG_LAYOUT=1` logs every overlay `Report`/`CursorReply`
+  (monitor geometry + cursor position) for multi-monitor diagnosis; off by
+  default.
+- `MOUSELESS_DEBUG_MOVE=1` logs each closed-loop step (`from`/`sent`/
+  `reported`) for movement diagnosis; off by default.
 - Degraded modes: overlay missing → no grab; uinput missing → no clicks, overlay
   still tracks; extension gone → keyboard/mouse safe, retry; show failure after
   grab → grab released + base restored.
@@ -216,8 +293,22 @@ MOUSELESS_SOCKET=/tmp/mouseless.sock cargo run -p mouseless-daemon -- --kanata 1
   exclusion assertions live in `platform` tests. *(with platform)*
 - #10: fake TCP drop mid-overlay → assert grab released + Hide emitted + exit code.
   *(lib-level exists; process-level test via the fake kanata server pending)*
-- Click path: `click_relative` refreshes cursor, moves by `compute_delta`, clicks,
-  then hides; Space clicks the level-1 center, a second key the sub-cell center. *(exists)*
+- Click path: `click_relative` delegates to closed-loop `move_to`, then clicks
+  and hides; Space clicks the level-1 center, a second key the sub-cell center. *(exists)*
+- Movement regressions (live dual-monitor layout): a large one-shot delta that
+  clamps at the external monitor edge still reaches a built-in target, pointer
+  acceleration with a sub-unity gain converges within tolerance, a ~2×
+  acceleration gain does not oscillate around the target, a stale
+  `CursorReply` answered before the compositor applies the motion does not
+  reverse the loop, and a stuck cursor returns `MoveStalled` without clicking.
+  Fakes share one cursor so `move_rel` changes what `QueryCursor` reports, and
+  can push the pre-move position as a one-shot stale reply. *(exists:
+  `move_to_crosses_to_builtin_when_large_deltas_are_clamped`,
+  `move_to_converges_on_external_monitor_under_pointer_acceleration`,
+  `move_to_does_not_oscillate_under_two_times_pointer_acceleration`,
+  `move_to_waits_out_a_stale_cursor_reply`,
+  `move_to_reports_stalled_cursor_instead_of_clicking`,
+  `damped_step_halves_and_floors`)*
 - Degraded modes: no overlay, no layout, failed show, uinput absent. *(lib-level
   covered; uinput-absent wrapper is production-only)*
 - Phase 1.4 e2e: tap Shift → overlay → 2 keys → click at sub-cell center,
@@ -244,7 +335,10 @@ MOUSELESS_SOCKET=/tmp/mouseless.sock cargo run -p mouseless-daemon -- --kanata 1
 ## Success criteria
 
 - [x] Single-flight show/hide with grab acquire/release; dupes safe.
-- [x] `click_relative` = cursor refresh + delta + click + hide.
+- [x] `click_relative` = closed-loop move + click + hide; `MoveStalled` when the
+      cursor never reaches the target.
+- [x] `move_to` damps to half-error and lands within 2 px under ~2× pointer
+      acceleration without oscillating; fast path has no per-step sleep.
 - [x] `on_kanata_lost` releases grab, hides (best-effort), signals co-exit.
 - [x] Production `main.rs` uses real mouse + overlay backends; fakes are test-only.
 - [x] Overlay-absent/no-layout degrade: no grab, base layer restored, loud log.

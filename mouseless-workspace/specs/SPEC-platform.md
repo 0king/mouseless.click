@@ -32,7 +32,7 @@ verifiable by a scripted runbook.
 | `kanata/UNICFG-EDITS.md` + `apply-phase11.sh` | runbook (script backs up, edits, `kanata --check`, restarts) | The 4 unicfg edits: defcfg output name + mouse exclude, `@ml-tap` and `@ml-free-tap` in `lyr-base`, `(include "mouseless.kbd")`. |
 | `systemd/kanata.service.d-override.conf` | `/etc/systemd/system/kanata.service.d/mouseless.conf` | TCP `-p 127.0.0.1:7070`, `--emergency-exit-code 1`, `Restart=on-failure` + `RestartForceExitStatus=SIGTERM` (audit W2), `SupplementaryGroups=mouseless` for `/dev/uinput`. |
 | `systemd/mouselessd.service` | `/etc/systemd/system/mouselessd.service` | `After=kanata.service`, no `Requires=`; `RuntimeDirectory=mouseless` (0770), `UMask=0007`; `Restart=on-failure`; sandboxing. |
-| `udev/99-mouseless.rules` | `/etc/udev/rules.d/99-mouseless.rules` | `uinput` group access + flat pointer accel for `mouseless-mouse` (audit G1). |
+| `udev/99-mouseless.rules` | `/etc/udev/rules.d/99-mouseless.rules` | `uinput` group access for the `mouseless` group. Pointer accuracy is closed-loop in the daemon, so no libinput accel override is shipped. |
 | `.desktop` deep links (Phase 3) | `/usr/share/applications/` | `x-scheme-handler/mouseless` → settings/CLI. |
 | `sysusers.d` (Phase 3, OQ-2) | `/usr/lib/sysusers.d/mouseless.conf` | Creates the `mouselessd` system user deterministically. |
 
@@ -108,7 +108,8 @@ sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=input
   in `lyr-mouseless`, the `lyr-free` movement/button/wheel keys, and absence of
   `cmd`; greps `unicfg` after apply for `linux-output-device-name`,
   `linux-dev-names-exclude`, `@ml-tap`, and `@ml-free-tap`. Blocking.
-- #5: same script asserts the flat-accel line exists for `mouseless-mouse`.
+- #5: pointer accuracy is covered by the daemon's closed-loop movement
+  regressions; the platform script only asserts the `uinput` group rule.
 - #6: exclusion assertions: kanata exclude contains `mouseless-mouse`; output
   name equals `mouseless-kbd::KANATA_OUTPUT_NAME` and the uinput name equals
   `UINPUT_DEVICE_NAME` (string cross-check script — single source of truth
@@ -140,9 +141,10 @@ sudo udevadm control --reload && sudo udevadm trigger --subsystem-match=input
       matrix (free mode, drag/drop, nudge, monitor switch, cursor hide).
 - [x] Kanata drop-in with TCP + `SIGTERM` restart semantics (audit W2).
 - [x] `mouselessd.service` with `After=` (no `Requires=`), `RuntimeDirectory`, sandboxing.
-- [x] udev rules: uinput group access + flat accel for `mouseless-mouse`.
+- [x] udev rules: uinput group access for `mouseless-mouse` (no accel override;
+      accuracy is closed-loop in the daemon).
 - [x] Kanata drop-in grants `/dev/uinput` via `SupplementaryGroups=mouseless`.
-- [ ] `scripts/check-platform.sh` asserting #1/#5/#6 strings + cross-file name sync.
+- [ ] `scripts/check-platform.sh` asserting #1/#6 strings + cross-file name sync.
 - [ ] `systemd-analyze verify` wired into the checks.
 - [ ] Phase 1.3 extension install step added to the runbook
       (`gnome-extensions install` per user; Shell reload instructions).

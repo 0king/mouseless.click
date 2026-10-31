@@ -77,10 +77,14 @@ frames never crash either side; the socket is only usable by authorized peers.
 
 - `Report` is sent on connect and whenever monitor layout/scale changes.
 - `cursor` is the compositor-reported global cursor position; its coordinate
-  space is pinned by spike §10.4 (see `SPEC-core.md` OQ-1). Until the spike
-  closes, both sides log the value and the daemon validates the closed loop
-  (after `move_rel(dx,dy)`, re-query and check error; systematic scale error →
-  correction factor, recorded in the daemon spec).
+  space is pinned by spike §10.4 (see `SPEC-core.md` OQ-1). The daemon closes
+  the loop on every move: it emits bounded REL steps carrying half of the
+  remaining error (the compositor's acceleration gain is up to ~2×), then
+  re-queries and continues until the target is within tolerance. If the first
+  reply still equals the pre-move position it may predate the motion, so the
+  daemon waits for a change before computing the next delta. This corrects
+  acceleration or scale distortion per move instead of with a fixed factor
+  (see `SPEC-daemon.md` movement semantics).
 
 ### client → daemon (kind `"client"`, Phase 2/3)
 

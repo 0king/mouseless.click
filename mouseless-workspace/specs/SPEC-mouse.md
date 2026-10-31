@@ -10,7 +10,8 @@
 Give the daemon a sanctioned way to move and click the system cursor: our own
 uinput mouse device (`mouseless-mouse`), because kanata cannot absolute-position
 on Linux (`setmouse`/`SetMouse` are no-ops — plan §2.1). Absolute clicks are
-achieved by computing a REL delta from the extension-reported cursor position.
+achieved by a closed-loop sequence of bounded REL steps computed from the
+extension-reported cursor position (owned by the daemon; see `SPEC-daemon.md`).
 
 ## Scope
 
@@ -36,7 +37,7 @@ fn scroll(&mut self, dx_lines: i32, dy_lines: i32) -> Result<(), Self::Error>;
 
 | Attribute | Value | Why |
 |---|---|---|
-| Name | `mouseless-mouse` | Must match kanata `linux-dev-names-exclude` and the udev flat-accel rule (loop prevention + G1). |
+| Name | `mouseless-mouse` | Must match kanata `linux-dev-names-exclude` (loop prevention). |
 | Vendor | `0x736e` (`VENDOR_ID_SONUSCAPE`) | Matches upstream Mouseless. |
 | Capabilities | `REL_X`, `REL_Y`, `REL_WHEEL` (v+h), 5 buttons | Everything the daemon emits. |
 | Sync | `synchronize()` after each logical action | Batching is allowed if it keeps one SYN per action. |
@@ -48,9 +49,18 @@ fn scroll(&mut self, dx_lines: i32, dy_lines: i32) -> Result<(), Self::Error>;
   with `saturating_sub` — never panics, saturates at `i32` edges.
 - Both inputs are **global physical pixels** in the `core::Monitor` space
   (compositor layout, origin top-left, offsets included).
-- Accuracy depends on the flat pointer-acceleration udev rule
-  (`platform/udev/99-mouseless.rules`); without it libinput distorts large
-  deltas (audit G1). The rule's presence is asserted by `platform` tests.
+- Accuracy is closed-loop: the daemon emits bounded REL steps carrying half of
+  the remaining error, because the compositor's pointer acceleration has an
+  observed gain of up to ~2×. Full-error steps overshoot and oscillate around
+  the target; damped steps are stable for gains up to ~2 and still land in one
+  step at gain 2. After each step the daemon re-queries the cursor (waiting for
+  a change if the reply still equals the pre-move position), so acceleration
+  and a stale pre-motion reply cannot leave a click systematically off-target
+  or make it dance. The historical flat-accel udev property
+  (`LIBINPUT_ATTR_POINTER_ACCEL`) is **not honored by libinput** and is no
+  longer relied upon; libinput documents `LIBINPUT_ATTR_*` as private API.
+  See `SPEC-daemon.md` §Movement control loop for the live trace, the ~2×
+  gain postmortem, and the latency budget.
 
 ### Degraded mode
 
@@ -97,8 +107,8 @@ ls -l /dev/input/by-id/ | grep mouseless   # device name check on a live system
 ## Boundaries
 
 - **Always:** keep device name/vendor stable; saturating math on deltas;
-  synchronize per action; document the flat-accel dependency wherever accuracy
-  is discussed.
+  synchronize per action; keep accuracy discussions aligned with the daemon's
+  closed-loop movement contract.
 - **Ask first:** changing device attributes (name/vendor/capabilities) —
   three other files depend on them; switching to hi-res wheel events;
   adding a second device.
@@ -111,8 +121,10 @@ ls -l /dev/input/by-id/ | grep mouseless   # device name check on a live system
 - [x] Trait + fake + uinput device with pinned name/vendor/capabilities.
 - [x] `compute_delta` saturating, unit-tested incl. edges.
 - [x] `click` emits down+up with SYN; `scroll` emits both axes.
-- [ ] Multi-monitor offset delta tests (negative origins).
-- [ ] udev flat-accel rule asserted by a blocking platform test (matrix #5).
+- [x] Multi-monitor offset delta tests (negative origins): cross-monitor
+      regression in `mouseless-daemon` (external x=1920 → built-in x=0).
+- [x] Closed-loop movement regressions (matrix #5): monitor-edge clamp,
+      pointer-acceleration convergence, and stalled cursor.
 - [ ] Click accuracy verified in Phase-1.4 e2e within tolerance (proposed:
       ≤ 2 px at 100%, ≤ 4 px at fractional scales).
 - [ ] Degraded-mode test: uinput denied → daemon alive, status reports it.

@@ -283,6 +283,7 @@ fn main() -> ExitCode {
         }
         let mut overlay_lost = false;
         for ev in daemon.poll_overlay_events() {
+            log_overlay_event(&ev);
             if matches!(ev, OverlayEvent::Disconnected) {
                 overlay_lost = true;
             }
@@ -569,4 +570,24 @@ fn run_free_session(daemon: &mut ProdDaemon) -> SessionEnd {
 /// Kanata TCP EOF/reset means the process died (kill switch, plan §7).
 fn is_kanata_gone(msg: &str) -> bool {
     msg.contains("EOF") || msg.contains("closed") || msg.contains("reset")
+}
+
+/// `MOUSELESS_DEBUG_LAYOUT=1` logs overlay geometry/cursor reports.
+///
+/// Off by default. Useful when diagnosing multi-monitor offsets: the report
+/// carries the extension's physical-pixel layout and cursor position.
+fn log_overlay_event(ev: &OverlayEvent) {
+    if std::env::var_os("MOUSELESS_DEBUG_LAYOUT").is_none() {
+        return;
+    }
+    match ev {
+        OverlayEvent::Report { layout, cursor } => eprintln!(
+            "mouselessd: report cursor=({}, {}) monitors={:?}",
+            cursor.x, cursor.y, layout.monitors
+        ),
+        OverlayEvent::CursorReply { cursor } => {
+            eprintln!("mouselessd: cursor reply=({}, {})", cursor.x, cursor.y)
+        }
+        _ => {}
+    }
 }

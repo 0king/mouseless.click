@@ -2,6 +2,19 @@
 
 use crate::{GridModel, OverlayBackend, OverlayError};
 use mouseless_ipc::{CursorPos, MonitorLayout};
+use std::cell::RefCell;
+use std::collections::VecDeque;
+use std::rc::Rc;
+
+/// Shared cursor cell: the fake mouse writes, the fake overlay reports.
+pub type SharedCursor = Rc<RefCell<Option<CursorPos>>>;
+
+/// Shared queue of one-shot cursor replies.
+///
+/// The fake mouse can push a pre-move position here to model a `QueryCursor`
+/// that the extension answered before the compositor applied the motion; the
+/// fake overlay consumes it before reporting the shared cursor.
+pub type SharedCursorReplies = Rc<RefCell<VecDeque<CursorPos>>>;
 
 /// Fake overlay: records visibility and cursor for assertions.
 #[derive(Debug)]
@@ -14,9 +27,13 @@ pub struct FakeOverlay {
     pub connected: bool,
     /// When set, `show` fails to exercise daemon rollback paths.
     pub fail_show: bool,
-    cursor: Option<CursorPos>,
+    cursor: SharedCursor,
     layout: Option<MonitorLayout>,
     events: Vec<crate::OverlayEvent>,
+    /// One-shot replies consumed by the next `query_cursor` calls before the
+    /// shared cursor is used (models a reply answered before the compositor
+    /// applied the last motion).
+    queued_cursors: SharedCursorReplies,
 }
 
 impl Default for FakeOverlay {
@@ -26,9 +43,10 @@ impl Default for FakeOverlay {
             last_model: None,
             connected: true,
             fail_show: false,
-            cursor: None,
+            cursor: Rc::new(RefCell::new(None)),
             layout: None,
             events: Vec::new(),
+            queued_cursors: Rc::new(RefCell::new(VecDeque::new())),
         }
     }
 }
@@ -36,7 +54,32 @@ impl Default for FakeOverlay {
 impl FakeOverlay {
     /// Inject a cursor report (as the extension would send).
     pub fn set_cursor(&mut self, pos: CursorPos) {
-        self.cursor = Some(pos);
+        *self.cursor.borrow_mut() = Some(pos);
+    }
+
+    /// Clone the shared cursor cell so a fake mouse can move it.
+    ///
+    /// This models the compositor loop: `move_rel` changes the pointer, and
+    /// the next `QueryCursor` reports the new position.
+    pub fn cursor_handle(&self) -> SharedCursor {
+        Rc::clone(&self.cursor)
+    }
+
+    /// Clone the shared one-shot reply queue.
+    ///
+    /// Lets a fake mouse model the compositor race by pushing the pre-move
+    /// position immediately after `move_rel`, so the first `QueryCursor`
+    /// returns a stale value.
+    pub fn cursor_reply_handle(&self) -> SharedCursorReplies {
+        Rc::clone(&self.queued_cursors)
+    }
+
+    /// Queue a one-shot `CursorReply`, consumed before the shared cursor.
+    ///
+    /// Use this to model a reply that the extension answered before the
+    /// compositor applied the preceding `move_rel`.
+    pub fn queue_cursor_reply(&mut self, pos: CursorPos) {
+        self.queued_cursors.borrow_mut().push_back(pos);
     }
 
     /// Inject a monitor layout (as the extension would send).
@@ -80,7 +123,9 @@ impl OverlayBackend for FakeOverlay {
     }
 
     fn query_cursor(&mut self) -> Result<(), Self::Error> {
-        if let Some(cursor) = self.cursor {
+        let queued = self.queued_cursors.borrow_mut().pop_front();
+        let cursor = queued.or_else(|| *self.cursor.borrow());
+        if let Some(cursor) = cursor {
             self.events
                 .push(crate::OverlayEvent::CursorReply { cursor });
         }
@@ -92,7 +137,7 @@ impl OverlayBackend for FakeOverlay {
     }
 
     fn last_cursor(&self) -> Option<CursorPos> {
-        self.cursor
+        *self.cursor.borrow()
     }
 
     fn last_layout(&self) -> Option<MonitorLayout> {

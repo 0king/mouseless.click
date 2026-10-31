@@ -1,10 +1,8 @@
-# Mouseless Linux udev rules (plan §10.6, audit G1).
+# Mouseless Linux udev rules (plan §10.6).
 #
-# 1. uinput access for the `mouseless` group (same as upstream).
-# 2. Flat pointer acceleration for the virtual mouse so REL deltas land
-#    exactly on cell centers (libinput must not apply its accel curve).
+# uinput access for the `mouseless` group (same as upstream). Pointer accuracy
+# is closed-loop in the daemon (bounded REL steps + cursor re-query); no
+# libinput acceleration override is used. `LIBINPUT_ATTR_POINTER_ACCEL` is not
+# a public libinput knob, so the old flat-accel rule was removed.
 
 KERNEL=="uinput", GROUP="mouseless", MODE="0660"
-
-# Flat accel profile scoped to our virtual mouse only.
-ACTION=="add|change", ATTRS{name}=="mouseless-mouse", ENV{LIBINPUT_ATTR_POINTER_ACCEL}="flat"
