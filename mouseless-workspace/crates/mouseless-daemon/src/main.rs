@@ -219,7 +219,11 @@ fn parse_args() -> DaemonConfig {
                 }
             }
             "--help" | "-h" => {
-                println!("mouselessd [--kanata 127.0.0.1:7070] [--socket PATH]");
+                println!("usage: mouselessd [--kanata HOST:PORT] [--socket PATH] [--version]");
+                std::process::exit(0);
+            }
+            "--version" | "-V" => {
+                println!("mouselessd {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             _ => {

@@ -357,6 +357,23 @@ Trait-boundary rules (enforced in review + CI):
   around this._
   _See `mouseless-workspace/specs/SPEC-daemon.md` §Movement control loop._
 
+### Packaging & service install (cross-phase, 2026-10-31)
+- [x] `sysusers.d` (`mouselessd` + `mouseless` + `input`), hardened
+  `mouselessd.service` (`SupplementaryGroups=input`, empty capability set,
+  `StartLimitIntervalSec=0`, `ExecStart=... --kanata 127.0.0.1:7070`).
+- [x] `platform/install-system.sh` (root; sysusers → udev → binaries → unit →
+  kanata → groups → enable/restart; timestamped backups; `--dry-run`,
+  `--skip-kanata`, `--no-group-add`, `--no-start`).
+- [x] `platform/install-extension.sh` (desktop user; pack + install + enable;
+  `--dry-run`) and `platform/README.md` runbook (install/verify/upgrade/uninstall).
+- [x] `scripts/check-platform.sh` (unit/drop-in/udev/sysusers/name-sync/shell/
+  `systemd-analyze`; no root) wired into the documented build checks.
+- [x] `--version`/`-V` on `mouseless` and `mouselessd`; usage exits `2`,
+  operational failures `1`.
+- [ ] Host install (interactive sudo): stop the dev `mouselessd-dev` unit, run
+  both installers, verify service/socket/udev/extension, then record the
+  applied state here.
+
 ### Phase 3: GTK4 Settings GUI & Presets (Priority 3)
 - [ ] **3.1** `mouseless-gtk` (`Adw.PreferencesWindow`): live preview, keybinding
   reference with conflict hints, monitor assignment, presets engine (YAML

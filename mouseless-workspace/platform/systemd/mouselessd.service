@@ -8,24 +8,39 @@
 #   the supervisor restarts the stack in order.
 
 [Unit]
-Description=Mouseless daemon (thin orchestration: grid math, uinput mouse, overlay IPC)
+Description=Mouseless daemon (grid math, uinput mouse, overlay IPC)
+Documentation=file:/usr/local/share/doc/mouseless/README.md
 After=kanata.service
 Wants=kanata.service
+# Kanata death is a normal restart path (kill switch, plan §7). Do not let the
+# default start-rate limiter leave the unit failed after a few quick restarts.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 User=mouselessd
 Group=mouseless
+# Primary group `mouseless` covers /dev/uinput and the overlay socket; the
+# supplementary `input` group is required for the evdev temp-grab.
+SupplementaryGroups=input
 RuntimeDirectory=mouseless
 RuntimeDirectoryMode=0770
 UMask=0007
-ExecStart=/usr/local/bin/mouselessd
+ExecStart=/usr/local/bin/mouselessd --kanata 127.0.0.1:7070
 Restart=on-failure
 RestartSec=1s
-# D-Bus/session isolation: the daemon needs no $HOME or display.
+# No $HOME or display is needed; keep the system read-only and drop privileges.
 ProtectSystem=strict
 ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictRealtime=true
+LockPersonality=true
 NoNewPrivileges=true
+CapabilityBoundingSet=
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target

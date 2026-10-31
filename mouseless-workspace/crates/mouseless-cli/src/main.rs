@@ -63,8 +63,13 @@ fn parse_args() -> Result<(KanataTcpConfig, String), String> {
             }
             "--help" | "-h" => {
                 println!("usage: mouseless [--kanata HOST:PORT] <verb>");
-                println!("verbs: show hide toggle enter-free-mode exit-free-mode status --list-input-devices");
+                println!("verbs: show hide toggle enter-free-mode exit-free-mode status");
+                println!("flags: --list-input-devices, --version");
                 println!("exit: 0 success, 1 operational failure, 2 usage error");
+                std::process::exit(0);
+            }
+            "--version" | "-V" => {
+                println!("mouseless {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
             }
             other => {

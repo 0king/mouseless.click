@@ -4,10 +4,11 @@
 > `.agents/plan.md`. This map is the index of the module specs; each module id
 > below maps 1:1 to `specs/SPEC-<id>.md`.
 >
-> Status snapshot: 2026-10-29 · `cargo test --workspace` = 99 tests green;
+> Status snapshot: 2026-10-31 · `cargo test --workspace` = 108 tests green;
 > Phase 1.3 overlay + Phase 2 custom free mode/action semantics implemented
-> (headless Shell smoke and Phase-1.4 host e2e/visual acceptance passed). Live
-> free-mode smoke waits on the sudo kanata apply.
+> (headless Shell smoke and Phase-1.4 host e2e/visual acceptance passed).
+> Packaging (installers, `sysusers`, runbook, platform checks) is complete;
+> live free-mode smoke and the host service install wait on interactive sudo.
 
 ## Authority & document roles
 
@@ -62,7 +63,7 @@ core, state, ipc, kbd, mouse, platform      (foundations — mostly scaffolded)
 | `daemon` | Implemented (Phase 2) | Live free-mode/drag/nudge/monitor/cursor-hide smoke. |
 | `cli` | Implemented (Phase 2) | Phase-3 `reload`; richer `status` needs a daemon client message. |
 | `settings` | Stub | Entire Phase 3; build prereq `libgtk-4-dev libadwaita-1-dev`. |
-| `platform` | Partial | Live `lyr-free` apply (sudo), extension install, `.desktop` deep links, `sysusers.d`, distro matrix. |
+| `platform` | Packaged (host install pending) | Live `lyr-free` apply + service install (sudo), `.desktop` deep links, wider distro matrix. |
 
 ## Blocking test matrix → owners (plan §8, SKILL-07)
 

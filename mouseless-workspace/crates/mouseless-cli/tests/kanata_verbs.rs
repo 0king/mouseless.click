@@ -158,6 +158,19 @@ fn help_documents_exit_codes() {
 }
 
 #[test]
+fn version_prints_package_version() {
+    let out = Command::new(bin())
+        .arg("--version")
+        .output()
+        .expect("run mouseless");
+    assert!(out.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        format!("mouseless {}", env!("CARGO_PKG_VERSION"))
+    );
+}
+
+#[test]
 fn unknown_verb_exits_2() {
     let out = Command::new(bin())
         .arg("frobnicate")
