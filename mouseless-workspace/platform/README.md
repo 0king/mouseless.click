@@ -55,6 +55,8 @@ require a new login.
 ```sh
 systemctl status mouselessd.service
 journalctl -u mouselessd.service -b
+/usr/local/bin/mouseless --version
+/usr/local/bin/mouselessd --version
 /usr/local/bin/mouseless status
 /usr/local/bin/mouseless --list-input-devices
 gnome-extensions info mouseless@sonuscape.example

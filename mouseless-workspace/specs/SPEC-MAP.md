@@ -8,7 +8,8 @@
 > Phase 1.3 overlay + Phase 2 custom free mode/action semantics implemented
 > (headless Shell smoke and Phase-1.4 host e2e/visual acceptance passed).
 > Packaging (installers, `sysusers`, runbook, platform checks) is complete;
-> live free-mode smoke and the host service install wait on interactive sudo.
+> live free-mode movement/click behavior is confirmed. The final host
+> service install waits on interactive sudo.
 
 ## Authority & document roles
 

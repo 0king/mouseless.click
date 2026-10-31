@@ -85,9 +85,11 @@ installed binaries accept `--version`/`-V` (for example
 Phases 1.2/1.3/1.4 and Phase 2 (custom free-mode physics, multi-click,
 drag/drop, nudges, modifier clicks, monitor switching, cursor hiding) are
 implemented and covered by 108 hermetic tests; the Phase-1.4 host e2e and
-visual/fractional acceptance passed on 2026-10-29. The live host still needs
-the Phase-2 kanata include applied (`platform/kanata/UNICFG-EDITS.md`, requires
-sudo) before the free-mode smoke matrix. `mouseless-gtk` is a stub until
+visual/fractional acceptance passed on 2026-10-29. The Phase-2 kanata include
+is applied on the primary host (kanata on `lyr-base`, TCP `127.0.0.1:7070`),
+and live free-mode movement/click behavior was confirmed. The remaining host
+step is the system-service install (`platform/install-system.sh`) plus a final
+end-to-end smoke. `mouseless-gtk` is a stub until
 `apt install libgtk-4-dev libadwaita-1-dev` (plan §10.5); the real
 `Adw.PreferencesWindow` app lands in Phase 3. See `specs/SPEC-MAP.md` for
 per-module status.
