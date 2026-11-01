@@ -33,10 +33,10 @@ verifiable by a scripted runbook.
 |---|---|---|
 | `kanata/mouseless.kbd` | `/etc/kanata/mouseless.kbd` | `ml-tap` / `ml-free-tap` (`tap-hold-release 200 200` → `lyr-mouseless` / `lyr-free`), clean overlay layer (`a s d f j k l ;`, `spc`, `esc`→base), and the custom free-mode layer (`i/k/j/l`, boosts, buttons, wheel). |
 | `kanata/UNICFG-EDITS.md` + `apply-phase11.sh` | runbook (script backs up both files, edits, `kanata --check`, restores on failure, restarts) | The 4 unicfg edits: defcfg output name + mouse exclude, `@ml-tap` and `@ml-free-tap` in `lyr-base`, `(include "mouseless.kbd")`. |
-| `systemd/kanata.service.d-override.conf` | `/etc/systemd/system/kanata.service.d/mouseless.conf` | TCP `-p 127.0.0.1:7070`, `--emergency-exit-code 1`, `Restart=on-failure` + `RestartForceExitStatus=SIGTERM` (audit W2), `SupplementaryGroups=mouseless` for `/dev/uinput`. |
-| `systemd/mouselessd.service` | `/etc/systemd/system/mouselessd.service` | `After=kanata.service`, no `Requires=`; `User=mouselessd`, `Group=mouseless`, `SupplementaryGroups=input`; `RuntimeDirectory=mouseless` (0770), `UMask=0007`; `Restart=on-failure`, `StartLimitIntervalSec=0`; sandboxing (`ProtectSystem=strict`, empty capability set). |
-| `udev/99-mouseless.rules` | `/etc/udev/rules.d/99-mouseless.rules` | `uinput` group access for the `mouseless` group. Pointer accuracy is closed-loop in the daemon, so no libinput accel override is shipped. |
-| `sysusers/mouseless.conf` | `/usr/lib/sysusers.d/mouseless.conf` | Creates group `mouseless` and system user `mouselessd` (nologin, primary group `mouseless`, supplementary `input`). Idempotent; existing GIDs are preserved. |
+| `systemd/kanata.service.d-override.conf` | `/etc/systemd/system/kanata.service.d/mouseless.conf` | TCP `-p 127.0.0.1:7070`, `--emergency-exit-code 1`, `Restart=on-failure` + `RestartForceExitStatus=SIGTERM` (audit W2). `SupplementaryGroups=input uinput` — additive/idempotent (a no-op when kanata-svc already has them, a fix when it does not); kanata never joins the human `mouseless` socket group. |
+| `systemd/mouselessd.service` | `/etc/systemd/system/mouselessd.service` | `After=kanata.service`, no `Requires=`; `User=mouselessd`, `Group=mouseless`, `SupplementaryGroups=input uinput`; `RuntimeDirectory=mouseless` (0770), `UMask=0007`; `Restart=on-failure`, `StartLimitIntervalSec=0`; sandboxing (`ProtectSystem=strict`, empty capability set). |
+| `udev/99-mouseless.rules` | `/etc/udev/rules.d/99-mouseless.rules` | `/dev/uinput` (0660) for the existing `uinput` group (kanata + daemon) — never the human `mouseless` group. Pointer accuracy is closed-loop in the daemon, so no libinput accel override is shipped. |
+| `sysusers/mouseless.conf` | `/usr/lib/sysusers.d/mouseless.conf` | Creates the `mouseless` (overlay socket) group and system user `mouselessd` (nologin, primary group `mouseless`, supplementary `input` + `uinput`); `g uinput -` keeps kanata's existing group/GID. Idempotent; existing GIDs are preserved. |
 | `install-system.sh` | run in place as root | Installs binaries, unit, sysusers, udev, docs, and applies the kanata include/drop-in. Backs up replaced files as `<path>.bak.YYYYmmdd-HHMMSS.<pid>`. Options: `--dry-run`, `--skip-kanata`, `--no-group-add`, `--no-start`. |
 | `install-extension.sh` | run in place as the desktop user | Packs `extension.js` + `ipc.js` + `render.js`, installs, and enables `mouseless@sonuscape.example`. `--dry-run` supported. |
 | `README.md` (this dir) | `/usr/local/share/doc/mouseless/README.md` | Install/verify/upgrade/uninstall runbook and troubleshooting. |
@@ -51,16 +51,24 @@ directly and ignores `--emergency-exit-code`; hence
 `forceful-exit-code` must never appear in `defcfg` (parse error).
 `mouselessd` co-exits on TCP EOF so the supervisor restarts the stack in order.
 
-### Permissions model
+### Permissions model (least privilege)
 
-- Desktop user: member of `input` (grab `/dev/input`) and `mouseless` (socket +
-  `/dev/uinput` via the udev rule). Documented in the runbook.
-- `kanata.service` runs as `kanata-svc` and gains `mouseless` through
-  `SupplementaryGroups=mouseless` in the drop-in. This extends, rather than
-  replaces, the account's database groups, so `input` + `uinput` membership is
-  preserved. Do not solve `/dev/uinput` access by widening the udev rule to a
-  shared system group.
-- Daemon runs as system user `mouselessd`, group `mouseless`.
+- **Desktop user: member of `mouseless` only.** That group grants the overlay
+  socket. A human account must never be in `input` or `uinput`: those allow
+  keylogging and synthetic input injection for the whole session.
+  `install-system.sh` never adds them; it warns if an existing membership is
+  found and prints the `gpasswd -d` command.
+- **`uinput`** is the existing `/dev/uinput` group (0660) that kanata already
+  uses. Members: `mouselessd` and `kanata-svc` only.
+- **`input`** grants evdev read + temporary grab. Members: `mouselessd` and
+  `kanata-svc` only.
+- `kanata.service` runs as `kanata-svc` and lists `SupplementaryGroups=input
+  uinput` in the drop-in. systemd extends (never replaces) the account's
+  database groups, so this is a no-op where kanata already has both and fixes
+  hosts where it does not. Reusing the human `mouseless` group for
+  `/dev/uinput` is forbidden: it would let the desktop user inject input.
+- Daemon runs as system user `mouselessd`, primary group `mouseless`
+  (socket-dir ownership), supplementary `input uinput`.
 - Socket dir `/run/mouseless` created by `RuntimeDirectory` (0770).
 - No permanent grab; permissions scoped to temp-grab + uinput mouse (plan §10.7).
 
@@ -85,7 +93,8 @@ directly and ignores `--emergency-exit-code`; hence
   Wayland requires logout/login.
 - Uninstall is documented, not scripted: stop/disable the unit, remove the
   installed files, `daemon-reload`, reload udev, then remove the extension.
-  The `mouselessd` user/group may remain harmlessly.
+  The `mouselessd` user and `mouseless` group may remain harmlessly; leave the
+  shared `uinput`/`input` groups to kanata.
 
 ### Distro matrix
 
@@ -181,19 +190,30 @@ installed-file contracts. Phase 3 adds `platform/desktop/`.
       `kanata --check` on 2026-10-29.
 - [x] Apply script replayed against a temp unicfg copy: all four edits land,
       a second run is idempotent, and `kanata --check` passes.
-- [ ] Live `/etc/kanata` apply + kanata restart (sudo) and the Phase-2 smoke
-      matrix (free mode, drag/drop, nudge, monitor switch, cursor hide).
-      _Pending interactive sudo; the dev `mouselessd-dev` unit must be stopped
-      first so `/run/mouseless/mouselessd.sock` is free._
+- [x] Apply script creates missing `input`/`uinput` groups first, so systemd
+      accepts `SupplementaryGroups=` on a host where kanata has no device
+      permissions yet (getent-guarded, idempotent).
+- [x] Live `/etc/kanata` apply + kanata restart on 2026-11-01: `kanata.service`
+      active with `SupplementaryGroups=input uinput`, TCP listening on
+      `127.0.0.1:7070`, `mouselessd.service` active (`uinput mouseless-mouse
+      ready`, layer `lyr-base`, overlay hello from extension 1.0.0).
+- [ ] Phase-2 smoke matrix (free mode, drag/drop, nudge, monitor switch,
+      cursor hide). _Needs hands-on hotkey testing by the desktop user._
 - [x] Kanata drop-in with TCP + `SIGTERM` restart semantics (audit W2).
 - [x] `mouselessd.service` with `After=` (no `Requires=`), `RuntimeDirectory`, sandboxing.
-- [x] udev rules: uinput group access for `mouseless-mouse` (no accel override;
-      accuracy is closed-loop in the daemon).
-- [x] Kanata drop-in grants `/dev/uinput` via `SupplementaryGroups=mouseless`.
+- [x] udev rules: `/dev/uinput` for the existing `uinput` group (kanata +
+      daemon; no accel override; accuracy is closed-loop in the daemon).
+- [x] Kanata drop-in re-asserts `SupplementaryGroups=input uinput`
+      idempotently, so it works whether or not kanata-svc already has them.
 - [x] `scripts/check-platform.sh` asserting #1/#6 strings + cross-file name sync.
 - [x] `systemd-analyze verify` wired into the checks (temp copy with `/bin/true`
-      so it runs before the binary is installed).
-- [x] `sysusers.d` creates `mouselessd`, `mouseless`, and input membership.
+      so it runs before the binary is installed), including a synthetic
+      `kanata.service` without supplementary groups to prove the drop-in merges.
+- [x] `sysusers.d` creates `mouselessd` + `mouseless`, plus `input`/`uinput`
+      only if absent, and the daemon's memberships; existing GIDs are kept
+      idempotently. Human accounts never join `input`/uinput. `check-platform.sh`
+      proves this in a temp root: kanata's GIDs survive and a second run is a
+      byte-identical no-op.
 - [x] System + extension installers with `--dry-run`; system installer backs up
       replaced files and supports `--skip-kanata`/`--no-group-add`/`--no-start`.
 - [x] Phase 1.3 extension install step added to the runbook
@@ -210,11 +230,13 @@ installed-file contracts. Phase 3 adds `platform/desktop/`.
 
 1. **Port.** Fixed `7070` is assumed end-to-end (`SPEC-kbd.md` default,
    drop-in, CLI). Confirm no configurable port is needed before release.
-2. **User creation — resolved 2026-10-31.** Ship `sysusers.d`; the installer
-   runs `systemd-sysusers` (idempotent, preserves existing GIDs). The desktop
-   user is added to `mouseless` and `input` by the installer unless
-   `--no-group-add`. Auth remains group-based per `SPEC-ipc.md` OQ-1
-   (`0770` socket dir, `SO_PEERCRED`).
+2. **User creation — resolved 2026-10-31; privilege split 2026-11-01.** Ship
+   `sysusers.d`; the installer runs `systemd-sysusers` (idempotent, preserves
+   existing GIDs). The desktop user is added to `mouseless` only (overlay
+   socket) unless `--no-group-add`; it is never added to `input` or `uinput`.
+   Only `mouselessd` and `kanata-svc` hold device-level groups. Auth remains
+   group-based per `SPEC-ipc.md` OQ-1 (`0770` socket dir,
+   `SO_PEERCRED`).
 3. **Packaging — MVP decision 2026-10-31.** Raw, idempotent POSIX installers
    (`install-system.sh`, `install-extension.sh`) plus a runbook; no `.deb`/PPA
    yet. This keeps the closed-loop fast path and the kanata edit auditable

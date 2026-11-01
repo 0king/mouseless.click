@@ -7,10 +7,15 @@
 # Asserts the installable files agree with the Rust constants and the
 # documented contracts:
 # - kanata include: tap-hold timings, overlay/free layers, no cmd path;
-# - daemon unit: user/group, input group, runtime dir, sandboxing, no Requires=;
-# - kanata drop-in: localhost TCP, SIGTERM restart, mouseless group;
-# - udev: uinput group access, no ineffective flat-accel rule;
-# - sysusers: mouselessd/mouseless/input;
+# - daemon unit: user/group, input + uinput groups, runtime dir, sandboxing,
+#   no Requires=;
+# - kanata drop-in: localhost TCP, SIGTERM restart, idempotent
+#   SupplementaryGroups=input uinput, never the human socket group;
+# - udev: /dev/uinput on the existing uinput group, never the human socket
+#   group; no ineffective flat-accel rule;
+# - sysusers: mouselessd/mouseless/uinput/input; idempotency proven in a
+#   temp root (kanata GIDs preserved, second run is a no-op);
+# - installer: never adds a human account to input/uinput;
 # - cross-file names (kanata-mouseless, mouseless-mouse, extension UUID);
 # - installer paths and extension pack sources;
 # - POSIX shell syntax and systemd unit syntax.
@@ -102,7 +107,7 @@ forbid_literal "$KBD" "(cmd " "no cmd action"
 echo "== daemon unit =="
 require_literal "$UNIT" "User=mouselessd" "runs as mouselessd"
 require_literal "$UNIT" "Group=mouseless" "primary group mouseless"
-require_literal "$UNIT" "SupplementaryGroups=input" "input group for evdev grab"
+require_literal "$UNIT" "SupplementaryGroups=input uinput" "input + uinput groups for daemon"
 require_literal "$UNIT" "RuntimeDirectory=mouseless" "runtime directory"
 require_literal "$UNIT" "RuntimeDirectoryMode=0770" "runtime directory mode"
 require_literal "$UNIT" "After=kanata.service" "ordered after kanata"
@@ -115,25 +120,72 @@ require_literal "$UNIT" "WantedBy=multi-user.target" "install target"
 echo "== kanata drop-in =="
 require_literal "$DROPIN" "-p 127.0.0.1:7070" "localhost TCP only"
 require_literal "$DROPIN" "RestartForceExitStatus=SIGTERM" "SIGTERM restart (W2)"
-require_literal "$DROPIN" "SupplementaryGroups=mouseless" "uinput group"
+require_literal "$DROPIN" "SupplementaryGroups=input uinput" "kanata gets idempotent input + uinput"
+forbid_regex "$DROPIN" "^[[:space:]]*SupplementaryGroups=.*mouseless([^-[:alnum:]_]|$)" "kanata never gets the human socket group"
 forbid_regex "$DROPIN" "^[[:space:]]*danger-enable-cmd" "no danger-enable-cmd"
 forbid_regex "$DROPIN" "^[[:space:]]*kanata_cmd_allowed" "no kanata_cmd_allowed"
 forbid_regex "$DROPIN" "^[[:space:]]*forceful-exit-code" "no forceful-exit-code"
 
 echo "== udev =="
-require_literal "$UDEV" 'KERNEL=="uinput", GROUP="mouseless", MODE="0660"' "uinput group access"
+require_literal "$UDEV" 'KERNEL=="uinput", GROUP="uinput", MODE="0660"' "uinput group access"
+forbid_regex "$UDEV" '^[^#]*GROUP="mouseless"' "human socket group never owns /dev/uinput"
 forbid_regex "$UDEV" "^[^#]*LIBINPUT_ATTR_POINTER_ACCEL" "no private flat-accel rule"
 
 echo "== sysusers =="
-require_regex "$SYSUSERS" "^g mouseless -$" "mouseless group"
+require_regex "$SYSUSERS" "^g mouseless -$" "mouseless (socket) group"
+require_regex "$SYSUSERS" "^g input -$" "input group (idempotent)"
+require_regex "$SYSUSERS" "^g uinput -$" "uinput group (idempotent)"
 require_regex "$SYSUSERS" "^u mouselessd -:mouseless " "mouselessd user with primary mouseless"
 require_regex "$SYSUSERS" "^m mouselessd input$" "mouselessd in input"
+require_regex "$SYSUSERS" "^m mouselessd uinput$" "mouselessd in uinput"
+
+echo "== sysusers idempotency =="
+if command -v systemd-sysusers >/dev/null 2>&1; then
+    # Temp root seeded like a host where kanata already has input/uinput.
+    _sr="$(mktemp -d)"
+    mkdir -p "$_sr/etc" "$_sr/usr/lib/sysusers.d"
+    cp "$SYSUSERS" "$_sr/usr/lib/sysusers.d/mouseless.conf"
+    printf 'root:x:0:\ninput:x:994:kanata-svc\nuinput:x:972:kanata-svc\n' \
+        >"$_sr/etc/group"
+    printf 'root:*::\ninput:!::kanata-svc\nuinput:!::kanata-svc\n' \
+        >"$_sr/etc/gshadow"
+    printf 'root:x:0:0:root:/root:/bin/sh\n' >"$_sr/etc/passwd"
+    printf 'root:*:19000:0:99999:7:::\n' >"$_sr/etc/shadow"
+    chmod 600 "$_sr/etc/shadow" "$_sr/etc/gshadow"
+    _rc=0
+    systemd-sysusers --root="$_sr" >"$_sr/run1.log" 2>&1 || _rc=$?
+    _mgid="$(awk -F: '$1=="mouseless"{print $3}' "$_sr/etc/group")"
+    if [ "$_rc" -eq 0 ] && [ -n "$_mgid" ] &&
+        grep -qx 'input:x:994:kanata-svc,mouselessd' "$_sr/etc/group" &&
+        grep -qx 'uinput:x:972:kanata-svc,mouselessd' "$_sr/etc/group" &&
+        grep -qx "mouselessd:x:.*:$_mgid:.*:/usr/sbin/nologin" "$_sr/etc/passwd"; then
+        ok "sysusers keeps kanata GIDs and adds only mouselessd"
+    else
+        bad "sysusers keeps kanata GIDs and adds only mouselessd"
+    fi
+    _sum1="$(cksum "$_sr/etc/group" "$_sr/etc/passwd" "$_sr/etc/shadow" "$_sr/etc/gshadow")"
+    if systemd-sysusers --root="$_sr" >"$_sr/run2.log" 2>&1 &&
+        [ "$_sum1" = "$(cksum "$_sr/etc/group" "$_sr/etc/passwd" "$_sr/etc/shadow" "$_sr/etc/gshadow")" ]; then
+        ok "sysusers second run is a no-op"
+    else
+        bad "sysusers second run is a no-op"
+    fi
+    rm -rf "$_sr"
+else
+    echo "skip sysusers idempotency (systemd-sysusers not installed)"
+fi
+
+echo "== installer privilege model =="
+require_literal "$INSTALL_SYSTEM" 'usermod -aG mouseless "$_target"' "only mouseless is added automatically"
+forbid_regex "$INSTALL_SYSTEM" "usermod -aG (input|uinput)" "never add a human to input/uinput"
+forbid_regex "$INSTALL_SYSTEM" "for _grp in mouseless input" "no combined mouseless+input group add"
 
 echo "== cross-file names =="
 require_literal "$GRAB_RS" 'pub const KANATA_OUTPUT_NAME: &str = "kanata-mouseless";' "KANATA_OUTPUT_NAME"
 require_literal "$UINPUT_RS" 'pub const UINPUT_DEVICE_NAME: &str = "mouseless-mouse";' "UINPUT_DEVICE_NAME"
 require_literal "$APPLY" 'linux-output-device-name "kanata-mouseless"' "apply sets kanata output"
 require_literal "$APPLY" 'linux-dev-names-exclude ("mouseless-mouse")' "apply excludes mouse device"
+require_literal "$APPLY" 'groupadd "$_grp"' "apply creates missing device groups"
 require_literal "$EXT_META" '"uuid": "mouseless@sonuscape.example"' "extension UUID"
 require_literal "$INSTALL_EXT" 'UUID="mouseless@sonuscape.example"' "installer UUID matches"
 require_literal "$INSTALL_EXT" "--extra-source=ipc.js" "extension packs ipc.js"
@@ -163,6 +215,22 @@ if command -v systemd-analyze >/dev/null 2>&1; then
         bad "systemd-analyze verify"
     fi
     rm -rf "$_tmp"
+
+    # The kanata drop-in must merge with a unit whose service account has no
+    # supplementary groups yet ("kanata has no permissions" host). The
+    # ExecStart reset pair is verified together with the real file.
+    _tmp2="$(mktemp -d)"
+    mkdir -p "$_tmp2/kanata.service.d"
+    printf '[Unit]\nDescription=fake kanata\n[Service]\nExecStart=/bin/true\n' \
+        >"$_tmp2/kanata.service"
+    sed 's#^ExecStart=/usr/local/bin/kanata .*#ExecStart=/bin/true#' "$DROPIN" \
+        >"$_tmp2/kanata.service.d/mouseless.conf"
+    if SYSTEMD_UNIT_PATH="$_tmp2:" systemd-analyze verify kanata.service >/dev/null 2>&1; then
+        ok "systemd-analyze verify (kanata drop-in)"
+    else
+        bad "systemd-analyze verify (kanata drop-in)"
+    fi
+    rm -rf "$_tmp2"
 else
     echo "skip systemd-analyze verify (not installed)"
 fi

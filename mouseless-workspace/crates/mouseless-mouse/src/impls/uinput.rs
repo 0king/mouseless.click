@@ -5,7 +5,8 @@
 //! covered by kanata `linux-dev-names-exclude` (loop prevention, plan §8 #6).
 //! Absolute accuracy is closed-loop in the daemon (bounded steps + re-query).
 //!
-//! Creation needs `/dev/uinput` write access (`mouseless` group + udev rule,
+//! Creation needs `/dev/uinput` write access (the existing `uinput` group
+//! that kanata uses + udev rule; never the human `mouseless` socket group,
 //! plan §10.6). Without it [`UinputMouse::create`] fails and the daemon
 //! degrades to "overlay unavailable, typing unaffected" (plan §6).
 

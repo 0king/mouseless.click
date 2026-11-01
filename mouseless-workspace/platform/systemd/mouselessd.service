@@ -20,9 +20,12 @@ StartLimitIntervalSec=0
 Type=simple
 User=mouselessd
 Group=mouseless
-# Primary group `mouseless` covers /dev/uinput and the overlay socket; the
-# supplementary `input` group is required for the evdev temp-grab.
-SupplementaryGroups=input
+# Group `mouseless` owns the overlay socket dir only; it must never grant
+# input access. `input` is required for the evdev temp-grab of kanata's
+# output, and the existing `uinput` group (kanata already has it) for
+# /dev/uinput writes.
+# Neither supplementary group is ever given to a human account.
+SupplementaryGroups=input uinput
 RuntimeDirectory=mouseless
 RuntimeDirectoryMode=0770
 UMask=0007

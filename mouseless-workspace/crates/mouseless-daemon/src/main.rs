@@ -9,11 +9,14 @@
 //! Kill switch (plan §7): kanata TCP EOF/reset → release grab, best-effort
 //! hide broadcast, exit(1) so the supervisor restarts the stack in order.
 //!
-//! Needs `input` group membership for `/dev/input` and the `mouseless` group
-//! plus the udev rule for `/dev/uinput` (plan §10.6). Missing uinput degrades
-//! to "overlay tracks, clicks disabled"; missing overlay degrades to "typing
-//! unaffected, no grab" (plan §6). Custom free mode is relative and keeps
-//! working without the extension, but a missing uinput device ends the session.
+//! Needs `input` for `/dev/input` enumeration + grab and the existing
+//! `uinput` group for `/dev/uinput` (kanata already has both);
+//! `Group=mouseless` owns the overlay socket dir (plan §10.7). Human accounts
+//! never get `input`/uinput.
+//! Missing uinput degrades to "overlay tracks, clicks disabled"; missing
+//! overlay degrades to "typing unaffected, no grab" (plan §6). Custom free
+//! mode is relative and keeps working without the extension, but a missing
+//! uinput device ends the session.
 
 use mouseless_daemon::{
     Daemon, DaemonConfig, DaemonError, SessionStep, FREE_MODE_LAYER, FREE_MODE_TICK, OVERLAY_LAYER,

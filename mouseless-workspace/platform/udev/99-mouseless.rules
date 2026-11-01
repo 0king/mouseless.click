@@ -1,8 +1,13 @@
 # Mouseless Linux udev rules (plan §10.6).
 #
-# uinput access for the `mouseless` group (same as upstream). Pointer accuracy
-# is closed-loop in the daemon (bounded REL steps + cursor re-query); no
-# libinput acceleration override is used. `LIBINPUT_ATTR_POINTER_ACCEL` is not
-# a public libinput knob, so the old flat-accel rule was removed.
+# /dev/uinput write access is granted to the existing `uinput` group, which
+# already contains `kanata-svc`; the daemon joins it. The human desktop user
+# needs `mouseless` for the overlay socket, so reusing that group here would
+# let the user inject synthetic input — keep the groups separate.
+#
+# Pointer accuracy is closed-loop in the daemon (bounded REL steps + cursor
+# re-query); no libinput acceleration override is used.
+# `LIBINPUT_ATTR_POINTER_ACCEL` is not a public libinput knob, so the old
+# flat-accel rule was removed.
 
-KERNEL=="uinput", GROUP="mouseless", MODE="0660"
+KERNEL=="uinput", GROUP="uinput", MODE="0660"

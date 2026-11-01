@@ -8,7 +8,8 @@
 # Installs:
 #   /usr/local/bin/mouselessd, /usr/local/bin/mouseless
 #   /etc/systemd/system/mouselessd.service
-#   /usr/lib/sysusers.d/mouseless.conf  (mouselessd user, mouseless group)
+#   /usr/lib/sysusers.d/mouseless.conf  (mouselessd user, mouseless group;
+#                                        daemon joins input + uinput)
 #   /etc/udev/rules.d/99-mouseless.rules
 #   /usr/local/share/doc/mouseless/README.md
 #   /etc/kanata/mouseless.kbd + kanata drop-in (via apply-phase11.sh)
@@ -21,7 +22,9 @@
 # Options:
 #   --dry-run        print actions without changing the system
 #   --skip-kanata    do not install/apply the kanata include + drop-in
-#   --no-group-add   do not add $SUDO_USER to mouseless/input
+#   --no-group-add   do not add $SUDO_USER to the mouseless socket group
+#                    (the installer never adds a human account to input
+#                    or uinput)
 #   --no-start       install files but do not enable/start mouselessd
 #   --help
 #
@@ -136,14 +139,15 @@ else
     echo "mouseless: system install"
 fi
 
-# 1. System user/group (idempotent). The unit's User=/Group= and the
-#    SupplementaryGroups=input line depend on this.
+# 1. System user/groups (idempotent). The unit's User=/Group= and the
+#    SupplementaryGroups=input uinput line depend on this.
 install_file "$REPO_DIR/platform/sysusers/mouseless.conf" \
     /usr/lib/sysusers.d/mouseless.conf 0644
 run systemd-sysusers
 
-# 2. /dev/uinput group access. Trigger the uinput node explicitly so the rule
-#    applies without a reboot.
+# 2. /dev/uinput access through the existing `uinput` group (kanata already
+#    has it; the daemon joins it). Trigger the node so the rule applies
+#    without a reboot.
 install_file "$REPO_DIR/platform/udev/99-mouseless.rules" \
     /etc/udev/rules.d/99-mouseless.rules 0644
 run udevadm control --reload-rules
@@ -176,23 +180,39 @@ else
     echo "skipping kanata include/drop-in (--skip-kanata)"
 fi
 
-# 5. Desktop user group membership. The overlay socket is 0770:mouseless and
-#    the temp-grab needs input. Existing memberships are left alone.
+# 5. Desktop user group membership. The 0770:mouseless overlay socket is the
+#    ONLY thing a human account needs. Never add a human to `input` or
+#    `uinput`: those allow keylogging and synthetic input injection for the
+#    whole session. The daemon already holds them.
+#    Existing elevated memberships are reported, never silently removed.
 if [ "$NO_GROUP_ADD" -eq 0 ]; then
     _target="${SUDO_USER:-}"
     if [ -n "$_target" ] && [ "$_target" != root ]; then
-        for _grp in mouseless input; do
-            if getent group "$_grp" >/dev/null 2>&1; then
-                if ! id -nG "$_target" | tr ' ' '\n' | grep -qx "$_grp"; then
-                    run usermod -aG "$_grp" "$_target"
-                    echo "added $_target to group $_grp (log out/in required)"
-                fi
-            else
-                echo "warning: group $_grp does not exist; add $_target manually" >&2
+        if getent group mouseless >/dev/null 2>&1; then
+            if ! id -nG "$_target" | tr ' ' '\n' | grep -qx mouseless; then
+                run usermod -aG mouseless "$_target"
+                echo "added $_target to group mouseless (log out/in required)"
+            fi
+        else
+            echo "warning: group mouseless does not exist; add $_target manually" >&2
+        fi
+
+        _elevated=
+        for _grp in input uinput; do
+            if id -nG "$_target" | tr ' ' '\n' | grep -qx "$_grp"; then
+                _elevated="$_elevated $_grp"
             fi
         done
+        if [ -n "$_elevated" ]; then
+            echo "warning: $_target is in privileged input group(s):$_elevated" >&2
+            echo "         these allow keylogging/input injection; remove with:" >&2
+            for _grp in $_elevated; do
+                echo "           sudo gpasswd -d $_target $_grp" >&2
+            done
+            echo "         then log out and back in." >&2
+        fi
     else
-        echo "no SUDO_USER; add your desktop user to groups mouseless and input manually" >&2
+        echo "no SUDO_USER; add your desktop user to group mouseless manually" >&2
     fi
 else
     echo "skipping desktop user group changes (--no-group-add)"
@@ -222,6 +242,8 @@ System install complete. Verify:
 Install the GNOME extension as your desktop user:
   ./platform/install-extension.sh
 
-If the installer added you to mouseless/input, log out and back in before
-using the overlay; the running session keeps its old group membership.
+If the installer added you to the mouseless socket group, log out and back in
+before using the overlay; the running session keeps its old group membership.
+Your account must NOT be in input or uinput (the daemon and kanata hold
+those). Check with: id
 EOF

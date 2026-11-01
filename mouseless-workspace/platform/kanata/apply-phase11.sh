@@ -76,6 +76,17 @@ if ! kanata --check --cfg "$CFG"; then
   exit 1
 fi
 
+# The drop-in names `input` + `uinput` so it also works on hosts where
+# kanata-svc has no device permissions yet. systemd refuses to start a unit
+# whose SupplementaryGroups= names a missing group, so create them first
+# (idempotent: getent succeeds when they already exist).
+for _grp in input uinput; do
+  if ! getent group "$_grp" >/dev/null 2>&1; then
+    groupadd "$_grp"
+    echo "created missing group $_grp (needed by SupplementaryGroups=)"
+  fi
+done
+
 mkdir -p /etc/systemd/system/kanata.service.d
 DROPIN_DST=/etc/systemd/system/kanata.service.d/mouseless.conf
 if [ -f "$DROPIN_DST" ]; then

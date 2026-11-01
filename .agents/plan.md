@@ -305,8 +305,9 @@ Trait-boundary rules (enforced in review + CI):
   per audit W2; verify `LayerChange` latency.
   _Verified 2026-10-29: kanata 1.12.0 active, `127.0.0.1:7070` listening,
   `kanata-mouseless` output present; layer changes and resync observed during
-  host e2e. `SupplementaryGroups=mouseless` added to the drop-in so the daemon
-  group does not drop kanata's `input`/`uinput` access._
+  host e2e. The drop-in lists `SupplementaryGroups=input uinput`; systemd
+  extends, so it is a no-op where kanata already has them and a fix where it
+  does not. It never joins the human socket group._
 - [x] **1.2 Thin daemon:** TCP subscriber + resync, RAII temp-grab cell reader
   (fresh fd per overlay, `EVIOCGKEY` + drain per G6/G7),
   `mouseless-core` grid math, uinput mouse deltas + `BTN_*` (closed-loop bounded
@@ -358,9 +359,11 @@ Trait-boundary rules (enforced in review + CI):
   _See `mouseless-workspace/specs/SPEC-daemon.md` §Movement control loop._
 
 ### Packaging & service install (cross-phase, 2026-10-31)
-- [x] `sysusers.d` (`mouselessd` + `mouseless` + `input`), hardened
-  `mouselessd.service` (`SupplementaryGroups=input`, empty capability set,
-  `StartLimitIntervalSec=0`, `ExecStart=... --kanata 127.0.0.1:7070`).
+- [x] `sysusers.d` (`mouselessd` + `mouseless` socket group; daemon joins
+  kanata's existing `input`/`uinput` groups), hardened `mouselessd.service`
+  (`SupplementaryGroups=input uinput`, empty capability set,
+  `StartLimitIntervalSec=0`, `ExecStart=... --kanata 127.0.0.1:7070`). Human
+  accounts never join `input`/uinput groups.
 - [x] `platform/install-system.sh` (root; sysusers → udev → binaries → unit →
   kanata → groups → enable/restart; timestamped backups; `--dry-run`,
   `--skip-kanata`, `--no-group-add`, `--no-start`).
@@ -401,5 +404,7 @@ Trait-boundary rules (enforced in review + CI):
 5. Closed-loop cursor movement (G1): verify cross-monitor moves and accelerated
    deltas settle within 2 px; the flat-accel udev rule was removed as ineffective.
 6. `apt install libgtk-4-dev libadwaita-1-dev` for the Rust GTK build.
-7. Permissions path: `mouseless` group + udev `uinput` rule + `input` membership
-   (same as upstream), scoped to temp-grab + uinput mouse (no permanent grab).
+7. Permissions path (least privilege): human `mouseless` group for the overlay
+   socket only; `/dev/uinput` (0660) on the existing `uinput` group that kanata
+   uses; the daemon joins `input` for the temp-grab. No human account in
+   `input`/uinput groups. Scoped to temp-grab + uinput mouse (no permanent grab).

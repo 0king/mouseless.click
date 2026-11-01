@@ -79,7 +79,7 @@ Rust 2021; `uinput` 0.1, `thiserror`, `serde` (button names).
 
 ```sh
 cargo test -p mouseless-mouse
-# live check (needs mouseless group + udev rule):
+# live check (existing uinput group, shared with kanata, + udev rule):
 ls -l /dev/input/by-id/ | grep mouseless   # device name check on a live system
 ```
 

@@ -17,6 +17,10 @@ Reference behavior: [mouseless.click docs](file:///.misc/extracted_docs.txt).
   open fresh per overlay, close on `Drop`; `EVIOCGKEY` snapshot on acquire, drain
   on release (audits G6/G7).
 - Never hardcode `/dev/input/eventN`. Discover by device name + inotify rescan.
+- Never add a human account to `input` or `uinput`: the overlay socket group
+  `mouseless` is the only human membership. Device-level groups belong to
+  `mouselessd` and `kanata-svc`, which share the existing `input`/`uinput`
+  groups (AGENTS.md §4.5).
 - The hardware-priority pipeline (grab-physical-first) is DELETED. Do not
   reintroduce it under any name. Rationale in plan §1.4.
 

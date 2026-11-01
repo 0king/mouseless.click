@@ -140,6 +140,16 @@ kanata owns interception. The old "Slint UI" agent is replaced by the GTK agent.
    config value. If a change touches core to add a backend, the abstraction is wrong.
 3. `platform/` owns OS specifics (udev, units, `.desktop`, Shell API targets).
 4. Critical-area tests (plan §8) are blocking: red means no merge.
+5. **Least privilege for input is non-negotiable.** Never add the desktop user
+   (`dj` or any human account) to `input` or `uinput`. Those groups allow
+   keylogging and synthetic input injection across the whole session. Only the
+   service accounts may hold them: `kanata-svc` and `mouselessd` share the
+   existing `input`/`uinput` groups. The kanata drop-in lists both in
+   `SupplementaryGroups=` (systemd extends, so this is a no-op when kanata
+   already has them and a fix when it does not). The human user is in `mouseless`
+   alone, which grants the overlay socket only. A feature that seems to need
+   human `input` access is a daemon design bug, never an installer flag.
+   `scripts/check-platform.sh` enforces this in CI.
 
 ---
 
