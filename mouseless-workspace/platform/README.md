@@ -158,11 +158,17 @@ gnome-extensions uninstall mouseless@sonuscape.example
   `sudo gpasswd -d <user> input` (same for `uinput`) and log out/in. The daemon
   and kanata do not need the human account to hold these.
 - **`/dev/uinput` group is not `uinput`** — another udev rule that sorts after
-  `99-mouseless.rules` (for example a launcher's `99-vicinae-uinput.rules`)
-  re-assigned the node, or the host's default is `input`. The daemon still
-  works because it is in both groups; the least-privilege invariant is that no
-  human account is in `input`/`uinput`; re-check `id` and prefer removing the
-  competing rule if it is not needed.
+  `99-mouseless.rules` (for example a launcher's `99-vicinae-uinput.rules`,
+  required by its setgid `vicinae-input-server`) re-assigned the node. The
+  daemon still works because it is in both `input` and `uinput`; the
+  least-privilege invariant is that no human account is in `input`/`uinput`.
+  Fix: rename the competing rule to sort **before** ours (e.g.
+  `sudo mv /etc/udev/rules.d/99-vicinae-uinput.rules
+  /etc/udev/rules.d/90-vicinae-uinput.rules && sudo udevadm control
+  --reload-rules && sudo udevadm trigger --subsystem-match=misc
+  --sysname-match=uinput`). This makes `uinput` own the node while the
+  launcher's `setfacl` still grants its `input`-group process access. Do **not**
+  delete the rule if that tool depends on it.
 - **Extension not listed** — `gnome-extensions list`; repack with
   `./platform/install-extension.sh`; on Wayland a logout/login is required for
   a new install.
