@@ -714,3 +714,100 @@ pub fn choose_file<F>(
     });
     dialog.show();
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mouseless_ipc::{decode, encode, KIND_CLIENT, KIND_DAEMON};
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixListener;
+
+    fn socket_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mouseless-gtk-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// A one-shot daemon that asserts the GUI sent `Update` and replies once.
+    fn fake_daemon(dir: &std::path::Path, reply: DaemonToClient) -> PathBuf {
+        let socket = dir.join("daemon.sock");
+        let listener = UnixListener::bind(&socket).unwrap();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            reader.read_line(&mut line).unwrap();
+            let envelope = decode(&line).unwrap();
+            assert_eq!(envelope.kind, KIND_CLIENT);
+            assert_eq!(envelope.payload["type"], "Update");
+            let line = encode(KIND_DAEMON, &reply).unwrap();
+            stream.write_all(format!("{line}\n").as_bytes()).unwrap();
+        });
+        socket
+    }
+
+    #[test]
+    fn apply_pushes_update_and_returns_the_ack() {
+        let dir = socket_dir("apply-ack");
+        let socket = fake_daemon(
+            &dir,
+            DaemonToClient::Ack {
+                message: "configuration saved and applied".into(),
+            },
+        );
+        let config = Config::default();
+        let outcome = attempt_apply(&socket, &config, &config);
+        match outcome {
+            ApplyOutcome::Applied {
+                config: applied,
+                message,
+                warnings,
+            } => {
+                assert_eq!(*applied, config);
+                assert_eq!(message, "configuration saved and applied");
+                assert!(warnings.is_empty());
+            }
+            _ => panic!("expected an applied outcome"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_surfaces_a_daemon_rejection() {
+        let dir = socket_dir("apply-error");
+        let socket = fake_daemon(
+            &dir,
+            DaemonToClient::Error {
+                code: "invalid_config".into(),
+                message: "behavior.tap_threshold_ms: bad".into(),
+            },
+        );
+        let config = Config::default();
+        match attempt_apply(&socket, &config, &config) {
+            ApplyOutcome::DaemonError { code, message } => {
+                assert_eq!(code, "invalid_config");
+                assert!(message.contains("tap_threshold_ms"));
+            }
+            _ => panic!("expected a daemon error"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn apply_reports_an_unreachable_daemon() {
+        let dir = socket_dir("apply-missing");
+        let config = Config::default();
+        match attempt_apply(&dir.join("missing.sock"), &config, &config) {
+            ApplyOutcome::Unreachable(message) => assert!(!message.is_empty()),
+            _ => panic!("expected an unreachable outcome"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

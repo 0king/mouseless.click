@@ -279,7 +279,8 @@ mouseless settings appearance                    # installed CLI opens the same 
 - GUI smoke: manual checklist (Phase 3): edit → apply → live update; import/export
   preset round-trip; deep link opens correct page; kill-switch chord visible.
   Automated coverage today: `mouseless-gtk` unit tests for paths, key-conflict
-  hints, colour/opacity formatting, the kanata gate, and status formatting;
+  hints, colour/opacity formatting, the kanata gate, status formatting, and the
+  apply wire path (Update → Ack/Error/unreachable against a fake daemon);
   CLI tests for settings deep-link routing/argument forwarding; plus a live
   launch smoke on every settings page (clean stderr, window stays up).
 
