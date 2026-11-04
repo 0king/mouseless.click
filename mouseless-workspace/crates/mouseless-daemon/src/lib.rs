@@ -18,8 +18,8 @@
 //! - custom free mode (`lyr-free`) with an 8 ms fixed-step physics tick.
 
 use mouseless_core::{
-    cell_bounds, cell_center, cursor_hide_target, select_monitor, subcell_bounds, Corner,
-    GridConfig, Monitor, MonitorDirection, Point, Rect,
+    cursor_hide_target, select_monitor, subcell_bounds, Corner, GridConfig, Monitor,
+    MonitorDirection, Point, PrimaryGrid, Rect,
 };
 use mouseless_ipc::{CursorPos, GridCell, GridModel, MonitorLayout};
 use mouseless_kbd::{
@@ -145,9 +145,10 @@ pub struct DaemonConfig {
     pub kanata_addr: String,
     /// Overlay socket path ([`mouseless_ipc::SOCKET_PATH`]).
     pub socket_path: String,
-    /// Level-1 grid (MVP default 4×2, keys `a s d f j k l ;`).
-    pub grid: GridConfig,
-    /// Subgrid inside a selected cell (same keys by default).
+    /// Primary two-level grid: 10 columns × 30 rows by default, each cell
+    /// labelled with its column key followed by its row key (e.g. `AQ`).
+    pub grid: PrimaryGrid,
+    /// Subgrid inside a selected cell: 10×3, keyboard-row layout by default.
     pub subgrid: GridConfig,
     /// Custom physics (`lyr-free`) or kanata's `lyr-mouse` fallback.
     pub free_mode_engine: FreeModeEngine,
@@ -183,7 +184,7 @@ impl Default for DaemonConfig {
             kanata_addr: "127.0.0.1:7070".into(),
             socket_path: mouseless_ipc::SOCKET_PATH.into(),
             grid: default_grid(),
-            subgrid: default_grid(),
+            subgrid: default_subgrid(),
             free_mode_engine: FreeModeEngine::Custom,
             free_mode: FreeModeParams::default(),
             wheel: WheelParams::default(),
@@ -200,12 +201,33 @@ impl Default for DaemonConfig {
     }
 }
 
-/// MVP default grid: 4 columns × 2 rows, row-major.
-pub fn default_grid() -> GridConfig {
+/// Level-1 (column) keys, left to right: one home-row key per column.
+pub const COLUMN_KEYS: &str = "asdfghjkl;";
+/// Level-2 (row) keys, top to bottom: the full QWERTY letter block in order.
+pub const ROW_KEYS: &str = "qwertyuiopasdfghjkl;zxcvbnm,./";
+/// Subgrid keys, row-major: the same QWERTY block laid out 10×3.
+pub const SUBGRID_KEYS: &str = "qwertyuiopasdfghjkl;zxcvbnm,./";
+
+/// Default primary grid: 10 columns (`asdfghjkl;`) × 30 rows (`qwerty…/`).
+///
+/// These sizes mirror the mouseless.click v1.0 "position based columns"
+/// preset: a column key picks the horizontal strip, a row key picks the cell
+/// inside it, and the two characters form the cell label.
+pub fn default_grid() -> PrimaryGrid {
+    PrimaryGrid {
+        cols: COLUMN_KEYS.chars().count() as u32,
+        rows: ROW_KEYS.chars().count() as u32,
+        column_keys: COLUMN_KEYS.chars().collect(),
+        row_keys: ROW_KEYS.chars().collect(),
+    }
+}
+
+/// Default subgrid: 10 × 3, one key per sub-cell in keyboard-row order.
+pub fn default_subgrid() -> GridConfig {
     GridConfig {
-        cols: 4,
-        rows: 2,
-        keys: vec!['a', 's', 'd', 'f', 'j', 'k', 'l', ';'],
+        cols: 10,
+        rows: 3,
+        keys: SUBGRID_KEYS.chars().collect(),
     }
 }
 
@@ -245,6 +267,8 @@ pub struct Daemon<K, M, O, G = CellGrab> {
     grab: Option<G>,
     grab_factory: fn() -> Result<G, KbdError>,
     selected_cell: Option<u32>,
+    /// Pending level-1 column while a two-key cell selection is in progress.
+    pending_column: Option<u32>,
     active_monitor: Option<Monitor>,
     free_mode: Option<FreeModeSession>,
     click_counter: ClickCounter,
@@ -298,6 +322,8 @@ where
         config: DaemonConfig,
         grab_factory: fn() -> Result<G, KbdError>,
     ) -> Self {
+        debug_assert!(config.grid.validate().is_ok(), "invalid primary grid");
+        debug_assert!(config.subgrid.validate().is_ok(), "invalid subgrid");
         let nudge = NudgeState::new(config.nudges_per_cell);
         Self {
             kbd,
@@ -308,6 +334,7 @@ where
             grab: None,
             grab_factory,
             selected_cell: None,
+            pending_column: None,
             active_monitor: None,
             free_mode: None,
             click_counter: ClickCounter::default(),
@@ -389,6 +416,7 @@ where
             return Err(e);
         }
         self.selected_cell = None;
+        self.pending_column = None;
         self.active_monitor = Some(monitor);
         self.pending_click_deadline_ms = None;
         self.click_counter.reset();
@@ -432,6 +460,7 @@ where
         self.free_mode = Some(session);
         self.active_monitor = monitor;
         self.selected_cell = None;
+        self.pending_column = None;
         self.pending_click_deadline_ms = None;
         self.click_counter.reset();
         self.last_click_target = None;
@@ -458,6 +487,7 @@ where
         self.grab = None; // RAII: drain + ungrab + close (audits G6/G7)
         self.free_mode = None;
         self.selected_cell = None;
+        self.pending_column = None;
         self.active_monitor = None;
         // A layer change can end the session without an Esc key event, so the
         // drag button must be released here rather than only in cancel_overlay.
@@ -494,6 +524,7 @@ where
     pub fn on_overlay_lost(&mut self) {
         if self.free_mode.is_some() {
             self.selected_cell = None;
+            self.pending_column = None;
             self.held_subcell = None;
             let _ = self.overlay.hide();
             return;
@@ -631,28 +662,46 @@ where
             }
         }
         let Some(parent) = self.selected_cell else {
-            let Some(index) = index_of(&self.config.grid.keys, c) else {
-                return Ok(SessionStep::Continue);
-            };
-            let monitor = self.active_monitor.ok_or(DaemonError::NoLayout)?;
-            let model =
-                build_subgrid_model(&self.config.grid, &self.config.subgrid, &monitor, index)?;
-            self.selected_cell = Some(index);
-            self.machine.open_subgrid()?;
-            self.overlay.show_subgrid(index, &model)?;
-            self.click_counter.reset();
-            self.last_click_target = None;
+            // Two-key cell selection: the level-1 key picks the column, the
+            // level-2 key picks the row. Until both are known the overlay
+            // stays on the primary grid. Every level-1 key is also a level-2
+            // key, so once a column is pending the next key always resolves
+            // as a row (Esc abandons the pending prefix).
+            match self.pending_column {
+                None => {
+                    if let Some(column) = self.config.grid.column_of(c) {
+                        self.pending_column = Some(column);
+                    }
+                }
+                Some(column) => {
+                    if let Some(row) = self.config.grid.row_of(c) {
+                        let index = self.config.grid.index(column, row);
+                        let monitor = self.active_monitor.ok_or(DaemonError::NoLayout)?;
+                        let model = build_subgrid_model(
+                            &self.config.grid,
+                            &self.config.subgrid,
+                            &monitor,
+                            index,
+                        )?;
+                        self.pending_column = None;
+                        self.selected_cell = Some(index);
+                        self.machine.open_subgrid()?;
+                        self.overlay.show_subgrid(index, &model)?;
+                        self.click_counter.reset();
+                        self.last_click_target = None;
+                    }
+                }
+            }
             return Ok(SessionStep::Continue);
         };
         let Some(sub) = index_of(&self.config.subgrid.keys, c) else {
             return Ok(SessionStep::Continue);
         };
         let monitor = self.active_monitor.ok_or(DaemonError::NoLayout)?;
-        let parent_rect = cell_bounds(
-            &self.config.grid,
-            &monitor,
-            cell_id(&self.config.grid, parent),
-        );
+        let parent_rect = self
+            .config
+            .grid
+            .bounds(&monitor, self.config.grid.cell_id(parent));
         let sub_rect = subcell_bounds(
             &parent_rect,
             &self.config.subgrid,
@@ -716,11 +765,9 @@ where
             None => match self.selected_cell {
                 Some(parent) => {
                     let monitor = self.active_monitor.ok_or(DaemonError::NoLayout)?;
-                    cell_center(
-                        &self.config.grid,
-                        &monitor,
-                        cell_id(&self.config.grid, parent),
-                    )
+                    self.config
+                        .grid
+                        .center(&monitor, self.config.grid.cell_id(parent))
                 }
                 None => self.initial_action_target()?,
             },
@@ -833,6 +880,7 @@ where
     /// Return to the level-1 overlay while keeping the grab/session alive.
     fn reset_to_overlay(&mut self) {
         self.selected_cell = None;
+        self.pending_column = None;
         self.held_subcell = None;
         self.click_counter.reset();
         self.last_click_target = None;
@@ -860,6 +908,7 @@ where
         let model = build_grid_model(&self.config.grid, &monitor);
         self.active_monitor = Some(monitor);
         self.selected_cell = None;
+        self.pending_column = None;
         self.held_subcell = None;
         self.click_counter.reset();
         self.last_click_target = None;
@@ -1345,18 +1394,15 @@ fn index_of(keys: &[char], c: char) -> Option<u32> {
     keys.iter().position(|k| *k == c).map(|i| i as u32)
 }
 
-/// Build the level-1 wire model from pure geometry (never render in JS).
-pub fn build_grid_model(config: &GridConfig, monitor: &Monitor) -> GridModel {
-    let cells = config
-        .keys
-        .iter()
-        .enumerate()
-        .map(|(i, label)| {
-            GridCell::new(
-                i as u32,
-                label.to_string(),
-                cell_bounds(config, monitor, cell_id(config, i as u32)),
-            )
+/// Build the primary two-level wire model from pure geometry.
+///
+/// Every cell carries the concatenated column+row label (e.g. `AQ`); the
+/// extension only draws what is sent (never render/derive in JS).
+pub fn build_grid_model(config: &PrimaryGrid, monitor: &Monitor) -> GridModel {
+    let cells = (0..config.cell_count())
+        .map(|i| {
+            let cell = config.cell_id(i);
+            GridCell::new(i, config.label(cell), config.bounds(monitor, cell))
         })
         .collect();
     GridModel {
@@ -1366,9 +1412,9 @@ pub fn build_grid_model(config: &GridConfig, monitor: &Monitor) -> GridModel {
     }
 }
 
-/// Build a subgrid model nested inside parent cell `parent`.
+/// Build a subgrid model nested inside primary cell `parent`.
 pub fn build_subgrid_model(
-    config: &GridConfig,
+    config: &PrimaryGrid,
     sub: &GridConfig,
     monitor: &Monitor,
     parent: u32,
@@ -1376,7 +1422,7 @@ pub fn build_subgrid_model(
     if parent >= config.cell_count() {
         return Err(DaemonError::InvalidCell(parent));
     }
-    let parent_rect = cell_bounds(config, monitor, cell_id(config, parent));
+    let parent_rect = config.bounds(monitor, config.cell_id(parent));
     let cells = sub
         .keys
         .iter()
@@ -1384,7 +1430,7 @@ pub fn build_subgrid_model(
         .map(|(i, label)| {
             GridCell::new(
                 i as u32,
-                label.to_string(),
+                label.to_ascii_uppercase().to_string(),
                 subcell_bounds(&parent_rect, sub, cell_id(sub, i as u32)),
             )
         })
@@ -1691,9 +1737,9 @@ mod tests {
         assert!(d.grab_held());
         assert!(d.overlay().visible);
         let model = d.overlay().last_model.as_ref().unwrap();
-        assert_eq!(model.cells.len(), 8);
-        assert_eq!(model.cells[0].label, "a");
-        assert_eq!((model.cells[0].w, model.cells[0].h), (480.0, 540.0));
+        assert_eq!(model.cells.len(), 300);
+        assert_eq!(model.cells[0].label, "AQ");
+        assert_eq!((model.cells[0].w, model.cells[0].h), (192.0, 36.0));
         // Duplicate LayerChange: still exactly one grab (idempotent).
         d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
             .unwrap();
@@ -1752,25 +1798,31 @@ mod tests {
     }
 
     #[test]
-    fn cell_key_opens_subgrid_then_second_key_clicks_subcell_center() {
+    fn two_key_cell_selection_opens_subgrid_then_clicks_subcell_center() {
         let mut d = daemon();
         d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
             .unwrap();
-        // 'a' selects cell 0 (top-left, 480×540); subgrid key 'd' is the
-        // third-quarter sub-cell on row 0: center = (300, 135).
+        // 'a' picks column 0 (top-left 192×36 cell slice), 'q' picks row 0.
+        // Only after both level keys is the cell selected and the subgrid up.
         assert_eq!(
             d.handle_cell_key(CellKey::Char('a')).unwrap(),
             SessionStep::Continue
         );
+        assert_eq!(d.phase(), Phase::Overlay);
+        assert_eq!(
+            d.handle_cell_key(CellKey::Char('q')).unwrap(),
+            SessionStep::Continue
+        );
         assert_eq!(d.phase(), Phase::Subgrid);
+        // Subgrid key 'd' is sub-cell (2, 1): center = (48, 18).
         assert_eq!(
             d.handle_cell_key(CellKey::Char('d')).unwrap(),
             SessionStep::Clicked
         );
-        // Target (300, 135); the closed loop settles within tolerance.
-        assert_near(d.mouse.position(), (300, 135));
+        // Target (48, 18); the closed loop settles within tolerance.
+        assert_near(d.mouse.position(), (48, 18));
         assert_eq!(d.mouse.click_positions.len(), 1);
-        assert_near(d.mouse.click_positions[0], (300, 135));
+        assert_near(d.mouse.click_positions[0], (48, 18));
         assert_eq!(d.mouse.clicks, vec![MouseButton::Left]);
         assert!(!d.overlay_visible());
         assert!(!d.grab_held());
@@ -1783,12 +1835,13 @@ mod tests {
         d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
             .unwrap();
         d.handle_cell_key(CellKey::Char('a')).unwrap();
+        d.handle_cell_key(CellKey::Char('q')).unwrap();
         assert_eq!(
             d.handle_cell_key(CellKey::Space).unwrap(),
             SessionStep::Clicked
         );
-        // Cell center (240, 270), within the closed-loop tolerance.
-        assert_near(d.mouse.position(), (240, 270));
+        // Cell (0, 0) is 192×36 at the top-left: center (96, 18).
+        assert_near(d.mouse.position(), (96, 18));
         assert!(!d.overlay_visible());
     }
 
@@ -1852,8 +1905,9 @@ mod tests {
             h: 1080,
             scale: 1.0,
         };
-        let model = build_subgrid_model(&default_grid(), &default_grid(), &monitor, 0).unwrap();
-        assert_eq!(model.cells.len(), 8);
+        let model = build_subgrid_model(&default_grid(), &default_subgrid(), &monitor, 0).unwrap();
+        assert_eq!(model.cells.len(), 30);
+        assert_eq!(model.cells[0].label, "Q");
         assert_eq!(
             (
                 model.cells[0].x,
@@ -1861,17 +1915,14 @@ mod tests {
                 model.cells[0].w,
                 model.cells[0].h
             ),
-            (0.0, 0.0, 120.0, 270.0)
+            (0.0, 0.0, 19.2, 12.0)
         );
-        assert_eq!(
-            (
-                model.cells[7].x,
-                model.cells[7].y,
-                model.cells[7].w,
-                model.cells[7].h
-            ),
-            (360.0, 270.0, 120.0, 270.0)
-        );
+        let last = &model.cells[29];
+        assert!((last.x - 172.8).abs() < 1e-6);
+        assert!((last.y - 24.0).abs() < 1e-6);
+        assert!((last.w - 19.2).abs() < 1e-6);
+        assert!((last.h - 12.0).abs() < 1e-6);
+        assert_eq!(model.cells[29].label, "/");
     }
 
     #[test]
@@ -1886,6 +1937,7 @@ mod tests {
         d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
             .unwrap();
         d.handle_key_event_at(key('a'), 10).unwrap();
+        d.handle_key_event_at(key('q'), 20).unwrap();
         assert_eq!(
             d.handle_key_event_at(key('d'), 100).unwrap(),
             SessionStep::Clicked
@@ -1917,6 +1969,7 @@ mod tests {
         d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
             .unwrap();
         d.handle_key_event_at(key('a'), 0).unwrap();
+        d.handle_key_event_at(key('q'), 0).unwrap();
         d.handle_key_event_at(key('d'), 100).unwrap();
         d.tick(599).unwrap();
         assert!(d.overlay_visible());
@@ -1938,15 +1991,21 @@ mod tests {
         d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
             .unwrap();
         d.handle_cell_key(CellKey::Char('a')).unwrap();
+        d.handle_cell_key(CellKey::Char('q')).unwrap();
         assert_eq!(
             d.handle_cell_key(CellKey::Char('d')).unwrap(),
             SessionStep::Clicked
         );
         assert!(d.overlay_visible());
         assert_eq!(d.phase(), Phase::Overlay);
-        // The next cell key starts a fresh selection.
+        // The next level-1 key starts a fresh two-key selection.
         assert_eq!(
             d.handle_cell_key(CellKey::Char('f')).unwrap(),
+            SessionStep::Continue
+        );
+        assert_eq!(d.phase(), Phase::Overlay);
+        assert_eq!(
+            d.handle_cell_key(CellKey::Char('q')).unwrap(),
             SessionStep::Continue
         );
         assert_eq!(d.phase(), Phase::Subgrid);
@@ -1969,6 +2028,7 @@ mod tests {
         d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
             .unwrap();
         d.handle_cell_key(CellKey::Char('a')).unwrap();
+        d.handle_cell_key(CellKey::Char('q')).unwrap();
         let alt = Modifiers {
             alt: true,
             ..Default::default()
@@ -2004,6 +2064,7 @@ mod tests {
         d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
             .unwrap();
         d.handle_cell_key(CellKey::Char('a')).unwrap();
+        d.handle_cell_key(CellKey::Char('q')).unwrap();
         let alt = Modifiers {
             alt: true,
             ..Default::default()
@@ -2042,6 +2103,7 @@ mod tests {
         d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
             .unwrap();
         d.handle_cell_key(CellKey::Char('a')).unwrap();
+        d.handle_cell_key(CellKey::Char('q')).unwrap();
         let alt = Modifiers {
             alt: true,
             ..Default::default()
@@ -2068,6 +2130,7 @@ mod tests {
         d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
             .unwrap();
         d.handle_cell_key(CellKey::Char('a')).unwrap();
+        d.handle_cell_key(CellKey::Char('q')).unwrap();
         d.handle_key_event_at(key('d'), 100).unwrap();
         assert!(d.held_subcell.is_some());
         let alt = Modifiers {
@@ -2116,6 +2179,7 @@ mod tests {
         d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
             .unwrap();
         d.handle_cell_key(CellKey::Char('a')).unwrap();
+        d.handle_cell_key(CellKey::Char('q')).unwrap();
         let alt = Modifiers {
             alt: true,
             ..Default::default()
@@ -2256,8 +2320,9 @@ mod tests {
         .unwrap();
         assert_eq!(d.active_monitor().unwrap().x, 0);
 
-        // Cell 'a' + subcell 'd' => (300, 135) on the built-in.
+        // Cell (a, q) + subcell 'd' => (48, 18) on the built-in.
         d.handle_cell_key(CellKey::Char('a')).unwrap();
+        d.handle_cell_key(CellKey::Char('q')).unwrap();
         assert_eq!(
             d.handle_cell_key(CellKey::Char('d')).unwrap(),
             SessionStep::Clicked
@@ -2268,8 +2333,8 @@ mod tests {
             clicked.0 < 1920,
             "click landed on the wrong monitor: {clicked:?}"
         );
-        assert!((clicked.0 - 300).abs() <= 2, "x off target: {clicked:?}");
-        assert!((clicked.1 - 135).abs() <= 2, "y off target: {clicked:?}");
+        assert!((clicked.0 - 48).abs() <= 2, "x off target: {clicked:?}");
+        assert!((clicked.1 - 18).abs() <= 2, "y off target: {clicked:?}");
         assert_eq!(d.mouse.clicks, vec![MouseButton::Left]);
         d.mouse.assert_bounded();
     }
@@ -2425,6 +2490,7 @@ mod tests {
         )
         .unwrap();
         d.handle_cell_key(CellKey::Char('a')).unwrap();
+        d.handle_cell_key(CellKey::Char('q')).unwrap();
         let shift = Modifiers {
             shift: true,
             ..Default::default()
@@ -2457,14 +2523,15 @@ mod tests {
         d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
             .unwrap();
         d.handle_cell_key(CellKey::Char('a')).unwrap();
-        // 'd' is sub-cell 2: 120×270 at x=240; center (300, 135).
+        d.handle_cell_key(CellKey::Char('q')).unwrap();
+        // 'd' is sub-cell (2, 1): 19.2×12 at (38.4, 12); center (48, 18).
         assert_eq!(
             d.handle_key_event_at(key('d'), 100).unwrap(),
             SessionStep::Continue
         );
         assert!(d.held_subcell.is_some());
-        assert_near(d.mouse.position(), (300, 135));
-        // Right nudge: 120 / 4 = 30 px.
+        assert_near(d.mouse.position(), (48, 18));
+        // Right nudge: 19.2 / 4 = 4.8 px.
         assert_eq!(
             d.handle_key_event_at(
                 KeyEvent {
@@ -2478,7 +2545,7 @@ mod tests {
             SessionStep::Continue
         );
         // The nudge target is the sub-cell center plus one quarter cell.
-        assert_near(d.mouse.position(), (330, 135));
+        assert_near(d.mouse.position(), (53, 18));
         // Release the held subgrid key: click at the nudged target.
         assert_eq!(
             d.handle_key_event_at(release('d'), 300).unwrap(),
@@ -2502,11 +2569,12 @@ mod tests {
         d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
             .unwrap();
         d.handle_cell_key(CellKey::Char('a')).unwrap();
+        d.handle_cell_key(CellKey::Char('q')).unwrap();
         d.handle_cell_key(CellKey::Char('d')).unwrap();
         // Closed-loop moves settle on the sub-cell, then on the corner.
         assert!(d.mouse.moves.len() > 2);
         assert_eq!(d.mouse.click_positions.len(), 1);
-        assert_near(d.mouse.click_positions[0], (300, 135));
+        assert_near(d.mouse.click_positions[0], (48, 18));
         assert_near(d.mouse.position(), (1919, 1));
     }
 

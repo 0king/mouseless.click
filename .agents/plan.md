@@ -91,8 +91,10 @@ or custom free-mode session is active (see §5).
 
 - `defcfg`: add `linux-output-device-name "kanata-mouseless"`,
   `linux-dev-names-exclude ("mouseless-mouse")`, keep `keyboard-only` detect mode.
-- New layer `lyr-mouseless`: plain `a s d f j k l ;`, plain `spc`, `esc` → back to
-  base. Trigger: `ShiftLeft` tap (tap-dance/tap-hold, ~200 ms) → `layer-switch lyr-mouseless`.
+- New layer `lyr-mouseless`: the full QWERTY letter block emitted plainly
+  (`qwertyuiop` / `asdfghjkl;` / `zxcvbnm,./`, which covers the level-1 column
+  keys and every level-2 row key), plain `spc`, `esc` → back to base. Trigger:
+  `ShiftLeft` tap (tap-dance/tap-hold, ~200 ms) → `layer-switch lyr-mouseless`.
   Decision (audit C1, user-accepted): keep `ShiftLeft` to match upstream
   (`ShiftLeft` tap on Windows/Linux). Known cost: fast `ShiftLeft+letter` (<200 ms)
   can misfire as tap-then-letter instead of capital. Accepted mitigation for MVP:
@@ -177,6 +179,12 @@ Trait-boundary rules (enforced in review + CI):
   reports monitor geometry + cursor position to the daemon (the daemon needs both:
   geometry for cell centers, cursor pos for REL-delta computation since Linux has no
   absolute warp); renders grid/labels/highlight at 60 FPS from daemon frames.
+  Default primary grid (2026-11-03): 10 columns × 30 rows — level-1 column keys
+  `asdfghjkl;`, level-2 row keys `qwertyuiopasdfghjkl;zxcvbnm,./`; each cell is
+  labelled with both characters (`AQ`, `SQ`, `AW`, …). Selecting a cell takes
+  two keys (column, row), after which a 10×3 keyboard-layout subgrid opens
+  inside it for one-key sub-cell selection. The extension fills the grid with
+  `#d4de04` at 80% transparency (20% opacity) with `#ebe9e8` labels.
 - **State (`mouseless-state`):** `Normal → Overlay → Subgrid → Click`, plus
   `FreeModeSession` (custom physics, fixed 8 ms tick driven by the daemon loop,
   injectable `Clock`; the physics core stays sync/uncolored) and drag/action
@@ -324,8 +332,8 @@ Trait-boundary rules (enforced in review + CI):
   server); headless Shell smoke and host visual/fractional acceptance passed.
   `trackFullscreen` chrome can be re-shown by GNOME after monitor/overview/
   fullscreen changes; `render.js` re-hides it whenever no model is active._
-- [x] **1.4 End-to-end MVP:** tap Shift → overlay → 2 keys → left-click at cell
-  center, zero leaked keystrokes; tests #1–#6, #8 green.
+- [x] **1.4 End-to-end MVP:** tap Shift → overlay → cell keys → left-click,
+  zero leaked keystrokes; tests #1–#6, #8 green.
   _Passed 2026-10-29 on GNOME 50.1: `k`/`k` clicked `(2580,945)` at 100% and
   `(3060,945)` at 125%, with `REL_X/REL_Y/SYN` + `BTN_LEFT` on
   `mouseless-mouse`; grab leak file 0 bytes; overlay hidden after every run.
@@ -357,6 +365,17 @@ Trait-boundary rules (enforced in review + CI):
   absolute target. Do not disable the user's global acceleration to work
   around this._
   _See `mouseless-workspace/specs/SPEC-daemon.md` §Movement control loop._
+
+### Grid layout (pre-Phase 3, 2026-11-03)
+- [x] Two-level primary grid: 10 columns (`asdfghjkl;`) × 30 rows
+  (`qwertyuiopasdfghjkl;zxcvbnm,./`), 300 cells with two-character labels
+  (column char + row char). Two-key cell selection; 10×3 subgrid inside the
+  selected cell with one-character labels; overlay fill `#d4de04` at 80%
+  transparency (20% opacity) with `#ebe9e8`, per-cell-sized labels. Core/daemon/kbd/kanata/extension
+  updated and `cargo test --workspace` (112 tests) + clippy green; host visual
+  acceptance and the kanata re-apply remain manual.
+- [ ] Re-apply `platform/kanata/mouseless.kbd` (the overlay layer now emits the
+  full 30-key block explicitly) and verify the 10×30 grid on the host.
 
 ### Packaging & service install (cross-phase, 2026-10-31)
 - [x] `sysusers.d` (`mouselessd` + `mouseless` socket group; daemon joins

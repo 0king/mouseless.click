@@ -83,7 +83,8 @@ pub struct Envelope {
 pub struct GridCell {
     /// Row-major cell index (`CellId.row * cols + cell.col`).
     pub index: u32,
-    /// Display label (single character today).
+    /// Display label: one character for a subgrid cell, two for a primary
+    /// cell (`column key + row key`, e.g. `AQ`).
     pub label: String,
     /// Left edge in physical px.
     pub x: f64,

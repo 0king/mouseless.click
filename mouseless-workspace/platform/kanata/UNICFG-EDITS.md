@@ -73,10 +73,20 @@ With: `cp platform/kanata/mouseless.kbd /etc/kanata/mouseless.kbd`
 
 ## Layer contents
 
-- `lyr-mouseless` — clean 4×2 overlay: `a s d f j k l ;` cells, `spc` action,
-  `esc` → base. Modifiers are mapped explicitly so base aliases (`@ml-tap`,
-  `@ml-free-tap`, `@sp`) cannot fire while the overlay is open; the daemon
-  needs real Shift/Alt press/release events for monitor switching and drag.
+- `lyr-mouseless` — clean 10×30 overlay. Level-1 keys select a column
+  (`asdfghjkl;`); level-2 keys select the row inside it (the whole QWERTY
+  letter block, emitted plainly):
+
+  ```text
+  qwertyuiop
+  asdfghjkl;
+  zxcvbnm,./
+  ```
+
+  `spc` executes the action and `esc` → base. Modifiers are mapped explicitly
+  so base aliases (`@ml-tap`, `@ml-free-tap`, `@sp`) cannot fire while the
+  overlay is open; the daemon needs real Shift/Alt press/release events for
+  monitor switching and drag.
 - `lyr-free` — custom free mode for the daemon's physics loop:
   `i/k/j/l` move, `s/d/f` boost, `a` decel, `space` left button,
   `r/e/q/w` right/middle/back/forward, `m/,/.//` wheel, `esc` → base.

@@ -18,7 +18,13 @@
   ml-free-tap (tap-hold-release 200 200 (layer-switch lyr-free) lctl)
 )
 
-;; Clean no-HRM overlay layer: plain cell letters + space; esc exits to base.
+;; Clean no-HRM overlay layer: the full QWERTY letter block + space; esc exits
+;; to base. The daemon selects a cell with two keys: a level-1 column key from
+;; `asdfghjkl;`, then a level-2 row key from
+;; `qwertyuiopasdfghjkl;zxcvbnm,./` (and a third key selects the 10×3
+;; sub-cell). Every one of those 30 characters must be emitted plainly here so
+;; the temp grab can read it; otherwise `_` would fall through to base HRM
+;; aliases and delay or swallow the key.
 ;; Modifiers are explicit so the base aliases (`@ml-tap`, `@ml-free-tap`, `@sp`)
 ;; cannot fire while the overlay is open; the daemon needs the real press/release
 ;; events for Shift monitor-switching and Alt drag.
@@ -26,9 +32,9 @@
 (deflayer lyr-mouseless
   (layer-switch lyr-base) _ _ _ _ _ _ _ _ _ _ _ _
   _ _ _ _ _ _ _ _ _ _ _ _ _ _
-  _ _ _ _ _ _ _ _ _ _ _ _ _ _
-  _ a s d f _ _ j k l ; _ _
-  lsft _ _ _ _ _ _ _ _ _ _ rsft
+  _ q w e r t y u i o p _ _ _
+  _ a s d f g h j k l ; _ _
+  lsft z x c v b n m , . / rsft
   lctl lmet lalt spc ralt rctl rmet
 )
 

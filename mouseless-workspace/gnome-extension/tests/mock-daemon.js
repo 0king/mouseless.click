@@ -22,22 +22,34 @@ try {
 }
 
 const monitor = {x: 0, y: 0, w: 1920, h: 1080, scale: 1.0};
-const keys = ['a', 's', 'd', 'f', 'j', 'k', 'l', ';'];
-const cells = keys.map((label, i) => ({
+// Match the daemon defaults so the smoke exercises the real cell counts:
+// primary = 10 columns × 30 rows with two-character labels, subgrid = 10×3.
+const columnKeys = 'asdfghjkl;';
+const rowKeys = 'qwertyuiopasdfghjkl;zxcvbnm,./';
+const cols = columnKeys.length;
+const rows = rowKeys.length;
+const cellW = monitor.w / cols;
+const cellH = monitor.h / rows;
+const cells = [];
+for (let row = 0; row < rows; row++) {
+    for (let col = 0; col < cols; col++) {
+        cells.push({
+            index: row * cols + col,
+            label: `${columnKeys[col]}${rowKeys[row]}`.toUpperCase(),
+            x: col * cellW,
+            y: row * cellH,
+            w: cellW,
+            h: cellH,
+        });
+    }
+}
+const subCells = rowKeys.split('').map((label, i) => ({
     index: i,
-    label,
-    x: (i % 4) * 480,
-    y: Math.floor(i / 4) * 540,
-    w: 480,
-    h: 540,
-}));
-const subCells = keys.map((label, i) => ({
-    index: i,
-    label,
-    x: (i % 4) * 120,
-    y: Math.floor(i / 4) * 270,
-    w: 120,
-    h: 270,
+    label: label.toUpperCase(),
+    x: (i % 10) * (cellW / 10),
+    y: Math.floor(i / 10) * (cellH / 3),
+    w: cellW / 10,
+    h: cellH / 3,
 }));
 
 const service = new Gio.SocketService();
@@ -100,7 +112,7 @@ service.connect('incoming', (service_, connection) => {
                     model: {monitor, cells, highlight: null},
                 });
                 if (id === 1) {
-                    later(400, () => send({type: 'HighlightCell', index: 5}));
+                    later(400, () => send({type: 'HighlightCell', index: 137}));
                     later(800, () => send({
                         type: 'ShowSubgrid',
                         parent: 0,

@@ -15,7 +15,7 @@ udev rule, `sysusers`, installers, and the platform checks. Architecture:
 | `sysusers/mouseless.conf` | `/usr/lib/sysusers.d/mouseless.conf` | Creates `mouselessd`, the `mouseless` socket group, and joins the existing `uinput`/`input` device groups. |
 | `udev/99-mouseless.rules` | `/etc/udev/rules.d/99-mouseless.rules` | `/dev/uinput` for the `uinput` device group (kanata + daemon). No libinput acceleration override. |
 | `install-system.sh` | run in place | Installs the system files above + binaries. |
-| `install-extension.sh` | run in place | Packs/installs/enables the GNOME extension for the current user. |
+| `install-extension.sh` | run in place | Packs/installs/enables the GNOME extension for the current user. Removes the UUID from `org.gnome.shell disabled-extensions` after `install --force`, because GNOME leaves it there and `gnome-extensions enable` is then a silent no-op. |
 | `../scripts/check-platform.sh` | run in place | Asserts names, unit, udev, sysusers, scripts, and unit syntax. |
 
 ## Install
@@ -75,6 +75,25 @@ and continues; it never removes memberships silently.
 After the extension install, **log out and back in on Wayland** so GNOME
 Shell loads it. On X11, `Alt+F2`, `r`, Enter is enough. Group changes also
 require a new login.
+
+GNOME pitfall: `gnome-extensions install --force` can leave the UUID in
+`org.gnome.shell disabled-extensions`. While it is there, `gnome-extensions
+enable` exits 0 but does nothing (state stays INACTIVE) and the shell log shows
+no error. The installer now removes the UUID from that list automatically. To
+check/fix it manually:
+
+```sh
+# remove just the mouseless entry, then enable it:
+gsettings set org.gnome.shell disabled-extensions \
+  "$(gsettings get org.gnome.shell disabled-extensions \
+     | sed "s/'mouseless@sonuscape.example', //; s/, 'mouseless@sonuscape.example'//")"
+gnome-extensions enable mouseless@sonuscape.example
+gnome-extensions info mouseless@sonuscape.example   # Enabled: Yes / ACTIVE
+```
+
+If `info` still says INACTIVE, log out and back in; the running Shell caches
+extension ES modules, so changed `render.js`/`extension.js` code is only picked
+up on a fresh login on Wayland.
 
 ## Verify
 

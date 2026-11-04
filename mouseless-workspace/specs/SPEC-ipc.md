@@ -55,15 +55,16 @@ frames never crash either side; the socket is only usable by authorized peers.
 {
   "monitor": {"x": 0, "y": 0, "w": 1920, "h": 1080, "scale": 1.0},
   "cells": [
-    {"index": 0, "label": "a", "x": 0,   "y": 0,   "w": 480, "h": 540},
-    {"index": 1, "label": "s", "x": 480, "y": 0,   "w": 480, "h": 540}
+    {"index": 0, "label": "AQ", "x": 0,   "y": 0,   "w": 192, "h": 36},
+    {"index": 1, "label": "SQ", "x": 192, "y": 0,   "w": 192, "h": 36}
   ],
   "highlight": null
 }
 ```
 
 - `cells` are row-major; `index` matches the daemon's `CellId` ordering.
-- `label` is a display string (single character today).
+- `label` is a display string: two characters for a primary cell (column key +
+  row key, e.g. `AQ`), one for a subgrid cell.
 - For `ShowSubgrid`, `model.cells` are sub-cells of `parent` and MAY carry
   different labels than level 1.
 

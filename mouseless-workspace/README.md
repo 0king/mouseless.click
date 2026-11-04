@@ -50,6 +50,13 @@ gnome-extensions pack gnome-extension --force -o /tmp \
 gnome-extensions install --force /tmp/mouseless@sonuscape.example.shell-extension.zip
 ```
 
+If `gnome-extensions enable` returns success but `info` still shows
+`Inactive`, check `gsettings get org.gnome.shell disabled-extensions`: GNOME
+adds the UUID there on `gnome-extensions install --force`, and while it is
+listed `enable` is a silent no-op. `platform/install-extension.sh` now removes
+it automatically. On Wayland, log out and back in to load changed extension JS
+(the running Shell caches extension modules).
+
 Headless protocol/lifecycle smoke test (private D-Bus session, no real desktop):
 
 ```sh
@@ -62,6 +69,30 @@ Dev run against a private socket:
 MOUSELESS_SOCKET=/tmp/mouseless.sock cargo run -p mouseless-daemon -- \
   --kanata 127.0.0.1:7070
 ```
+
+## Overlay grid (Phase 2.3 / pre-Phase 3)
+
+Tap `ShiftLeft` to show the overlay. The primary grid is 10 columns × 30 rows:
+
+- **Level 1 (column):** `asdfghjkl;` (left → right)
+- **Level 2 (row):** the QWERTY letter block, top → bottom:
+
+  ```text
+  qwertyuiop
+  asdfghjkl;
+  zxcvbnm,./
+  ```
+
+Every cell is labelled with both keys in that order — the top-left cell is
+`AQ`, the cell one column right is `SQ`, and the cell below it is `AW`. Type the
+two characters to select a cell; its 10×3 subgrid (keyboard-row layout
+`qwertyuiop` / `asdfghjkl;` / `zxcvbnm,./`) opens inside the cell. Type one
+subgrid character to click its center. `Space` clicks the selected cell center,
+and `Esc` exits.
+
+The kanata overlay layer must emit the full 30-key block plainly; re-apply
+`platform/kanata/mouseless.kbd` with the system installer (or copy it to
+`/etc/kanata/` and restart `kanata.service`) after pulling this change.
 
 ## CLI
 
@@ -84,12 +115,17 @@ installed binaries accept `--version`/`-V` (for example
 
 Phases 1.2/1.3/1.4 and Phase 2 (custom free-mode physics, multi-click,
 drag/drop, nudges, modifier clicks, monitor switching, cursor hiding) are
-implemented and covered by 108 hermetic tests; the Phase-1.4 host e2e and
+implemented and covered by 112 hermetic tests; the Phase-1.4 host e2e and
 visual/fractional acceptance passed on 2026-10-29. The Phase-2 kanata include
 is applied on the primary host (kanata on `lyr-base`, TCP `127.0.0.1:7070`),
-and live free-mode movement/click behavior was confirmed. The remaining host
-step is the system-service install (`platform/install-system.sh`) plus a final
-end-to-end smoke. `mouseless-gtk` is a stub until
+and live free-mode movement/click behavior was confirmed. The Phase-3 grid
+layout is implemented: a 10×30 primary grid (columns `asdfghjkl;`, rows
+`qwertyuiopasdfghjkl;zxcvbnm,./`) whose cells are labelled with both keys
+(e.g. `AQ`), a 10×3 keyboard-shaped subgrid, and a `#d4de04` grid at 80%
+transparency (20% opacity) with `#ebe9e8` labels. Re-apply `platform/kanata/mouseless.kbd` to the host so the overlay
+layer emits the full 30-key block. The remaining host step is the
+system-service install (`platform/install-system.sh`) plus a final end-to-end
+smoke. `mouseless-gtk` is a stub until
 `apt install libgtk-4-dev libadwaita-1-dev` (plan §10.5); the real
 `Adw.PreferencesWindow` app lands in Phase 3. See `specs/SPEC-MAP.md` for
 per-module status.

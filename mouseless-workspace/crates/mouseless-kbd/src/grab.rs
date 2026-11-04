@@ -20,7 +20,11 @@ pub const KANATA_OUTPUT_NAME: &str = "kanata-mouseless";
 /// A key read from the grabbed device.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellKey {
-    /// Cell/free-mode character (`a s d f j k l ; i r e q w m , . /`).
+    /// Cell/free-mode character.
+    ///
+    /// The overlay needs the full QWERTY letter block
+    /// (`qwertyuiop asdfghjkl; zxcvbnm,./`); free mode uses a subset
+    /// (`i k j l s d f a r e q w m , . /`).
     Char(char),
     /// Execute at virtual cursor / left mouse button in free mode.
     Space,
@@ -80,20 +84,34 @@ pub struct KeyEvent {
 pub fn translate_key(code: evdev::KeyCode) -> Option<CellKey> {
     use evdev::KeyCode;
     Some(match code {
+        // Overlay level-2 rows: the complete QWERTY letter block, so every
+        // cell label is typeable while the overlay grab is held.
+        KeyCode::KEY_Q => CellKey::Char('q'),
+        KeyCode::KEY_W => CellKey::Char('w'),
+        KeyCode::KEY_E => CellKey::Char('e'),
+        KeyCode::KEY_R => CellKey::Char('r'),
+        KeyCode::KEY_T => CellKey::Char('t'),
+        KeyCode::KEY_Y => CellKey::Char('y'),
+        KeyCode::KEY_U => CellKey::Char('u'),
+        KeyCode::KEY_I => CellKey::Char('i'),
+        KeyCode::KEY_O => CellKey::Char('o'),
+        KeyCode::KEY_P => CellKey::Char('p'),
         KeyCode::KEY_A => CellKey::Char('a'),
         KeyCode::KEY_S => CellKey::Char('s'),
         KeyCode::KEY_D => CellKey::Char('d'),
         KeyCode::KEY_F => CellKey::Char('f'),
+        KeyCode::KEY_G => CellKey::Char('g'),
+        KeyCode::KEY_H => CellKey::Char('h'),
         KeyCode::KEY_J => CellKey::Char('j'),
         KeyCode::KEY_K => CellKey::Char('k'),
         KeyCode::KEY_L => CellKey::Char('l'),
         KeyCode::KEY_SEMICOLON => CellKey::Char(';'),
-        // Free-mode keys (plan §2.4 / upstream mapping).
-        KeyCode::KEY_I => CellKey::Char('i'),
-        KeyCode::KEY_R => CellKey::Char('r'),
-        KeyCode::KEY_E => CellKey::Char('e'),
-        KeyCode::KEY_Q => CellKey::Char('q'),
-        KeyCode::KEY_W => CellKey::Char('w'),
+        KeyCode::KEY_Z => CellKey::Char('z'),
+        KeyCode::KEY_X => CellKey::Char('x'),
+        KeyCode::KEY_C => CellKey::Char('c'),
+        KeyCode::KEY_V => CellKey::Char('v'),
+        KeyCode::KEY_B => CellKey::Char('b'),
+        KeyCode::KEY_N => CellKey::Char('n'),
         KeyCode::KEY_M => CellKey::Char('m'),
         KeyCode::KEY_COMMA => CellKey::Char(','),
         KeyCode::KEY_DOT => CellKey::Char('.'),
@@ -267,10 +285,46 @@ mod tests {
             translate_key(KeyCode::KEY_SEMICOLON),
             Some(CellKey::Char(';'))
         );
+        // Every key in the level-2 QWERTY block must translate, or its cells
+        // would be unreachable while the overlay grab is held.
+        for (code, expected) in [
+            (KeyCode::KEY_Q, 'q'),
+            (KeyCode::KEY_W, 'w'),
+            (KeyCode::KEY_E, 'e'),
+            (KeyCode::KEY_R, 'r'),
+            (KeyCode::KEY_T, 't'),
+            (KeyCode::KEY_Y, 'y'),
+            (KeyCode::KEY_U, 'u'),
+            (KeyCode::KEY_I, 'i'),
+            (KeyCode::KEY_O, 'o'),
+            (KeyCode::KEY_P, 'p'),
+            (KeyCode::KEY_A, 'a'),
+            (KeyCode::KEY_S, 's'),
+            (KeyCode::KEY_D, 'd'),
+            (KeyCode::KEY_F, 'f'),
+            (KeyCode::KEY_G, 'g'),
+            (KeyCode::KEY_H, 'h'),
+            (KeyCode::KEY_J, 'j'),
+            (KeyCode::KEY_K, 'k'),
+            (KeyCode::KEY_L, 'l'),
+            (KeyCode::KEY_SEMICOLON, ';'),
+            (KeyCode::KEY_Z, 'z'),
+            (KeyCode::KEY_X, 'x'),
+            (KeyCode::KEY_C, 'c'),
+            (KeyCode::KEY_V, 'v'),
+            (KeyCode::KEY_B, 'b'),
+            (KeyCode::KEY_N, 'n'),
+            (KeyCode::KEY_M, 'm'),
+            (KeyCode::KEY_COMMA, ','),
+            (KeyCode::KEY_DOT, '.'),
+            (KeyCode::KEY_SLASH, '/'),
+        ] {
+            assert_eq!(translate_key(code), Some(CellKey::Char(expected)));
+        }
         assert_eq!(translate_key(KeyCode::KEY_SPACE), Some(CellKey::Space));
         assert_eq!(translate_key(KeyCode::KEY_ESC), Some(CellKey::Escape));
         assert_eq!(translate_key(KeyCode::KEY_Q), Some(CellKey::Char('q')));
-        assert_eq!(translate_key(KeyCode::KEY_Z), None); // not an overlay key
+        assert_eq!(translate_key(KeyCode::KEY_1), None); // not an overlay key
         assert_eq!(
             translate_key(KeyCode::KEY_LEFTSHIFT),
             Some(CellKey::ShiftLeft)

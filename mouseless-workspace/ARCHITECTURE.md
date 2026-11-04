@@ -6,7 +6,7 @@ config value, never a core refactor.
 
 | Crate | Role | Backends |
 |---|---|---|
-| `mouseless-core` | Pure grid math (cell→pixel, layouts, scale-aware). Zero I/O. | — |
+| `mouseless-core` | Pure grid math (cell→pixel, layouts, scale-aware) including the two-level `PrimaryGrid` (10 column keys × 30 row keys → two-character cell labels). Zero I/O. | — |
 | `mouseless-state` | State machine (`Normal→Overlay→Subgrid→Click`), action intents (multi-click/drag/nudge), `FreeModeSession` physics; `Clock` trait (real/fake). I/O-free. | — |
 | `mouseless-ipc` | Versioned JSON protocol (`schema_version`; negotiate/refuse), newline-delimited envelopes. | — |
 | `mouseless-kbd` | `KeyboardBackend` (layer events, `set_layer`, resync, reload) + `CellGrab` RAII contract. | `impls/kanata.rs` (TCP); future `keyd`, `evdev_raw` |
@@ -41,6 +41,10 @@ latency budget. Socket auth via
 `SO_PEERCRED` (audit G3); the daemon listens and the GNOME extension connects,
 sends `Hello`/`Report`, and receives
 `Show`/`HighlightCell`/`ShowSubgrid`/`Hide` plus state replay on reconnect.
+The default primary model is 300 cells labelled with two characters (column
+key + row key, e.g. `AQ`); selecting one by its two keys opens a 10×3 subgrid
+inside it. The extension draws `#d4de04` at 80% transparency (20% opacity)
+with `#ebe9e8` labels and scales the font to each cell's stage-unit size.
 
 Phase 2 free mode uses a dedicated `lyr-free` kanata layer (`@ml-free-tap` on
 ControlLeft); the daemon holds the same temporary grab and runs an 8 ms physics
@@ -60,7 +64,7 @@ resolved with a `Cogl.Color` fallback for GNOME 47+.
   including post-grab show-failure rollback
 - #3 layer resync: `FakeKeyboard` missed/dupe `LayerChange` tests + subscriber
   reconnect test (connect-time push); explicit same-connection query pending
-- #4 geometry goldens: `mouseless-core` 1080p/4K/vertical/scale tests
+- #4 geometry goldens: `mouseless-core` 1080p/4K/vertical/scale tests, plus `PrimaryGrid` 10×30 tiling/label/lookup tests
 - #5 REL deltas: `compute_delta` clamp + fake-mouse tests; closed-loop
   cross-monitor, acceleration-gain damping, stale-reply, and stalled-cursor
   regressions with a shared `CursorMouse`/`FakeOverlay` cursor

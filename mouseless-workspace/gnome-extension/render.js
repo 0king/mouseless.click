@@ -13,18 +13,33 @@ import Cogl from 'gi://Cogl';
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
 // Every display constant lives here so Phase-3 settings can replace it.
+//
+// The grid background is #d4de04 at 80% transparency (20% opacity, alpha 51).
+// The primary overlay tiles the active monitor completely, so there is no
+// separate dim layer; the translucent fill is the overlay's only tint.
+// Labels are #ebe9e8 as requested.
+const GRID_RGB = [0xd4, 0xde, 0x04];
+const GRID_ALPHA = 51; // 80% transparent (20% opacity)
+const LABEL_RGB = [0xeb, 0xe9, 0xe8];
+// Visible separator between two adjacent cells is 2 × the per-edge inset, so
+// 0.5 px per edge yields the minimum 1 px line for both grids.
+const SEPARATOR_PX = 1;
+
 const STYLE = {
-    dim: [0, 0, 0, 150],
-    cell: [16, 20, 28, 180],
-    cellMuted: [16, 20, 28, 70],
-    parent: [36, 62, 96, 220],
-    subCell: [26, 32, 44, 230],
+    dim: [0, 0, 0, 0],
+    cell: [...GRID_RGB, GRID_ALPHA],
+    // Context behind the open subgrid: still the same hue, much fainter, so
+    // the selected cell's sub-cells stand out.
+    cellMuted: [...GRID_RGB, 20],
+    subCell: [...GRID_RGB, GRID_ALPHA],
     highlight: [255, 178, 44, 235],
-    label: [255, 255, 255, 255],
-    labelMuted: [255, 255, 255, 110],
-    labelHighlight: [20, 20, 20, 255],
-    gap: 1.5,
-    fontName: 'Sans Bold 22',
+    label: [...LABEL_RGB, 255],
+    labelMuted: [...LABEL_RGB, 110],
+    labelHighlight: [...LABEL_RGB, 255],
+    gap: SEPARATOR_PX / 2,
+    subgridGap: SEPARATOR_PX / 2,
+    minFontPx: 7,
+    maxFontPx: 20,
 };
 
 // Clutter 18 (GNOME 47+) removed Clutter.Color in favour of Cogl.Color;
@@ -43,6 +58,23 @@ function inset(rect, gap) {
         w: Math.max(1, rect.w - 2 * gap),
         h: Math.max(1, rect.h - 2 * gap),
     };
+}
+
+/**
+ * Pick a font size that fits `label` inside `rect` (stage units).
+ *
+ * The primary grid can be 10×30 (≈192×36 px cells at 1080p), while a subgrid
+ * cell can be ≈19×12 px; a single fixed font would either overflow the small
+ * cells or look lost in the large ones.
+ */
+function fontNameFor(rect, label) {
+    const chars = Math.max(1, label.length);
+    const byHeight = rect.h * 0.55;
+    const byWidth = rect.w / (chars * 0.9);
+    const size = Math.max(
+        STYLE.minFontPx,
+        Math.min(STYLE.maxFontPx, Math.floor(Math.min(byHeight, byWidth))));
+    return `Sans Bold ${size}`;
 }
 
 /**
@@ -149,26 +181,22 @@ export class OverlayActor {
         if (this._model) {
             for (const cell of this._model.cells) {
                 const isParent = subgrid !== null && subgrid.parent === cell.index;
-                const background = subgrid
-                    ? (isParent ? STYLE.parent : STYLE.cellMuted)
-                    : STYLE.cell;
-                const labelColor = subgrid && !isParent ? STYLE.labelMuted : STYLE.label;
+                // The sub-cells replace the selected parent. Drawing the
+                // parent underneath would composite to 75% in the sub-cells
+                // and leak its two-character label through them.
+                if (isParent)
+                    continue;
+                const background = subgrid ? STYLE.cellMuted : STYLE.cell;
+                const labelColor = subgrid ? STYLE.labelMuted : STYLE.label;
                 this._addCell(this._model, cell, background, labelColor,
-                    isParent ? 0 : STYLE.gap, subgrid === null);
+                    STYLE.gap, subgrid === null);
             }
         }
 
         if (subgrid) {
-            // A replayed ShowSubgrid after a Shell restart carries no level-1
-            // model; reconstruct the parent footprint from the subcell union.
-            if (!this._model) {
-                const footprint = this._unionRect(subgrid.model);
-                if (footprint)
-                    this._addBlank(footprint, STYLE.parent);
-            }
             for (const cell of subgrid.model.cells) {
                 this._addCell(subgrid.model, cell, STYLE.subCell, STYLE.label,
-                    STYLE.gap, true);
+                    STYLE.subgridGap, true);
             }
         }
 
@@ -186,7 +214,7 @@ export class OverlayActor {
         if (cell.label.length > 0) {
             label = new Clutter.Text({
                 text: cell.label,
-                font_name: STYLE.fontName,
+                font_name: fontNameFor(rect, cell.label),
                 color: rgba(labelColor),
             });
             actor.add_child(label);
@@ -197,14 +225,6 @@ export class OverlayActor {
         this._layer.add_child(actor);
         if (active)
             this._activeCells.set(cell.index, {actor, label, background, labelColor});
-    }
-
-    _addBlank(rect, background) {
-        const actor = new Clutter.Actor({reactive: false});
-        actor.set_position(rect.x, rect.y);
-        actor.set_size(rect.w, rect.h);
-        actor.set_background_color(rgba(background));
-        this._layer.add_child(actor);
     }
 
     _applyHighlight() {
@@ -259,20 +279,4 @@ export class OverlayActor {
             {x: 0, y: 0, geometry_scale: wire.scale};
     }
 
-    _unionRect(model) {
-        let left = Infinity;
-        let top = Infinity;
-        let right = -Infinity;
-        let bottom = -Infinity;
-        for (const cell of model.cells) {
-            const rect = this._layoutRect(model, cell);
-            left = Math.min(left, rect.x);
-            top = Math.min(top, rect.y);
-            right = Math.max(right, rect.x + rect.w);
-            bottom = Math.max(bottom, rect.y + rect.h);
-        }
-        if (!Number.isFinite(left))
-            return null;
-        return {x: left, y: top, w: right - left, h: bottom - top};
-    }
 }

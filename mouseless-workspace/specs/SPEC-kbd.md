@@ -78,9 +78,19 @@ Layer names that matter: `lyr-mouseless` = show; anything else = hide.
 
 ### Key translation (pin)
 
-`a s d f j k l ; → CellKey::Char`, `space → Space`, `esc → Escape`; every other
-key while grabbed is consumed silently (returns `None`, batch keeps draining).
-Codes: `KEY_A/S/D/F/J/K/L/SEMICOLON/SPACE/ESC`.
+The full level-2 QWERTY block translates to `CellKey::Char`, so every
+two-character cell label is typeable while the overlay grab is held:
+
+```text
+q w e r t y u i o p
+a s d f g h j k l ;
+z x c v b n m , . /
+```
+
+`space → Space`, `esc → Escape`. Every other key while grabbed is consumed
+silently (returns `None`, batch keeps draining). Codes:
+`KEY_Q/W/E/R/T/Y/U/I/O/P/A/S/D/F/G/H/J/K/L/SEMICOLON/Z/X/C/V/B/N/M/COMMA/DOT/SLASH/SPACE/ESC`;
+the home-row subset doubles as free-mode keys (`i k j l s d f a r e q w m , . /`).
 
 ## Tech stack
 

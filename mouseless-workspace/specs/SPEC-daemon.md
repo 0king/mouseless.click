@@ -227,8 +227,9 @@ ignored and the daemon restores base so letters cannot leak.
 
 | Input | State | Effect |
 |---|---|---|
-| `a s d f j k l ;` | level 1 | select that cell, render its 4×2 subgrid |
-| same keys | subgrid | click that sub-cell's center (or press-move, release-click with `hold_subgrid_for_nudge`) |
+| `a s d f g h j k l ;` | primary grid, no pending column | remember that level-1 column (no visual change yet; the full 10×30 grid is already visible) |
+| any level-2 key from `qwertyuiopasdfghjkl;zxcvbnm,./` | primary grid, pending column | select `(column, row)`, render its 10×3 subgrid |
+| any level-2 key | subgrid | click that sub-cell's center (or press-move, release-click with `hold_subgrid_for_nudge`) |
 | Space | selected / none | click the level-1 cell center / the configured initial action target |
 | Arrow keys | nudge-held | move by sub-cell size / `nudges_per_cell`, clamped to the monitor |
 | Shift tap ≤200 ms | any | switch monitor by x order, unless Shift was used as a modifier |
@@ -239,9 +240,12 @@ ignored and the daemon restores base so letters cannot leak.
 | layer change | any | exit (kanata already left the layer) |
 
 Keys while grabbed are consumed by evdev and never reach kanata/compositor, so
-there is no leaked keystroke path. The subgrid uses the same key set by default.
-Multi-click keeps the session alive for the threshold; continuous mode resets to
-level 1 instead of ending.
+there is no leaked keystroke path. Every level-1 key also appears in the
+level-2 key set, so once a column is pending the next key is always resolved as
+a row first (e.g. `a` then `s` is the cell labelled `AS`); to abandon a pending
+column the user presses Esc. The subgrid uses the 30-key level-2 set, arranged
+10×3 in keyboard-row order. Multi-click keeps the session alive for the
+threshold; continuous mode resets to level 1 instead of ending.
 
 ### Production wiring (no fakes on production paths)
 
@@ -254,9 +258,12 @@ daemon degrades instead of grabbing with nowhere to draw.
 
 ### Configuration (MVP)
 
-`DaemonConfig` carries: kanata addr, socket path, **grid config** (MVP default:
-4×2 level-1 cells keyed `a s d f / j k l ;`, subgrid 4×2 with the same keys,
-target = sub-cell center on the second key, cell center on Space), backend
+`DaemonConfig` carries: kanata addr, socket path, **grid config** (default:
+`PrimaryGrid` 10 columns × 30 rows — level-1 `a s d f g h j k l ;`, level-2
+`qwertyuiopasdfghjkl;zxcvbnm,./`; each displayed cell is labelled with its
+column char followed by its row char, e.g. `AQ`; selecting a cell takes two
+keys, then its 10×3 subgrid — labelled with the same 30 keys — takes one more;
+target = sub-cell center on the subgrid key, cell center on Space), backend
 names, free-mode engine (`custom | kanata`) + `FreeModeParams`/`WheelParams`,
 `multi_click_threshold_ms`, `nudges_per_cell`, `hold_subgrid_for_nudge`,
 `continuous_mode`, `hide_cursor_on_click`, `cursor_hide_corner`,
@@ -402,9 +409,15 @@ MOUSELESS_SOCKET=/tmp/mouseless.sock cargo run -p mouseless-daemon -- --kanata 1
 
 1. **Auth model — resolved.** See `SPEC-ipc.md` OQ-1: uid or `mouseless`
    group membership.
-2. **MVP grid default — resolved (2026-10-29).** 4×2 both levels, keys
-   `a s d f j k l ;`; second key clicks the sub-cell center; Space clicks the
-   level-1 cell center; Esc exits.
+2. **Grid default — resolved (2026-11-03).** Two-level primary grid:
+   10 columns (`a s d f g h j k l ;`) × 30 rows
+   (`qwertyuiopasdfghjkl;zxcvbnm,./`), each cell labelled with both characters
+   (e.g. `AQ`, `SQ`, `AW`). Selection is two keys (column, row); the 10×3
+   subgrid then takes one key to click its sub-cell center. Space clicks the
+   selected cell center, or the configured initial target before a full cell
+   selection. Esc exits. Changed from the 2026-10-29 4×2 MVP to match the
+   mouseless.click v1.0 column layout and make sub-cells much smaller than the
+   level-1 cells.
 3. **Threading/tick — resolved (2026-10-29).** MVP stays single-threaded with
    500 ms idle / 2 ms session TCP read timeouts and a fixed 8 ms tick
    (`FREE_MODE_TICK`) driven from the session loop; the 1 ms sleep cap bounds

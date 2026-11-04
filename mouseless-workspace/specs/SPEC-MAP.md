@@ -4,9 +4,12 @@
 > `.agents/plan.md`. This map is the index of the module specs; each module id
 > below maps 1:1 to `specs/SPEC-<id>.md`.
 >
-> Status snapshot: 2026-10-31 · `cargo test --workspace` = 108 tests green;
+> Status snapshot: 2026-11-03 · `cargo test --workspace` = 112 tests green;
 > Phase 1.3 overlay + Phase 2 custom free mode/action semantics implemented
 > (headless Shell smoke and Phase-1.4 host e2e/visual acceptance passed).
+> Phase-3 grid layout landed: 10 columns × 30 rows primary grid with
+> two-character labels, 10×3 subgrid, and the `#d4de04`/50%-opacity overlay
+> styling (host visual acceptance pending).
 > Packaging (installers, `sysusers`, runbook, platform checks) is complete;
 > live free-mode movement/click behavior is confirmed. The final host
 > service install waits on interactive sudo.

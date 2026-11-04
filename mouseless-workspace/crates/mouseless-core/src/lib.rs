@@ -170,6 +170,117 @@ impl GridConfig {
     }
 }
 
+/// Two-level primary grid: a level-1 key selects a column, a level-2 key
+/// selects a row, and each displayed cell carries both characters as its
+/// label (e.g. `AQ`, `SQ`, `AW`).
+///
+/// This mirrors the mouseless.click "position based columns" preset: ten
+/// `asdfghjkl;` columns over thirty `qwerty…/` rows. Selecting a cell takes
+/// two key presses (first column, then row); the subgrid is then shown inside
+/// that cell. The composite is `cols * rows` cells even though only
+/// `cols + rows` keys are needed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PrimaryGrid {
+    /// Number of displayed columns; equals `column_keys.len()`.
+    pub cols: u32,
+    /// Number of displayed rows; equals `row_keys.len()`.
+    pub rows: u32,
+    /// Level-1 (column) keys, one per displayed column, left to right.
+    pub column_keys: Vec<char>,
+    /// Level-2 (row) keys, one per displayed row, top to bottom.
+    pub row_keys: Vec<char>,
+}
+
+impl PrimaryGrid {
+    /// Validate dimensions, key coverage, and key uniqueness.
+    ///
+    /// Duplicate column or row keys are rejected because selection by key
+    /// would be ambiguous (the first occurrence would always win).
+    pub fn validate(&self) -> Result<(), CoreError> {
+        if self.cols == 0 || self.rows == 0 {
+            return Err(CoreError::InvalidConfig("cols and rows must be non-zero"));
+        }
+        if self.column_keys.len() as u64 != self.cols as u64 {
+            return Err(CoreError::InvalidConfig(
+                "column_keys.len() must equal cols",
+            ));
+        }
+        if self.row_keys.len() as u64 != self.rows as u64 {
+            return Err(CoreError::InvalidConfig("row_keys.len() must equal rows"));
+        }
+        if has_duplicates(&self.column_keys) {
+            return Err(CoreError::InvalidConfig("column keys must be unique"));
+        }
+        if has_duplicates(&self.row_keys) {
+            return Err(CoreError::InvalidConfig("row keys must be unique"));
+        }
+        Ok(())
+    }
+
+    /// Number of displayed cells (`cols * rows`).
+    pub fn cell_count(&self) -> u32 {
+        self.cols * self.rows
+    }
+
+    /// Index of `cell` in row-major order.
+    pub fn index(&self, col: u32, row: u32) -> u32 {
+        row * self.cols + col
+    }
+
+    /// Row-major index → cell id (clamped to the grid).
+    pub fn cell_id(&self, index: u32) -> CellId {
+        CellId {
+            col: index % self.cols,
+            row: (index / self.cols).min(self.rows.saturating_sub(1)),
+        }
+    }
+
+    /// Two-character display label for `cell` (uppercase).
+    ///
+    /// Uppercasing is display-only: the daemon still matches the lowercase
+    /// characters emitted by the grabbed keyboard device.
+    pub fn label(&self, cell: CellId) -> String {
+        let column = self.column_keys[cell.col as usize].to_ascii_uppercase();
+        let row = self.row_keys[cell.row as usize].to_ascii_uppercase();
+        format!("{column}{row}")
+    }
+
+    /// Column index for a level-1 key (case-insensitive).
+    pub fn column_of(&self, key: char) -> Option<u32> {
+        let key = key.to_ascii_lowercase();
+        self.column_keys
+            .iter()
+            .position(|candidate| *candidate == key)
+            .map(|i| i as u32)
+    }
+
+    /// Row index for a level-2 key (case-insensitive).
+    pub fn row_of(&self, key: char) -> Option<u32> {
+        let key = key.to_ascii_lowercase();
+        self.row_keys
+            .iter()
+            .position(|candidate| *candidate == key)
+            .map(|i| i as u32)
+    }
+
+    /// Bounds of `cell` on `monitor` in physical pixels.
+    pub fn bounds(&self, monitor: &Monitor, cell: CellId) -> Rect {
+        debug_assert!(cell.col < self.cols && cell.row < self.rows);
+        tile_bounds(self.cols, self.rows, monitor, cell)
+    }
+
+    /// Center of `cell` on `monitor` in physical pixels.
+    pub fn center(&self, monitor: &Monitor, cell: CellId) -> Point {
+        self.bounds(monitor, cell).center()
+    }
+}
+
+fn has_duplicates(keys: &[char]) -> bool {
+    keys.iter()
+        .enumerate()
+        .any(|(i, key)| keys[..i].contains(key))
+}
+
 /// Index of a cell within a grid level (row-major).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CellId {
@@ -184,18 +295,25 @@ pub struct CellId {
 /// Cells tile the monitor exactly; the last column/row absorbs rounding.
 pub fn cell_bounds(config: &GridConfig, monitor: &Monitor, cell: CellId) -> Rect {
     debug_assert!(cell.col < config.cols && cell.row < config.rows);
-    let w = monitor.w as f64 / config.cols as f64;
-    let h = monitor.h as f64 / config.rows as f64;
+    tile_bounds(config.cols, config.rows, monitor, cell)
+}
+
+/// Shared tiling math for any `cols × rows` grid.
+///
+/// The last column/row absorbs the float remainder so tiles sum exactly to
+/// the monitor bounds.
+fn tile_bounds(cols: u32, rows: u32, monitor: &Monitor, cell: CellId) -> Rect {
+    let w = monitor.w as f64 / cols as f64;
+    let h = monitor.h as f64 / rows as f64;
     let x = monitor.x as f64 + cell.col as f64 * w;
     let y = monitor.y as f64 + cell.row as f64 * h;
-    // Absorb float remainder in the last column/row so tiles sum exactly.
     let (w, h) = (
-        if cell.col + 1 == config.cols {
+        if cell.col + 1 == cols {
             monitor.x as f64 + monitor.w as f64 - x
         } else {
             w
         },
-        if cell.row + 1 == config.rows {
+        if cell.row + 1 == rows {
             monitor.y as f64 + monitor.h as f64 - y
         } else {
             h
@@ -426,6 +544,72 @@ mod tests {
             Some(2)
         );
         assert_eq!(select_monitor(&[], 0, MonitorDirection::Right), None);
+    }
+
+    fn primary_10x30() -> PrimaryGrid {
+        PrimaryGrid {
+            cols: 10,
+            rows: 30,
+            column_keys: "asdfghjkl;".chars().collect(),
+            row_keys: "qwertyuiopasdfghjkl;zxcvbnm,./".chars().collect(),
+        }
+    }
+
+    #[test]
+    fn primary_grid_validates_keys_and_dimensions() {
+        assert!(primary_10x30().validate().is_ok());
+        let mut grid = primary_10x30();
+        grid.cols = 9;
+        assert!(grid.validate().is_err());
+        let mut grid = primary_10x30();
+        grid.row_keys.truncate(29);
+        assert!(grid.validate().is_err());
+        let mut grid = primary_10x30();
+        grid.column_keys[1] = 'a';
+        assert!(grid.validate().is_err());
+        let mut grid = primary_10x30();
+        grid.rows = 0;
+        assert!(grid.validate().is_err());
+    }
+
+    #[test]
+    fn primary_grid_labels_combine_column_then_row() {
+        let grid = primary_10x30();
+        assert_eq!(grid.label(CellId { col: 0, row: 0 }), "AQ");
+        assert_eq!(grid.label(CellId { col: 1, row: 0 }), "SQ");
+        assert_eq!(grid.label(CellId { col: 0, row: 1 }), "AW");
+        assert_eq!(grid.label(CellId { col: 9, row: 29 }), ";/");
+        // Every pair is unique (contains each column × row exactly once).
+        let mut labels: Vec<String> = (0..grid.cell_count())
+            .map(|i| grid.label(grid.cell_id(i)))
+            .collect();
+        labels.sort();
+        labels.dedup();
+        assert_eq!(labels.len(), grid.cell_count() as usize);
+    }
+
+    #[test]
+    fn primary_grid_looks_up_keys_case_insensitively() {
+        let grid = primary_10x30();
+        assert_eq!(grid.column_of('a'), Some(0));
+        assert_eq!(grid.column_of('A'), Some(0));
+        assert_eq!(grid.column_of(';'), Some(9));
+        assert_eq!(grid.column_of('q'), None);
+        assert_eq!(grid.row_of('q'), Some(0));
+        assert_eq!(grid.row_of('/'), Some(29));
+        assert_eq!(grid.row_of('o'), Some(8));
+        assert_eq!(grid.row_of('o').map(|row| grid.index(0, row)), Some(80));
+    }
+
+    #[test]
+    fn primary_grid_tiles_monitor_exactly() {
+        let grid = primary_10x30();
+        let monitor = monitor_1080p();
+        let first = grid.bounds(&monitor, CellId { col: 0, row: 0 });
+        assert_eq!((first.w, first.h), (192.0, 36.0));
+        let last = grid.bounds(&monitor, CellId { col: 9, row: 29 });
+        assert!((last.x + last.w - 1920.0).abs() < 1e-6);
+        assert!((last.y + last.h - 1080.0).abs() < 1e-6);
     }
 
     #[test]

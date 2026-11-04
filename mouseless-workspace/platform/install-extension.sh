@@ -77,6 +77,22 @@ run gnome-extensions pack "$EXT_DIR" --force -o "$PACK_DIR" \
     --extra-source=ipc.js --extra-source=render.js
 run gnome-extensions install --force "$PACK_DIR/$UUID.shell-extension.zip"
 
+# `gnome-extensions install --force` unloads the old instance asynchronously and
+# can add the UUID to the session's disabled-extensions list. While the UUID is
+# in that list `gnome-extensions enable` exits 0 but is a silent no-op, leaving
+# the extension INACTIVE. Wait for the unload, then drop our entry before
+# enabling.
+if [ "$DRY_RUN" -eq 0 ]; then
+    sleep 2
+    if gsettings get org.gnome.shell disabled-extensions 2>/dev/null \
+        | grep -Fq "'$UUID'"; then
+        echo "mouseless: removing $UUID from disabled-extensions"
+        gsettings set org.gnome.shell disabled-extensions \
+            "$(gsettings get org.gnome.shell disabled-extensions \
+                | sed "s/'$UUID', //; s/, '$UUID'//; s/'$UUID'//")"
+    fi
+fi
+
 if ! run gnome-extensions enable "$UUID"; then
     echo "extension installed but not enabled yet; after logging in run:" >&2
     echo "  gnome-extensions enable $UUID" >&2

@@ -2,8 +2,9 @@
 
 > Module: `core` · Paths: `crates/mouseless-core` · Depends on: — ·
 > Plan refs: §1.8, §4 (geometry), §8 #4 · Matrix row: #4
-> Status as of 2026-10-29: **Implemented** — Phase-1 grid math plus the Phase-2
-> monitor-order/switch and cursor-hide corner helpers.
+> Status as of 2026-11-03: **Implemented** — Phase-1 grid math, the two-level
+> `PrimaryGrid` (10 column keys × 30 row keys, two-character cell labels), and
+> the Phase-2 monitor-order/switch and cursor-hide corner helpers.
 
 ## Objective
 
@@ -28,8 +29,10 @@ Zero I/O by construction: monitor layout and cursor position are parameters.
 |---|---|
 | `Point` / `Rect` | f64, global physical pixels (compositor layout space, origin top-left). |
 | `Monitor { x, y, w, h, scale }` | x/y = monitor origin in global physical px; w/h physical; `scale` = fractional scale factor (1.0/1.25/1.5/2.0). |
-| `GridConfig { cols, rows, keys }` | Row-major; `validate()` requires non-zero dims and `keys.len() == cols * rows`. |
+| `GridConfig { cols, rows, keys }` | Single-level (subgrid) row-major grid; `validate()` requires non-zero dims and `keys.len() == cols * rows`. |
+| `PrimaryGrid { cols, rows, column_keys, row_keys }` | Two-level primary grid. Level-1 key selects a column, level-2 key selects a row; a cell's label is column char + row char (e.g. `AQ`). `validate()` requires `column_keys.len() == cols`, `row_keys.len() == rows`, and unique keys per level. |
 | `cell_bounds(config, monitor, cell)` | Cells tile the monitor exactly; last column/row absorbs float rounding (tested to 1e-6). |
+| `PrimaryGrid::bounds/center(monitor, cell)` | Same tiling math as `cell_bounds` for the composite `cols × rows` grid (default 10×30). |
 | `cell_center(...)` | `cell_bounds().center()`; this is the click target for "click at cell center". |
 | `subcell_bounds(parent, sub, cell)` | Nests a subgrid in a parent rect; click target for subgrid selection. |
 | `logical_to_physical(logical, scale)` | `logical * scale`. Physical = logical × scale is the pinned direction. |
@@ -40,6 +43,11 @@ Invariants:
 2. No function performs I/O or reads globals; failures are `CoreError` values.
 3. Grid keys are the *labels*; key→cell mapping is the caller's job (daemon FSM),
    because the same key list is reused for level-2 defaults upstream.
+4. `PrimaryGrid::label` uppercases the two characters for display only; key
+   lookup (`column_of`/`row_of`) is case-insensitive and the daemon matches the
+   lowercase characters emitted by the grabbed device.
+5. Duplicate keys within one level are rejected: a duplicate would make
+   two-key selection ambiguous (the first occurrence always wins).
 
 ## Tech stack
 
@@ -68,6 +76,9 @@ file until Phase-2 monitor helpers land, then split `monitor.rs` if needed.
 - Golden geometry for 1080p@1.0, 4K@2.0, 150% conversion, vertical with offset. *(exist)*
 - Exact-tiling property: max(x+w) == monitor right, max(y+h) == monitor bottom. *(exists, 7×5 case)*
 - Subgrid nesting center check. *(exists)*
+- `PrimaryGrid`: validation (dimensions, key coverage, duplicate rejection),
+  label composition (`AQ`, `SQ`, `AW`, `;/`), unique 300-cell label set,
+  case-insensitive key lookup, and exact 10×30 tiling on 1080p. *(exists)*
 - Phase 2: monitor switch ordering tests (left/right by x, wraparound behavior to be confirmed — OQ-2).
 
 ## Boundaries
@@ -84,6 +95,8 @@ file until Phase-2 monitor helpers land, then split `monitor.rs` if needed.
 - [x] Tiles sum exactly to monitor bounds (float remainder absorbed in last column/row).
 - [x] `GridConfig::validate` rejects empty/mismatched configs.
 - [x] Subgrid center nests correctly inside parent cells.
+- [x] `PrimaryGrid` rejects mismatched/duplicate keys and yields 300 unique
+      two-character labels for the default 10×30 grid.
 - [ ] A click target computed here lands within tolerance in the Phase-1.4 e2e
       test at all four scale factors (blocked by `overlay`/`daemon`).
 - [x] Phase 2.2: `select_monitor(direction)` helper with x-order semantics
