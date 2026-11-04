@@ -3,11 +3,12 @@
 > Module: `platform` · Paths: `platform/` · Depends on: — ·
 > Plan refs: §2.3, §5.6, §7, §8 #5/#6, §10.6 · Audits W2, G1 ·
 > Matrix rows: #1 (config assertion), #5 (udev rule), #6 (exclusions), part of #9
-> Status as of 2026-10-31: **Packaging complete, host install pending** — kanata
+> Status as of 2026-11-04: **Packaging complete, host install pending** — kanata
 > include (overlay + `lyr-free`), service drop-ins, apply script, udev rules,
-> daemon unit, `sysusers.d`, system/extension installers, runbook, and
-> `scripts/check-platform.sh` exist and pass. `.desktop` links and the wider
-> distro matrix remain Phase 3/4.
+> daemon unit, `sysusers.d`, system/extension installers, runbook,
+> `scripts/check-platform.sh`, and the `mouseless://` scheme handler exist and
+> pass local checks. The GTK settings entry and the wider distro matrix remain
+> Phase 3/4.
 
 ## Objective
 
@@ -37,11 +38,11 @@ verifiable by a scripted runbook.
 | `systemd/mouselessd.service` | `/etc/systemd/system/mouselessd.service` | `After=kanata.service`, no `Requires=`; `User=mouselessd`, `Group=mouseless`, `SupplementaryGroups=input uinput`; `RuntimeDirectory=mouseless` (0770), `UMask=0007`; `Restart=on-failure`, `StartLimitIntervalSec=0`; sandboxing (`ProtectSystem=strict`, empty capability set). |
 | `udev/99-mouseless.rules` | `/etc/udev/rules.d/99-mouseless.rules` | `/dev/uinput` (0660) for the existing `uinput` group (kanata + daemon) — never the human `mouseless` group. Pointer accuracy is closed-loop in the daemon, so no libinput accel override is shipped. |
 | `sysusers/mouseless.conf` | `/usr/lib/sysusers.d/mouseless.conf` | Creates the `mouseless` (overlay socket) group and system user `mouselessd` (nologin, primary group `mouseless`, supplementary `input` + `uinput`); `g uinput -` keeps kanata's existing group/GID. Idempotent; existing GIDs are preserved. |
-| `install-system.sh` | run in place as root | Installs binaries, unit, sysusers, udev, docs, and applies the kanata include/drop-in. Backs up replaced files as `<path>.bak.YYYYmmdd-HHMMSS.<pid>`. Options: `--dry-run`, `--skip-kanata`, `--no-group-add`, `--no-start`. |
+| `install-system.sh` | run in place as root | Installs binaries, unit, sysusers, udev, the `mouseless://` handler, docs, and applies the kanata include/drop-in. Registers the scheme for `$SUDO_USER` when possible. Backs up replaced files as `<path>.bak.YYYYmmdd-HHMMSS.<pid>`. Options: `--dry-run`, `--skip-kanata`, `--no-group-add`, `--no-start`. |
 | `install-extension.sh` | run in place as the desktop user | Packs `extension.js` + `ipc.js` + `render.js`, installs, removes the UUID from `org.gnome.shell disabled-extensions` (GNOME leaves it there after `install --force`, making `enable` a silent no-op), and enables `mouseless@sonuscape.example`. `--dry-run` supported. |
 | `README.md` (this dir) | `/usr/local/share/doc/mouseless/README.md` | Install/verify/upgrade/uninstall runbook and troubleshooting. |
-| `scripts/check-platform.sh` | run in place | Asserts kanata timings/layers, unit/drop-in/udev/sysusers contents, cross-file device names and UUID, installer paths, POSIX shell syntax, and `systemd-analyze verify`. |
-| `.desktop` deep links (Phase 3) | `/usr/share/applications/` | `x-scheme-handler/mouseless` → settings/CLI. |
+| `scripts/check-platform.sh` | run in place | Asserts kanata timings/layers, unit/drop-in/udev/sysusers contents, desktop entry validity, cross-file device names and UUID, installer paths, POSIX shell syntax, and `systemd-analyze verify`. |
+| `desktop/mouseless-url-handler.desktop` | `/usr/share/applications/mouseless-url-handler.desktop` | `x-scheme-handler/mouseless` → `/usr/local/bin/mouseless %u`; the CLI accepts exact deep links, so overlay/free-mode/status links need no GUI. |
 
 ### Kill-switch semantics (audit W2, cross-ref `SPEC-daemon.md`)
 
@@ -72,6 +73,22 @@ directly and ignores `--emergency-exit-code`; hence
 - Socket dir `/run/mouseless` created by `RuntimeDirectory` (0770).
 - No permanent grab; permissions scoped to temp-grab + uinput mouse (plan §10.7).
 
+### Deep links (`mouseless://`)
+
+`desktop/mouseless-url-handler.desktop` installs to
+`/usr/share/applications/mouseless-url-handler.desktop` and declares
+`MimeType=x-scheme-handler/mouseless;` with
+`Exec=/usr/local/bin/mouseless %u`. The CLI accepts both a plain verb and its
+exact `mouseless://` link (`Verb::from_deep_link`), so overlay, free-mode,
+status, and device-list links work without a GUI. Unknown links exit `2` as
+usage errors before touching kanata or the daemon.
+
+`install-system.sh` installs the entry, refreshes the desktop database when
+`update-desktop-database` is available, and registers the handler for
+`$SUDO_USER` with `xdg-mime default`. Without `SUDO_USER` it prints the
+per-user command. Settings-only links (for example `mouseless://settings`) will
+be added with the GTK app; until then they are rejected.
+
 ### Installer contract
 
 - Both installers are POSIX `sh`, `set -eu`, idempotent, and safe to rerun for
@@ -83,9 +100,9 @@ directly and ignores `--emergency-exit-code`; hence
 - Every replaced file is copied to `<path>.bak.YYYYmmdd-HHMMSS.<pid>` before
   the new copy is installed; backups are never deleted automatically.
 - Install order is: sysusers → udev reload/trigger → binaries → unit →
-  `daemon-reload` → kanata include/drop-in → desktop-user groups → enable and
-  restart `mouselessd`. A failed restart prints `systemctl status` +
-  `journalctl` and exits non-zero.
+  desktop handler → `daemon-reload` → kanata include/drop-in → desktop-user
+  groups → enable and restart `mouselessd`. A failed restart prints
+  `systemctl status` + `journalctl` and exits non-zero.
 - `--skip-kanata` leaves kanata entirely untouched: no include, no drop-in,
   no `unicfg.kbd` edit, no kanata restart.
 - The extension installer refuses root, verifies the UUID, packs `ipc.js` and
@@ -222,8 +239,11 @@ installed-file contracts. Phase 3 adds `platform/desktop/`.
       failures `1`.
 - [ ] Host install: run both installers, verify the service, socket, udev node,
       and extension on the primary target.
-- [ ] Phase 3: `.desktop` deep links (`x-scheme-handler/mouseless`), settings
-      entry.
+- [x] `mouseless://` scheme handler installed by `install-system.sh`
+      (`MimeType=x-scheme-handler/mouseless;`, `Exec=... %u`), registered for
+      `$SUDO_USER` via `xdg-mime`; desktop entry validated in
+      `check-platform.sh`. CLI accepts exact deep links (unit + fake-kanata
+      tests). Settings-only links wait for the GTK app.
 - [ ] Distro matrix section in the runbook with secondary-target status.
 
 ## Open questions

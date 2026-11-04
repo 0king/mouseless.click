@@ -12,6 +12,7 @@ udev rule, `sysusers`, installers, and the platform checks. Architecture:
 | `kanata/apply-phase11.sh` | run in place | Backs up + edits `unicfg.kbd`, validates with `kanata --check`, installs the drop-in, restarts kanata. |
 | `systemd/kanata.service.d-override.conf` | `/etc/systemd/system/kanata.service.d/mouseless.conf` | Localhost TCP, SIGTERM restart, `SupplementaryGroups=input uinput` (idempotent; no-op when kanata already has them). |
 | `systemd/mouselessd.service` | `/etc/systemd/system/mouselessd.service` | Daemon unit; `mouselessd:mouseless`, `SupplementaryGroups=input uinput`, `RuntimeDirectory=mouseless`, `StateDirectory=mouseless` (0750) for the last-applied config. |
+| `desktop/mouseless-url-handler.desktop` | `/usr/share/applications/mouseless-url-handler.desktop` | `mouseless://` scheme handler → `mouseless %u` (overlay, free-mode, status, device list). |
 | `sysusers/mouseless.conf` | `/usr/lib/sysusers.d/mouseless.conf` | Creates `mouselessd`, the `mouseless` socket group, and joins the existing `uinput`/`input` device groups. |
 | `udev/99-mouseless.rules` | `/etc/udev/rules.d/99-mouseless.rules` | `/dev/uinput` for the `uinput` device group (kanata + daemon). No libinput acceleration override. |
 | `install-system.sh` | run in place | Installs the system files above + binaries. |
@@ -36,12 +37,13 @@ The system installer:
 1. installs `sysusers` and runs `systemd-sysusers` (idempotent);
 2. installs the udev rule and triggers `/dev/uinput`;
 3. installs `mouselessd`/`mouseless` to `/usr/local/bin`;
-4. installs the unit and runs `systemctl daemon-reload`;
+4. installs the unit, the `mouseless://` handler, and runs `systemctl daemon-reload`;
 5. applies the kanata include/drop-in via `apply-phase11.sh` (creates any
    missing `input`/`uinput` group, backs up + edits `unicfg.kbd`, runs
    `kanata --check`, restarts kanata);
 6. adds `$SUDO_USER` to `mouseless` when needed (never to `input`/`uinput`;
-   see the privilege model below);
+   see the privilege model below) and registers the scheme handler with
+   `xdg-mime` for that user;
 7. enables and restarts `mouselessd.service`.
 
 Existing files are backed up as `<path>.bak.YYYYmmdd-HHMMSS.<pid>`.
@@ -105,6 +107,7 @@ journalctl -u mouselessd.service -b
 /usr/local/bin/mouseless status
 /usr/local/bin/mouseless reload
 /usr/local/bin/mouseless --list-input-devices
+xdg-mime query default x-scheme-handler/mouseless
 gnome-extensions info mouseless@sonuscape.example
 ```
 
@@ -121,7 +124,27 @@ Expected:
   `daemon:`, `overlay:`, `session:`, `free-mode:`, and `config:` lines;
 - `mouseless reload` prints the daemon ack (`configuration reloaded`), or a
   clear `Error` when the stored config is invalid — the previous config stays
-  live.
+  live;
+- `xdg-mime query default x-scheme-handler/mouseless` prints
+  `mouseless-url-handler.desktop`; `xdg-open mouseless://status` runs the CLI
+  verb (its stdout goes to the journal in a desktop session).
+
+## Deep links
+
+`mouseless://show-overlay`, `hide-overlay`, `toggle-overlay`,
+`enter-free-mode`, `exit-free-mode`, `status`, and `list-input-devices` are
+handled by the installed `.desktop` entry, which calls `mouseless %u`. The CLI
+accepts the exact URL as its verb, so no extra router is needed. `reload` is
+socket-only and has no link. Unknown links exit `2` without side effects.
+
+To register the handler manually (for a user the installer could not reach):
+
+```sh
+xdg-mime default mouseless-url-handler.desktop x-scheme-handler/mouseless
+```
+
+Settings-specific links will be added with the GTK app; until then they are
+usage errors.
 
 ## Config lifecycle
 
@@ -161,6 +184,7 @@ The installers never delete user data. To remove the service:
 ```sh
 systemctl disable --now mouselessd.service
 sudo rm -f /etc/systemd/system/mouselessd.service
+sudo rm -f /usr/share/applications/mouseless-url-handler.desktop
 sudo rm -f /usr/lib/sysusers.d/mouseless.conf
 sudo rm -f /etc/udev/rules.d/99-mouseless.rules
 sudo rm -f /etc/systemd/system/kanata.service.d/mouseless.conf

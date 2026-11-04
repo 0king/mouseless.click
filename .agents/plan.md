@@ -413,9 +413,18 @@ Trait-boundary rules (enforced in review + CI):
   Hello budget and never receive overlay broadcasts), CLI `reload` and
   daemon-aware `status`, systemd `StateDirectory`. `cargo test --workspace`
   plus `cargo clippy --workspace --all-targets -- -D warnings` green.
+- [x] **3.1d** `mouseless://` deep links without GTK: the CLI accepts every
+  exact link as a verb (`Verb::from_deep_link`, unknown links exit `2`), and
+  `platform/desktop/mouseless-url-handler.desktop` registers
+  `x-scheme-handler/mouseless` with `Exec=mouseless %u`.
+  `install-system.sh` installs it, refreshes the desktop database, and
+  registers it for `$SUDO_USER` via `xdg-mime`; `check-platform.sh` validates
+  the entry (`desktop-file-validate` when present). Deep links are covered by
+  unit, fake-kanata binary, and fake-daemon tests.
 - [ ] **3.1c** `mouseless-gtk` (`Adw.PreferencesWindow`): live preview,
   keybinding reference with conflict hints, monitor assignment, presets UI,
-  deep links (`mouseless://` + `.desktop`), tray/status page; test #9.
+  settings deep links (the handler above stays for overlay verbs), and a status
+  page; test #9.
   *Blocked 2026-11-04: `pkg-config` finds neither `gtk4` nor `libadwaita-1`;
   `sudo -n true` fails (interactive auth required). Install
   `libgtk-4-dev libadwaita-1-dev`, then build the UI over the finished engine.*

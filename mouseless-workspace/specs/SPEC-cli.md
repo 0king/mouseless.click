@@ -18,8 +18,8 @@ when the GUI is not wanted.
 ## Scope
 
 - In: `show|hide|toggle`, `enter-free-mode|exit-free-mode`, `status`,
-  `--list-input-devices`; exits codes; `.desktop` deep-link parity (file owned
-  by `platform`).
+  `--list-input-devices`; exits codes; deep-link URLs accepted as verbs;
+  `.desktop` scheme handler (owned by `platform`).
 - In (Phase 3, done): `reload` (config re-apply) and daemon-aware `status`,
   mapping to the daemon `Reload`/`Status` client messages.
 - Out: anything the daemon can do only while the overlay is visible (no GUI
@@ -43,6 +43,11 @@ when the GUI is not wanted.
 **Show/hide go through kanata's layer switch, never a direct daemon socket
 command**: the layer is the single source of truth (plan §1.3); the daemon
 reacts to `LayerChange`. A direct `Show` frame would desync kanata.
+
+Every verb with a deep link also accepts that exact URL as `argv[1]`
+(`mouseless://show-overlay`, trailing slash tolerated). This is what the
+`.desktop` scheme handler invokes. Unknown links are usage errors (exit `2`)
+and cause no side effects; `reload` has no link because it is socket-only.
 
 ### Exit codes & output
 
@@ -90,8 +95,11 @@ cargo run -p mouseless-cli -- --list-input-devices
 
 ## Testing strategy
 
-- Parity test: every verb ↔ deep link round-trip. *(exists)*
-- Unknown verb → usage, exit 2. *(exists as parse test)*
+- Parity test: every verb ↔ deep link round-trip, both directions. *(exists;
+  plain verb → link → `Verb::parse(link)`)*
+- Unknown verb or unknown `mouseless://` link → usage, exit 2. *(exists)*
+- Binary test: `mouseless://show-overlay` performs the same `ChangeLayer` as
+  `show`. *(exists in `tests/kanata_verbs.rs`)*
 - Fake-kanata TCP tests (`tests/kanata_verbs.rs`): show/enter-free-mode →
   observed `ChangeLayer`; toggle → queries layer first; status → prints the
   reported layer; unreachable kanata → exit 1. *(exists)*
@@ -120,8 +128,8 @@ cargo run -p mouseless-cli -- --list-input-devices
 - [x] Free-mode verbs wired (`lyr-free` for the custom engine; `lyr-mouse`
       remains available as the kanata fallback).
 - [x] Output/exit-code contract documented in `--help` and README.
-- [x] `reload` client verb and daemon-aware `status`; `.desktop` deep links
-      remain owned by `platform` (installed with the GTK slice).
+- [x] `reload` client verb and daemon-aware `status`; `mouseless://` links are
+      accepted by the CLI and installed by the platform scheme handler.
 
 ## Open questions
 

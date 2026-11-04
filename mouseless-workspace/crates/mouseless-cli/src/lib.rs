@@ -38,7 +38,14 @@ pub enum Verb {
 
 impl Verb {
     /// Parse `argv[1]` into a verb.
+    ///
+    /// Both the plain verb and its `mouseless://` deep link are accepted, so
+    /// one `.desktop` scheme handler can forward URLs straight to the CLI
+    /// (SPEC-cli parity).
     pub fn parse(arg: &str) -> Result<Self, CliError> {
+        if arg.starts_with("mouseless://") {
+            return Self::from_deep_link(arg).ok_or(CliError::Usage);
+        }
         match arg {
             "show" | "show-overlay" => Ok(Verb::Show),
             "hide" | "hide-overlay" => Ok(Verb::Hide),
@@ -49,6 +56,25 @@ impl Verb {
             "reload" => Ok(Verb::Reload),
             "--list-input-devices" => Ok(Verb::ListInputDevices),
             _ => Err(CliError::Usage),
+        }
+    }
+
+    /// Parse a `mouseless://` URL back into its verb.
+    ///
+    /// Only the exact links produced by [`Self::deep_link`] are accepted (a
+    /// trailing slash is tolerated); anything else returns `None`.
+    pub fn from_deep_link(link: &str) -> Option<Self> {
+        let path = link.strip_prefix("mouseless://")?;
+        let path = path.strip_suffix('/').unwrap_or(path);
+        match path {
+            "show-overlay" => Some(Verb::Show),
+            "hide-overlay" => Some(Verb::Hide),
+            "toggle-overlay" => Some(Verb::Toggle),
+            "enter-free-mode" => Some(Verb::EnterFreeMode),
+            "exit-free-mode" => Some(Verb::ExitFreeMode),
+            "status" => Some(Verb::Status),
+            "list-input-devices" => Some(Verb::ListInputDevices),
+            _ => None,
         }
     }
 
@@ -108,15 +134,36 @@ mod tests {
             ("toggle", "mouseless://toggle-overlay"),
             ("enter-free-mode", "mouseless://enter-free-mode"),
             ("exit-free-mode", "mouseless://exit-free-mode"),
+            ("status", "mouseless://status"),
+            ("--list-input-devices", "mouseless://list-input-devices"),
         ] {
-            assert_eq!(Verb::parse(arg).unwrap().deep_link(), Some(link));
+            let verb = Verb::parse(arg).unwrap();
+            assert_eq!(verb.deep_link(), Some(link));
+            // The scheme handler passes the URL back to the CLI.
+            assert_eq!(Verb::parse(link).unwrap(), verb);
+            assert_eq!(Verb::from_deep_link(link), Some(verb));
         }
         assert_eq!(Verb::parse("reload").unwrap().deep_link(), None);
+        assert_eq!(
+            Verb::from_deep_link("mouseless://show-overlay/").map(|v| v.deep_link()),
+            Some(Some("mouseless://show-overlay"))
+        );
     }
 
     #[test]
     fn unknown_verb_prints_usage() {
         assert_eq!(Verb::parse("frobnicate"), Err(CliError::Usage));
+    }
+
+    #[test]
+    fn unknown_deep_link_is_usage() {
+        assert_eq!(Verb::parse("mouseless://settings"), Err(CliError::Usage));
+        assert_eq!(Verb::parse("mouseless://"), Err(CliError::Usage));
+        assert_eq!(
+            Verb::parse("mouseless://show-overlay?x=1"),
+            Err(CliError::Usage)
+        );
+        assert_eq!(Verb::from_deep_link("https://show-overlay"), None);
     }
 
     #[test]

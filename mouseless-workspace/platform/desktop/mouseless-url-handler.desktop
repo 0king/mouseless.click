@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=Mouseless Deep Links
+Comment=Route mouseless:// links to the Mouseless CLI
+GenericName=Mouseless URL Handler
+Exec=/usr/local/bin/mouseless %u
+TryExec=/usr/local/bin/mouseless
+Icon=input-mouse
+Terminal=false
+NoDisplay=true
+StartupNotify=false
+MimeType=x-scheme-handler/mouseless;
+Categories=Utility;
+Keywords=mouseless;overlay;pointer;accessibility;

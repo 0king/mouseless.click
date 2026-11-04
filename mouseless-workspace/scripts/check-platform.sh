@@ -16,6 +16,7 @@
 # - sysusers: mouselessd/mouseless/uinput/input; idempotency proven in a
 #   temp root (kanata GIDs preserved, second run is a no-op);
 # - installer: never adds a human account to input/uinput;
+# - desktop entry: scheme handler, single-URL Exec, no shell wrapper;
 # - cross-file names (kanata-mouseless, mouseless-mouse, extension UUID);
 # - installer paths and extension pack sources;
 # - POSIX shell syntax and systemd unit syntax.
@@ -30,6 +31,7 @@ UNIT="$ROOT/platform/systemd/mouselessd.service"
 DROPIN="$ROOT/platform/systemd/kanata.service.d-override.conf"
 UDEV="$ROOT/platform/udev/99-mouseless.rules"
 SYSUSERS="$ROOT/platform/sysusers/mouseless.conf"
+DESKTOP="$ROOT/platform/desktop/mouseless-url-handler.desktop"
 INSTALL_SYSTEM="$ROOT/platform/install-system.sh"
 INSTALL_EXT="$ROOT/platform/install-extension.sh"
 EXT_META="$ROOT/gnome-extension/metadata.json"
@@ -175,6 +177,21 @@ else
     echo "skip sysusers idempotency (systemd-sysusers not installed)"
 fi
 
+echo "== desktop deep links =="
+require_literal "$DESKTOP" "Exec=/usr/local/bin/mouseless %u" "scheme handler passes one URL to the CLI"
+require_literal "$DESKTOP" "MimeType=x-scheme-handler/mouseless;" "registers the mouseless scheme"
+require_literal "$DESKTOP" "TryExec=/usr/local/bin/mouseless" "handler hidden when the CLI is absent"
+forbid_regex "$DESKTOP" "^Exec=.*(sh -c|bash -c)" "no shell wrapper in Exec"
+if command -v desktop-file-validate >/dev/null 2>&1; then
+    if desktop-file-validate "$DESKTOP" >/dev/null 2>&1; then
+        ok "desktop-file-validate"
+    else
+        bad "desktop-file-validate"
+    fi
+else
+    echo "skip desktop-file-validate (not installed)"
+fi
+
 echo "== installer privilege model =="
 require_literal "$INSTALL_SYSTEM" 'usermod -aG mouseless "$_target"' "only mouseless is added automatically"
 forbid_regex "$INSTALL_SYSTEM" "usermod -aG (input|uinput)" "never add a human to input/uinput"
@@ -193,6 +210,8 @@ require_literal "$INSTALL_EXT" "--extra-source=render.js" "extension packs rende
 require_literal "$INSTALL_SYSTEM" "/usr/lib/sysusers.d/mouseless.conf" "installer sysusers path"
 require_literal "$INSTALL_SYSTEM" "/etc/systemd/system/mouselessd.service" "installer unit path"
 require_literal "$INSTALL_SYSTEM" "/usr/local/bin/mouselessd" "installer daemon path"
+require_literal "$INSTALL_SYSTEM" "/usr/share/applications/mouseless-url-handler.desktop" "installer desktop path"
+require_literal "$INSTALL_SYSTEM" "x-scheme-handler/mouseless" "installer registers the scheme"
 
 echo "== scripts =="
 for _script in "$ROOT"/platform/*.sh "$ROOT"/platform/kanata/*.sh "$ROOT"/scripts/*.sh; do

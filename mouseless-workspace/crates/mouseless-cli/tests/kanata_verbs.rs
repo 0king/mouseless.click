@@ -57,6 +57,34 @@ fn show_sends_overlay_layer_change() {
 }
 
 #[test]
+fn deep_link_url_runs_the_verb() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let server = std::thread::spawn(move || accept_line(&listener));
+
+    let out = run(port, "mouseless://show-overlay");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout).trim(),
+        "mouseless: layer lyr-mouseless"
+    );
+    assert_eq!(
+        server.join().unwrap().trim(),
+        r#"{"ChangeLayer":{"new":"lyr-mouseless"}}"#
+    );
+}
+
+#[test]
+fn unknown_deep_link_exits_2() {
+    let out = run(1, "mouseless://settings");
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
 fn enter_free_mode_sends_lyr_free() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

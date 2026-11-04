@@ -112,7 +112,8 @@ cargo run -p mouseless-cli -- --version
 config-path lines when the daemon socket is reachable (`--socket` or
 `MOUSELESS_SOCKET` to override). `reload` asks the daemon to re-read its stored
 `/var/lib/mouseless/config.yaml`; an invalid file returns an error and leaves the
-previous config running.
+previous config running. Every verb also accepts its `mouseless://` deep link,
+which is how the installed `.desktop` scheme handler invokes the CLI.
 
 Usage errors exit `2`; kanata/daemon operational failures exit `1`. Both
 installed binaries accept `--version`/`-V` (for example
@@ -122,7 +123,7 @@ installed binaries accept `--version`/`-V` (for example
 
 Phases 1.2/1.3/1.4 and Phase 2 (custom free-mode physics, multi-click,
 drag/drop, nudges, modifier clicks, monitor switching, cursor hiding) are
-implemented and covered by 164 hermetic tests; the Phase-1.4 host e2e and
+implemented and covered by 167 hermetic tests; the Phase-1.4 host e2e and
 visual/fractional acceptance passed on 2026-10-29. The Phase-2 kanata include
 is applied on the primary host (kanata on `lyr-base`, TCP `127.0.0.1:7070`),
 and live free-mode movement/click behavior was confirmed. The Phase-3 grid
@@ -132,7 +133,9 @@ layout is implemented: a 10×30 primary grid (columns `asdfghjkl;`, rows
 transparency (20% opacity) with `#ebe9e8` labels. The Phase-3 config engine,
 presets, atomic apply/rollback, kanata include renderer/check gate, daemon
 persistence (`/var/lib/mouseless/config.yaml`), and CLI `reload`/`status` are
-implemented and tested headless. The remaining Phase-3 slice is the Adwaita
-settings app and deep-link `.desktop` files, which need
+implemented and tested headless. The `mouseless://` scheme handler is installed by
+`platform/install-system.sh` and routes overlay/free-mode/status verbs to the
+CLI. The remaining Phase-3 slice is the Adwaita settings app (plus
+settings-specific deep links), which needs
 `apt install libgtk-4-dev libadwaita-1-dev` (plan §10.5). See
 `specs/SPEC-MAP.md` for per-module status.

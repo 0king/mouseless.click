@@ -11,6 +11,7 @@
 #   /usr/lib/sysusers.d/mouseless.conf  (mouselessd user, mouseless group;
 #                                        daemon joins input + uinput)
 #   /etc/udev/rules.d/99-mouseless.rules
+#   /usr/share/applications/mouseless-url-handler.desktop
 #   /usr/local/share/doc/mouseless/README.md
 #   /etc/kanata/mouseless.kbd + kanata drop-in (via apply-phase11.sh)
 #
@@ -78,6 +79,7 @@ need_file "$REPO_DIR/target/release/mouseless"
 need_file "$REPO_DIR/platform/systemd/mouselessd.service"
 need_file "$REPO_DIR/platform/udev/99-mouseless.rules"
 need_file "$REPO_DIR/platform/sysusers/mouseless.conf"
+need_file "$REPO_DIR/platform/desktop/mouseless-url-handler.desktop"
 need_file "$REPO_DIR/platform/README.md"
 
 for tool in systemctl systemd-sysusers udevadm; do
@@ -153,14 +155,41 @@ install_file "$REPO_DIR/platform/udev/99-mouseless.rules" \
 run udevadm control --reload-rules
 run udevadm trigger --sysname-match=uinput
 
-# 3. Binaries and unit.
+# 3. Binaries, unit, and the mouseless:// scheme handler.
 install_file "$REPO_DIR/target/release/mouselessd" /usr/local/bin/mouselessd 0755
 install_file "$REPO_DIR/target/release/mouseless" /usr/local/bin/mouseless 0755
 install_file "$REPO_DIR/platform/systemd/mouselessd.service" \
     /etc/systemd/system/mouselessd.service 0644
+install_file "$REPO_DIR/platform/desktop/mouseless-url-handler.desktop" \
+    /usr/share/applications/mouseless-url-handler.desktop 0644
+if command -v update-desktop-database >/dev/null 2>&1; then
+    run update-desktop-database -q /usr/share/applications
+fi
 install_file "$REPO_DIR/platform/README.md" \
     /usr/local/share/doc/mouseless/README.md 0644
 run systemctl daemon-reload
+
+# Register the handler for the invoking desktop user. The .desktop file routes
+# every mouseless:// verb to the CLI, so no GTK app is required for overlay
+# verbs; a future settings app can take over settings-only links.
+_scheme_user="${SUDO_USER:-}"
+if [ -n "$_scheme_user" ] && [ "$_scheme_user" != root ] &&
+    command -v xdg-mime >/dev/null 2>&1; then
+    if [ "$DRY_RUN" -eq 1 ]; then
+        printf '  + sudo -u %s xdg-mime default mouseless-url-handler.desktop x-scheme-handler/mouseless\n' "$_scheme_user"
+    elif command -v sudo >/dev/null 2>&1; then
+        sudo -u "$_scheme_user" xdg-mime default \
+            mouseless-url-handler.desktop x-scheme-handler/mouseless ||
+            echo "warning: could not register mouseless:// for $_scheme_user; run: xdg-mime default mouseless-url-handler.desktop x-scheme-handler/mouseless" >&2
+    elif command -v runuser >/dev/null 2>&1; then
+        runuser -u "$_scheme_user" -- xdg-mime default \
+            mouseless-url-handler.desktop x-scheme-handler/mouseless ||
+            echo "warning: could not register mouseless:// for $_scheme_user" >&2
+    fi
+else
+    echo "mouseless:// handler installed; register it per user with:" >&2
+    echo "  xdg-mime default mouseless-url-handler.desktop x-scheme-handler/mouseless" >&2
+fi
 
 # 4. Kanata include + drop-in. apply-phase11.sh also edits unicfg.kbd
 #    (backup + `kanata --check` + restart); --skip-kanata leaves that alone.
@@ -238,6 +267,7 @@ System install complete. Verify:
   journalctl -u mouselessd.service -b
   /usr/local/bin/mouseless status
   /usr/local/bin/mouseless --list-input-devices
+  xdg-mime query default x-scheme-handler/mouseless
 
 Install the GNOME extension as your desktop user:
   ./platform/install-extension.sh
