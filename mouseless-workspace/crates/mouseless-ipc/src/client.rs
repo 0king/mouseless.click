@@ -35,14 +35,25 @@ pub enum ClientToDaemon {
         /// the wire shape is unchanged (serde flattens the box).
         config: Box<Config>,
     },
+    /// Validate and persist a complete config document **without** changing
+    /// the running daemon's live configuration.
+    ///
+    /// The settings app uses this for auto-save: edits survive a restart, but
+    /// the currently running app keeps its previous behavior until the user
+    /// presses “Restart App” (which sends [`Self::Update`]).
+    Save {
+        /// Full schema-v1 config (boxed for the same reason as `Update`).
+        config: Box<Config>,
+    },
     /// Read daemon/overlay state (read-only).
     Status,
     /// Read the effective config document (read-only).
     ///
     /// The settings GUI edits the daemon-owned document rather than keeping a
     /// shadow copy, so it always starts from the values the daemon resolves
-    /// (live file → last-good → defaults). Persistence still belongs to the
-    /// daemon (`Update`).
+    /// (live file → last-good → defaults). After a `Save` this returns the
+    /// saved document, which may be newer than the running configuration.
+    /// Persistence still belongs to the daemon (`Save`/`Update`).
     GetConfig,
 }
 
@@ -50,12 +61,13 @@ pub enum ClientToDaemon {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum DaemonToClient {
-    /// Request completed and the new config is live.
+    /// Request completed.
     Ack {
-        /// Human-readable summary suitable for CLI output.
+        /// Human-readable summary suitable for CLI output. A `Save` ack means
+        /// persisted but not live; an `Update`/`Reload` ack means live.
         message: String,
     },
-    /// Request rejected; the previous config remains live.
+    /// Request rejected; runtime state was not changed.
     Error {
         /// Machine-readable code (`invalid_config`, `io`, …).
         code: String,
@@ -185,6 +197,9 @@ mod tests {
         for msg in [
             ClientToDaemon::Reload,
             ClientToDaemon::Update {
+                config: Box::new(config.clone()),
+            },
+            ClientToDaemon::Save {
                 config: Box::new(config),
             },
             ClientToDaemon::Status,
