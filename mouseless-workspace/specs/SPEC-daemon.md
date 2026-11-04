@@ -8,8 +8,8 @@
 > grid/subgrid models, FSM, click path,
 > multi-click/drag/nudge/monitor/cursor-hide actions, custom 8 ms free-mode loop,
 > degrade modes, kill-switch co-exit, and persisted `config.yaml` apply
-> (`Reload`/`Update`/`Status`) are wired. Remaining gaps: `tracing` (prints
-> today), process-level kill-switch/e2e tests, and live-host visual smoke.
+> (`Reload`/`Update`/`Status`/`GetConfig`) are wired. Remaining gaps: `tracing`
+> (prints today), process-level kill-switch/e2e tests, and live-host visual smoke.
 
 ## Objective
 
@@ -276,12 +276,15 @@ fallback), `single` (primary), or `custom` (first present connector from
 `Config::default()`; `--kanata`/`--socket` still override transport addresses
 (CLI > env > stored config > defaults).
 
-Clients speak one-shot `Reload`/`Update`/`Status` frames over the overlay
-socket (`SPEC-ipc.md`). `Update` validates, persists atomically, then swaps the
-runtime; any failure leaves the previous config live and returns `Error`.
-Client peers bypass the overlay Hello budget and never receive overlay
-broadcasts. Applying a live config change tears down any active session so the
-next show uses the new geometry.
+Clients speak one-shot `Reload`/`Update`/`Status`/`GetConfig` frames over the
+overlay socket (`SPEC-ipc.md`). `Update` validates, persists atomically, then
+swaps the runtime; any failure leaves the previous config live and returns
+`Error`. `GetConfig` is read-only and returns the effective daemon-owned
+document (live file → last-good → defaults); the settings GUI reads it so its
+edits start from the daemon's values rather than a shadow copy. Client peers
+bypass the overlay Hello budget and never receive overlay broadcasts. Applying a
+live config change tears down any active session so the next show uses the new
+geometry.
 
 ### Error handling & observability (plan §6, SKILL-05)
 

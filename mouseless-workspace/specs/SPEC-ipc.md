@@ -108,6 +108,7 @@ frames never crash either side; the socket is only usable by authorized peers.
 | `Reload` | `{"type":"Reload"}` — re-read the daemon-owned config, validate-then-apply |
 | `Update` | `{"type":"Update","config":ConfigData}` — validate, persist, then apply (schema owned by `SPEC-settings.md`) |
 | `Status` | `{"type":"Status"}` — read-only daemon/overlay/session state |
+| `GetConfig` | `{"type":"GetConfig"}` — read-only effective config document (store: live → last-good → defaults; used by the settings GUI) |
 
 Clients connect, send exactly **one** frame, read exactly **one** reply, and
 close. They do not send `Hello`; the daemon classifies a peer as a client from
@@ -121,6 +122,7 @@ it. A client that stays silent past the 2 s handshake budget is closed.
 | `Ack` | `{"type":"Ack","message":"configuration saved and applied"}` |
 | `Error` | `{"type":"Error","code":"invalid_config","message":"…"}` |
 | `Status` | `{"type":"Status","daemon_version":"0.1.0","overlay_connected":true,"session_active":false,"free_mode":false,"config_path":"/var/lib/mouseless/config.yaml"}` |
+| `Config` | `{"type":"Config","config":ConfigData}` — effective document; identical schema to `Update.config` |
 
 - `Error.code` is stable for scripts (`invalid_config`, `io`, …); `message` is
   for humans and may change.

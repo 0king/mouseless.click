@@ -37,10 +37,17 @@ pub enum ClientToDaemon {
     },
     /// Read daemon/overlay state (read-only).
     Status,
+    /// Read the effective config document (read-only).
+    ///
+    /// The settings GUI edits the daemon-owned document rather than keeping a
+    /// shadow copy, so it always starts from the values the daemon resolves
+    /// (live file → last-good → defaults). Persistence still belongs to the
+    /// daemon (`Update`).
+    GetConfig,
 }
 
 /// Messages daemon → client (kind `"daemon"`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum DaemonToClient {
     /// Request completed and the new config is live.
@@ -67,6 +74,11 @@ pub enum DaemonToClient {
         free_mode: bool,
         /// Daemon-owned config path.
         config_path: String,
+    },
+    /// Reply to [`ClientToDaemon::GetConfig`].
+    Config {
+        /// Complete effective schema-v1 config (boxed; serde flattens it).
+        config: Box<Config>,
     },
 }
 
@@ -176,6 +188,7 @@ mod tests {
                 config: Box::new(config),
             },
             ClientToDaemon::Status,
+            ClientToDaemon::GetConfig,
         ] {
             let line = encode(KIND_CLIENT, &msg).unwrap();
             let env = decode_for(&line, KIND_CLIENT).unwrap();
@@ -200,6 +213,9 @@ mod tests {
                 session_active: false,
                 free_mode: false,
                 config_path: "/var/lib/mouseless/config.yaml".into(),
+            },
+            DaemonToClient::Config {
+                config: Box::new(Config::default()),
             },
         ] {
             let line = encode(KIND_DAEMON, &msg).unwrap();

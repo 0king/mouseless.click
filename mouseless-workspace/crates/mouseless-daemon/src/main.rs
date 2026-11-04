@@ -172,6 +172,13 @@ impl OverlayBackend for ProdOverlay {
         }
     }
 
+    fn reply_client(&mut self, request_id: u64, reply: &DaemonToClient) -> Result<(), Self::Error> {
+        match self {
+            Self::Gnome(o) => o.reply_client(request_id, reply),
+            Self::Disabled => Ok(()),
+        }
+    }
+
     fn last_cursor(&self) -> Option<CursorPos> {
         match self {
             Self::Gnome(o) => o.last_cursor(),
@@ -632,13 +639,18 @@ fn process_client_command(
             free_mode: daemon.free_mode_active(),
             config_path: store.config_path().display().to_string(),
         },
+        // The live document is exactly what the daemon would reload: the
+        // persisted file, last-good, or defaults. `Update` is the only writer.
+        ClientToDaemon::GetConfig => DaemonToClient::Config {
+            config: Box::new(store.effective().0),
+        },
     };
     match &reply {
         DaemonToClient::Ack { message } => println!("mouselessd: client ack: {message}"),
         DaemonToClient::Error { code, message } => {
             eprintln!("mouselessd: client error ({code}): {message}");
         }
-        DaemonToClient::Status { .. } => {}
+        DaemonToClient::Status { .. } | DaemonToClient::Config { .. } => {}
     }
     if let Err(e) = daemon.reply_client(request_id, &reply) {
         eprintln!("mouselessd: client reply failed: {e}");
@@ -717,5 +729,78 @@ fn log_overlay_event(ev: &OverlayEvent) {
             eprintln!("mouselessd: client command {command:?}")
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use mouseless_ipc::{decode_for, encode, KIND_CLIENT, KIND_DAEMON};
+    use std::io::{BufRead, BufReader, Write};
+    use std::os::unix::net::UnixStream;
+
+    /// Regression: `ProdOverlay` must forward client replies. The trait has a
+    /// no-op default, and omitting this delegation makes every `Reload`,
+    /// `Update`, `Status`, and `GetConfig` caller time out even though the
+    /// daemon processed the request.
+    #[test]
+    fn prod_overlay_forwards_client_replies() {
+        let dir = std::env::temp_dir().join(format!(
+            "mouseless-prod-overlay-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("daemon.sock");
+        let path_str = path.to_str().unwrap().to_string();
+        let mut overlay = ProdOverlay::bind(&path_str);
+
+        let mut client = UnixStream::connect(&path).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let request = encode(KIND_CLIENT, &ClientToDaemon::Status).unwrap();
+        client.write_all(format!("{request}\n").as_bytes()).unwrap();
+
+        let request_id = (0..100)
+            .find_map(|_| {
+                let found = overlay
+                    .poll_events()
+                    .into_iter()
+                    .find_map(|event| match event {
+                        OverlayEvent::ClientCommand {
+                            request_id,
+                            command,
+                        } => {
+                            assert_eq!(command, ClientToDaemon::Status);
+                            Some(request_id)
+                        }
+                        _ => None,
+                    });
+                if found.is_none() {
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                found
+            })
+            .expect("client command queued");
+
+        let reply = DaemonToClient::Status {
+            daemon_version: "test".into(),
+            overlay_connected: false,
+            session_active: false,
+            free_mode: false,
+            config_path: "/tmp/mouseless/config.yaml".into(),
+        };
+        overlay.reply_client(request_id, &reply).unwrap();
+
+        let mut reader = BufReader::new(client);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let envelope = decode_for(&line, KIND_DAEMON).unwrap();
+        assert_eq!(envelope.payload["type"], "Status");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
