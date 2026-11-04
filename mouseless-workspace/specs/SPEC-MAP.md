@@ -4,7 +4,7 @@
 > `.agents/plan.md`. This map is the index of the module specs; each module id
 > below maps 1:1 to `specs/SPEC-<id>.md`.
 >
-> Status snapshot: 2026-11-04 · `cargo test --workspace` = 174 tests green;
+> Status snapshot: 2026-11-04 · `cargo test --workspace` = 184 tests green;
 > Phase 1.3 overlay + Phase 2 custom free mode/action semantics implemented
 > (headless Shell smoke and Phase-1.4 host e2e/visual acceptance passed).
 > Phase-3 grid layout landed: 10 columns × 30 rows primary grid with
@@ -12,9 +12,9 @@
 > `#d4de04` at 20% opacity; host visual acceptance pending).
 > Phase-3 config engine (`mouseless-config`), presets, atomic apply/rollback,
 > kanata render/check gate, daemon persistence, live appearance and monitor
-> assignment, CLI `reload`/`status`, and the `mouseless://` scheme handler are
-> implemented; the Adwaita app and settings-page links wait on
-> `libgtk-4-dev libadwaita-1-dev`.
+> assignment, CLI `reload`/`status`, the `mouseless://` scheme handler, and the
+> `mouseless-settings` GTK4/Adwaita app (including settings-page links) are
+> implemented. The operator smoke checklist for the GUI remains manual.
 > Packaging (installers, `sysusers`, runbook, platform checks) is complete;
 > live free-mode movement/click behavior is confirmed. The final host
 > service install waits on interactive sudo.
@@ -66,15 +66,15 @@ core, state, ipc, kbd, mouse, platform      (foundations — mostly scaffolded)
 |---|---|---|
 | `core` | Implemented | Mixed-scale multi-monitor origin e2e (Phase 2.2, manual). |
 | `state` | Implemented (Phase 2) | Live-host tuning of easing/auto-off; Phase-4 label mode. |
-| `config` | Implemented (Phase 3) | GTK binding for the settings app. |
-| `ipc` | Implemented (v1) | — (`Reload`/`Update`/`Status` client messages wired). |
+| `config` | Implemented (Phase 3) | — (GTK-free engine; the GUI is a separate crate). |
+| `ipc` | Implemented (v1) | — (`Reload`/`Update`/`Status`/`GetConfig` client messages wired). |
 | `kbd` | Implemented (Phase 2) | Live evdev grab/EBUSY smoke after the kanata config is applied. |
 | `mouse` | Implemented | Hi-res wheel decision; click-accuracy verified only in e2e (Phase 1.4). |
 | `overlay` | Implemented (1.3) | Mixed-scale multi-monitor origin e2e (Phase 2.2, manual). |
 | `daemon` | Implemented (Phase 2 + config) | Live free-mode/drag/nudge/monitor/cursor-hide smoke. |
-| `cli` | Implemented (Phase 3) | `.desktop` deep-link installation (platform). |
-| `settings` | Engine + runtime apply + deep links done; GTK app pending | Adwaita window/pages and settings-page links; build prereq `libgtk-4-dev libadwaita-1-dev`. |
-| `platform` | Packaged (host install pending) | Live `lyr-free` apply + service install (sudo), `.desktop` deep links, wider distro matrix. |
+| `cli` | Implemented (Phase 3) | — (deep-link install is owned by `platform`). |
+| `settings` | Implemented (Phase 3) | Manual operator smoke: edit → live apply, preset round-trip, daemon-down fallback. |
+| `platform` | Packaged (host install pending) | Live `lyr-free` apply + service install (sudo), wider distro matrix. |
 
 ## Blocking test matrix → owners (plan §8, SKILL-07)
 

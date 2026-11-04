@@ -157,7 +157,7 @@ mouseless-workspace/
 │   └── mouseless-cli/         # show/hide/toggle, ChangeLayer sender, --list-input-devices
 ├── gnome-extension/           # Draw-only overlay (no input capture, no uinput)
 ├── platform/                  # udev rules, systemd units, .desktop deep-links, distro matrix
-└── ui/                        # GTK4 UI definitions (GtkBuilder/Blueprint, Adwaita styles)
+└── ui/                        # settings-UI notes (app is programmatic Rust in crates/mouseless-gtk)
 ```
 
 Trait-boundary rules (enforced in review + CI):
@@ -427,13 +427,17 @@ Trait-boundary rules (enforced in review + CI):
   `single` (primary), and `custom` (first present connector → primary) all
   apply to overlay and free-mode sessions. Wire tests cover legacy payloads
   without `appearance`/`connector`; headless Shell smoke renders the new block.
-- [ ] **3.1c** `mouseless-gtk` (`Adw.PreferencesWindow`): live preview,
+- [x] **3.1c** `mouseless-gtk` (`Adw.PreferencesWindow`): live subgrid preview,
   keybinding reference with conflict hints, monitor assignment, presets UI,
-  settings deep links (the handler above stays for overlay verbs), and a status
-  page; test #9.
-  *Blocked 2026-11-04: `pkg-config` finds neither `gtk4` nor `libadwaita-1`;
-  `sudo -n true` fails (interactive auth required). Install
-  `libgtk-4-dev libadwaita-1-dev`, then build the UI over the finished engine.*
+  settings deep links (the CLI handler above stays for overlay verbs), and a
+  status page; test #9. Implemented 2026-11-04 as `mouseless-settings`:
+  programmatic GTK4/Adwaita (no Blueprint compiler/GPL dependency), seven
+  pages, `GetConfig` → local validate → optional `kanata --check` → `Update`,
+  presets import/export, daemon-down fallback, Ctrl+Enter apply, and
+  `mouseless://settings/<page>` single-instance routing. `cargo
+  test/clippy/fmt -p mouseless-gtk` green plus a live launch smoke; the
+  operator checklist (edit → live apply, preset round-trip, daemon-down) is
+  still open in `SPEC-settings.md`.
 
 ### Phase 4: Multi-distro / multi-backend extensibility (Priority 4)
 - [ ] **4.1** New `KeyboardBackend` impl (e.g. keyd) and/or `MouseBackend`
@@ -457,6 +461,7 @@ Trait-boundary rules (enforced in review + CI):
 5. Closed-loop cursor movement (G1): verify cross-monitor moves and accelerated
    deltas settle within 2 px; the flat-accel udev rule was removed as ineffective.
 6. `apt install libgtk-4-dev libadwaita-1-dev` for the Rust GTK build.
+   *(done 2026-11-04: GTK 4.22.4 + libadwaita 1.9.1 present; crate builds)*
 7. Permissions path (least privilege): human `mouseless` group for the overlay
    socket only; `/dev/uinput` (0660) on the existing `uinput` group that kanata
    uses; the daemon joins `input` for the temp-grab. No human account in
