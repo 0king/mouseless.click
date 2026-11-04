@@ -123,16 +123,17 @@ installed binaries accept `--version`/`-V` (for example
 
 Phases 1.2/1.3/1.4 and Phase 2 (custom free-mode physics, multi-click,
 drag/drop, nudges, modifier clicks, monitor switching, cursor hiding) are
-implemented and covered by 167 hermetic tests; the Phase-1.4 host e2e and
+implemented and covered by 174 hermetic tests; the Phase-1.4 host e2e and
 visual/fractional acceptance passed on 2026-10-29. The Phase-2 kanata include
 is applied on the primary host (kanata on `lyr-base`, TCP `127.0.0.1:7070`),
 and live free-mode movement/click behavior was confirmed. The Phase-3 grid
 layout is implemented: a 10×30 primary grid (columns `asdfghjkl;`, rows
 `qwertyuiopasdfghjkl;zxcvbnm,./`) whose cells are labelled with both keys
-(e.g. `AQ`), a 10×3 keyboard-shaped subgrid, and a `#d4de04` grid at 80%
-transparency (20% opacity) with `#ebe9e8` labels. The Phase-3 config engine,
-presets, atomic apply/rollback, kanata include renderer/check gate, daemon
-persistence (`/var/lib/mouseless/config.yaml`), and CLI `reload`/`status` are
+(e.g. `AQ`), a 10×3 keyboard-shaped subgrid, and config-driven appearance
+(default: `#d4de04` at 80% transparency, 20% opacity, `#ebe9e8` labels). The
+Phase-3 config engine, presets, atomic apply/rollback, kanata include
+renderer/check gate, daemon persistence (`/var/lib/mouseless/config.yaml`),
+live appearance/monitor-assignment application, and CLI `reload`/`status` are
 implemented and tested headless. The `mouseless://` scheme handler is installed by
 `platform/install-system.sh` and routes overlay/free-mode/status verbs to the
 CLI. The remaining Phase-3 slice is the Adwaita settings app (plus

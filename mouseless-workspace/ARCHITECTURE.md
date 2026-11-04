@@ -44,8 +44,9 @@ sends `Hello`/`Report`, and receives
 `Show`/`HighlightCell`/`ShowSubgrid`/`Hide` plus state replay on reconnect.
 The default primary model is 300 cells labelled with two characters (column
 key + row key, e.g. `AQ`); selecting one by its two keys opens a 10×3 subgrid
-inside it. The extension draws `#d4de04` at 80% transparency (20% opacity)
-with `#ebe9e8` labels and scales the font to each cell's stage-unit size.
+inside it. The daemon resolves the user's appearance config (defaults:
+`#d4de04` at 80% transparency, 20% opacity, `#ebe9e8` labels) and sends it with
+every model; the extension scales the font to each cell's stage-unit size.
 
 Phase 2 free mode uses a dedicated `lyr-free` kanata layer (`@ml-free-tap` on
 ControlLeft); the daemon holds the same temporary grab and runs an 8 ms physics

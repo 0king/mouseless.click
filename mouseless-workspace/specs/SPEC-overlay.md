@@ -100,22 +100,24 @@ unless `is_connected()` and `last_layout()` are both available.
     never leave an empty dim layer on screen. With a model, `reposition()`
     rebuilds and re-asserts visibility so a mid-session scale change keeps the
     grid up.
-11. **Appearance (pinned for the Phase-3 grid layout).** Every active grid fill
-    (level-1 cell and sub-cell) uses `#d4de04` at 80% transparency (20% opacity,
-    alpha 51). The fullscreen root background is transparent — the tiled grid
-    is the only tint on the active monitor, and other monitors are untouched.
-    The selected parent is not drawn at all when its subgrid opens, so
-    sub-cells are not composited to a darker fill and the parent's
-    two-character label cannot bleed through them; non-selected level-1 cells
-    behind an open subgrid drop to ~8% opacity (alpha 20) and their labels to
-    ~43%, so the subgrid stands out without changing the pinned grid alpha.
-    Labels are `#ebe9e8` (`rgb(235,233,232)`). Highlight stays amber
-    (`rgb(255,178,44)`) with the same `#ebe9e8` text color. Font size is computed per cell from its
-    stage-unit height/width and label length (clamped 7–20 px), because the
-    default 10×30 primary grid has ~192×36 px cells while a 10×3 sub-cell inside
-    one is ~19×12 px at 1080p. The renderer also draws both characters of a
-    primary label (`AQ`) and one character of a subgrid label (`Q`); it still
-    never derives geometry or labels. Separators are the uncovered gaps, not
+11. **Appearance (config-driven, pinned defaults).** Every model carries the
+    daemon-resolved `appearance` block (grid/label/highlight RGB plus
+    `grid_opacity`); the renderer draws those values and never parses config.
+    The pinned defaults are `#d4de04` at 80% transparency (20% opacity,
+    alpha 51), `#ebe9e8` labels, and an amber `#ffb22c` highlight. The
+    fullscreen root background is transparent — the tiled grid is the only
+    tint on the active monitor, and other monitors are untouched. The selected
+    parent is not drawn at all when its subgrid opens, so sub-cells are not
+    composited to a darker fill and the parent's two-character label cannot
+    bleed through them; non-selected level-1 cells behind an open subgrid drop
+    to 20/51 of the configured grid alpha and their labels to alpha 110, so the
+    subgrid stands out. Highlight text uses the configured label color. Font
+    size is computed per cell from its stage-unit height/width and label length
+    (clamped 7–20 px), because the default 10×30 primary grid has ~192×36 px
+    cells while a 10×3 sub-cell inside one is ~19×12 px at 1080p. The renderer
+    also draws both characters of a primary label (`AQ`) and one character of a
+    subgrid label (`Q`); it still never derives geometry or labels. Separators
+    are the uncovered gaps, not
     drawn lines: `SEPARATOR_PX = 1` stage px is applied as a 0.5 px per-edge
     inset, giving a 1 px visible line between adjacent primary cells and
     between adjacent sub-cells (monitor/subgrid outer edges keep a 0.5 px
@@ -191,8 +193,9 @@ the pack command must list `--extra-source=ipc.js --extra-source=render.js`.
 - JS: defensive everything at the socket boundary (`try/catch`, type checks);
   no `log()`-spam — one log line per state change or error, prefixed `mouseless:`.
 - Rust: `OverlayError::{Connection, Schema}` with context; backoff constants named.
-- Every display constant (colors, opacity, label font) clustered in one object
-  so Phase-3 settings can replace it with config.
+- Display defaults (colors, opacity) and layout constants are centralized;
+  colors/opacity come from the model's `appearance`, and every field falls back
+  per-field so a malformed payload cannot blank the overlay.
 
 ## Testing strategy
 
@@ -244,9 +247,10 @@ the pack command must list `--extra-source=ipc.js --extra-source=render.js`.
 - [x] Visual: labels legible, highlight distinct, no input-region interference
       (typing unaffected while overlay visible). Verified on the host
       2026-10-29 at 100% and 125%; headless screenshots are denied.
-- [ ] Phase-3 appearance: `#d4de04` at 80% transparency with `#ebe9e8` labels, two-char primary labels and
-      per-cell font scaling legible on the host (pending a 10×30 host smoke;
-      the headless Shell cannot capture screenshots).
+- [ ] Phase-3 appearance: config-driven `appearance` (defaults `#d4de04` at 80%
+      transparency, `#ebe9e8` labels), two-char primary labels, and per-cell
+      font scaling legible on the host (pending a 10×30 host smoke; the
+      headless Shell cannot capture screenshots).
 
 ## Open questions
 

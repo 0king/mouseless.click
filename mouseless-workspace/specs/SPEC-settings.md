@@ -3,13 +3,16 @@
 > Module: `settings` · Paths: `crates/mouseless-config`, `crates/mouseless-gtk`,
 > `ui`, config files · Depends on: `ipc`, `platform` · Plan refs: §1.6, §4,
 > §8 #9, §10.5 · Matrix row: #9 (owner, with `platform`)
-> Status as of 2026-11-04: **Config engine implemented** in the GTK-free
-> `mouseless-config` crate (schema v1, validation, presets, atomic
-> apply/rollback, kanata include renderer + check gate). The daemon is the
-> persistence writer: `Reload`/`Update`/`Status` over `mouseless-ipc`, config
+> Status as of 2026-11-04: **Config engine and runtime application implemented**
+> in the GTK-free `mouseless-config` crate (schema v1, validation, presets,
+> atomic apply/rollback, kanata include renderer + check gate). The daemon is
+> the persistence writer: `Reload`/`Update`/`Status` over `mouseless-ipc`, config
 > under `/var/lib/mouseless/config.yaml` (`StateDirectory=mouseless`), and
-> `mouseless reload`/`status` exercise the same path. The GTK app and UI are the
-> remaining Phase-3 slice and still need `libgtk-4-dev libadwaita-1-dev` (OQ-1).
+> `mouseless reload`/`status` exercise the same path. Grid geometry, behaviour,
+> free-mode, appearance, and monitor assignment are applied live; appearance
+> travels in each `GridModel`, while `Report` carries the optional connector
+> names used by `custom`. The GTK app and UI are the remaining
+> Phase-3 slice and still need `libgtk-4-dev libadwaita-1-dev` (OQ-1).
 
 ## Objective
 
@@ -116,6 +119,13 @@ Semantic validation (all reported as field-tagged issues, shown 1:1 in the GUI):
   non-empty and unique.
 - Layer names are non-empty and distinct; `exit_key`/`action_key` do not
   collide with any cell key (MVP conflict rule, OQ-4).
+
+Runtime monitor selection: `auto` uses the monitor under the cursor and falls
+back to the primary; `single` always uses the compositor-reported primary;
+`custom` uses the first connector in `custom_monitors` that the extension
+reports, then falls back to the primary when none is present. The extension
+reports connector names via `Report`; a compositor that cannot provide them
+therefore degrades `custom` to the primary instead of failing the session.
 
 ### Presets (schema v1)
 
@@ -231,6 +241,9 @@ cargo run -p mouseless-gtk                       # requires the -dev packages
   binary is present)*
 - Daemon apply/persist/status path exercised by `mouseless-cli` fake-daemon
   tests. *(exists)*
+- Appearance/monitor wiring: legacy `GridModel` payloads default appearance,
+  `Report` accepts missing connectors, and daemon tests cover `auto`/`single`/
+  `custom` selection plus configured appearance on both grid models. *(exists)*
 - GUI smoke: manual checklist (Phase 3): edit → apply → live update; import/export
   preset round-trip; deep link opens correct page; kill-switch chord visible.
 

@@ -421,6 +421,12 @@ Trait-boundary rules (enforced in review + CI):
   registers it for `$SUDO_USER` via `xdg-mime`; `check-platform.sh` validates
   the entry (`desktop-file-validate` when present). Deep links are covered by
   unit, fake-kanata binary, and fake-daemon tests.
+- [x] **3.1e** Runtime appearance + monitor assignment: `GridModel.appearance`
+  (RGB + opacity) resolved by the daemon and drawn by the extension;
+  `Report` carries optional connector names; `auto` (cursor → primary),
+  `single` (primary), and `custom` (first present connector → primary) all
+  apply to overlay and free-mode sessions. Wire tests cover legacy payloads
+  without `appearance`/`connector`; headless Shell smoke renders the new block.
 - [ ] **3.1c** `mouseless-gtk` (`Adw.PreferencesWindow`): live preview,
   keybinding reference with conflict hints, monitor assignment, presets UI,
   settings deep links (the handler above stays for overlay verbs), and a status

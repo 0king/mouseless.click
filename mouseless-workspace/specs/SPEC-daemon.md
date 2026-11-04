@@ -267,9 +267,14 @@ daemon degrades instead of grabbing with nowhere to draw.
 used. `DaemonConfig::apply_config` maps the document onto the runtime: grid
 columns/rows and subgrid dimensions, `grid_action_level` (`2` vs `subgrid`),
 `default_action` (`click` vs `move`), `free_mode_after_move`, dynamic
-overlay/free/kanata layer names, appearance, thresholds, and physics
-parameters. Built-in defaults equal `Config::default()`; `--kanata`/`--socket`
-still override transport addresses (CLI > env > stored config > defaults).
+overlay/free/kanata layer names, appearance colors/opacity, monitor assignment,
+thresholds, and physics parameters. Appearance is resolved to RGB triples and
+`grid_opacity` in the daemon and travels with every `GridModel`; the extension
+never parses config. Monitor assignment is `auto` (cursor monitor, primary
+fallback), `single` (primary), or `custom` (first present connector from
+`custom_monitors`, primary fallback). Built-in defaults equal
+`Config::default()`; `--kanata`/`--socket` still override transport addresses
+(CLI > env > stored config > defaults).
 
 Clients speak one-shot `Reload`/`Update`/`Status` frames over the overlay
 socket (`SPEC-ipc.md`). `Update` validates, persists atomically, then swaps the

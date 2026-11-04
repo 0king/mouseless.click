@@ -58,7 +58,13 @@ frames never crash either side; the socket is only usable by authorized peers.
     {"index": 0, "label": "AQ", "x": 0,   "y": 0,   "w": 192, "h": 36},
     {"index": 1, "label": "SQ", "x": 192, "y": 0,   "w": 192, "h": 36}
   ],
-  "highlight": null
+  "highlight": null,
+  "appearance": {
+    "grid_color": [212, 222, 4],
+    "grid_opacity": 0.2,
+    "label_color": [235, 233, 232],
+    "highlight_color": [255, 178, 44]
+  }
 }
 ```
 
@@ -67,16 +73,24 @@ frames never crash either side; the socket is only usable by authorized peers.
   row key, e.g. `AQ`), one for a subgrid cell.
 - For `ShowSubgrid`, `model.cells` are sub-cells of `parent` and MAY carry
   different labels than level 1.
+- `appearance` carries the daemon-resolved `appearance:` values as RGB triples
+  plus `grid_opacity` (`0.0..=1.0`). The extension only draws these values; it
+  never reads config or invents colors. The field is additive: older payloads
+  that omit it decode to the pinned defaults (`#d4de04` at 0.2, `#ebe9e8`
+  labels, `#ffb22c` highlight), so `schema_version` stays at 1.
 
 ### overlay → daemon (kind `"overlay"`)
 
 | Message | Payload schema |
 |---|---|
 | `Hello` | `{"type":"Hello","extension_version":"1.0.0"}` — MUST be the first frame after connect |
-| `Report` | `{"type":"Report","geometry":{"monitors":[{"x":0,"y":0,"w":1920,"h":1080,"scale":1.0,"primary":true}]},"cursor":{"x":960,"y":540}}` |
+| `Report` | `{"type":"Report","geometry":{"monitors":[{"x":0,"y":0,"w":1920,"h":1080,"scale":1.0,"primary":true,"connector":"eDP-1"}]},"cursor":{"x":960,"y":540}}` |
 | `CursorReply` | `{"type":"CursorReply","x":960,"y":540}` — response to `QueryCursor` |
 
 - `Report` is sent on connect and whenever monitor layout/scale changes.
+- `connector` is the compositor output name (`eDP-1`, `DP-1`, …). It is
+  optional for backwards compatibility; `monitor_assignment: custom` falls back
+  to the primary monitor when it is absent.
 - `cursor` is the compositor-reported global cursor position; its coordinate
   space is pinned by spike §10.4 (see `SPEC-core.md` OQ-1). The daemon closes
   the loop on every move: it emits bounded REL steps carrying half of the
