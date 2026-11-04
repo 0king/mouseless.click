@@ -272,7 +272,7 @@ fn main() -> ExitCode {
     let store = ConfigStore::for_daemon(&state_dir);
     // Load the daemon-owned last-applied config. Corruption falls back to
     // last-good, then schema defaults, and is logged rather than fatal: the
-    // daemon must stay available to receive a corrected `Update`.
+    // daemon must stay available to receive a corrected `Save`/`Update`.
     let (stored, config_error) = store.effective();
     match &config_error {
         Some(ConfigError::NotFound { .. }) => {
@@ -602,8 +602,8 @@ fn run_free_session(daemon: &mut ProdDaemon, store: &ConfigStore) -> SessionEnd 
     SessionEnd::Done
 }
 
-/// Drain overlay events, applying any CLI/GUI `Reload`/`Update` requests.
-/// Returns whether a helloed overlay disconnected.
+/// Drain overlay events, applying any CLI/GUI `Reload`/`Save`/`Update`
+/// requests. Returns whether a helloed overlay disconnected.
 fn drain_overlay_events(daemon: &mut ProdDaemon, store: &ConfigStore) -> bool {
     let mut lost = false;
     for ev in daemon.poll_overlay_events() {
@@ -632,6 +632,7 @@ fn process_client_command(
             Err(error) => config_error(&error),
         },
         ClientToDaemon::Update { config } => apply_candidate(daemon, config, Some(store)),
+        ClientToDaemon::Save { config } => save_candidate(config, store),
         ClientToDaemon::Status => DaemonToClient::Status {
             daemon_version: env!("CARGO_PKG_VERSION").into(),
             overlay_connected: daemon.overlay_connected(),
@@ -639,8 +640,9 @@ fn process_client_command(
             free_mode: daemon.free_mode_active(),
             config_path: store.config_path().display().to_string(),
         },
-        // The live document is exactly what the daemon would reload: the
-        // persisted file, last-good, or defaults. `Update` is the only writer.
+        // The effective document is exactly what the daemon would reload: the
+        // persisted file, last-good, or defaults. `Save` persists without
+        // changing the running app; `Update` persists and applies.
         ClientToDaemon::GetConfig => DaemonToClient::Config {
             config: Box::new(store.effective().0),
         },
@@ -686,6 +688,25 @@ fn apply_candidate(
             "configuration reloaded"
         }
         .into(),
+    }
+}
+
+/// Validate and persist a candidate without swapping the live runtime config.
+///
+/// This is the auto-save path: the running app keeps its current behavior
+/// until a later `Update` or `Reload` applies the saved document.
+fn save_candidate(config: &Config, store: &ConfigStore) -> DaemonToClient {
+    if let Err(error) = mouseless_config::validate(config) {
+        return DaemonToClient::Error {
+            code: "invalid_config".into(),
+            message: error.to_string(),
+        };
+    }
+    match store.save(config) {
+        Ok(()) => DaemonToClient::Ack {
+            message: "configuration saved; restart the app to apply it".into(),
+        },
+        Err(error) => config_error(&error),
     }
 }
 
@@ -739,10 +760,61 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::net::UnixStream;
 
+    /// Auto-save must persist without touching the running daemon. This test
+    /// pins the persistence half; the runtime swap only happens in
+    /// `apply_candidate`, which `Save` never calls.
+    #[test]
+    fn save_candidate_persists_without_applying() {
+        let dir = std::env::temp_dir().join(format!(
+            "mouseless-save-candidate-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = ConfigStore::for_daemon(&dir);
+        let mut config = Config::default();
+        config.behavior.default_action = mouseless_config::DefaultAction::Move;
+
+        let reply = save_candidate(&config, &store);
+        assert!(matches!(
+            reply,
+            DaemonToClient::Ack { ref message } if message.contains("saved")
+        ));
+        assert_eq!(store.load().unwrap(), config);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_candidate_rejects_invalid_config_without_writing() {
+        let dir = std::env::temp_dir().join(format!(
+            "mouseless-save-invalid-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = ConfigStore::for_daemon(&dir);
+        let mut config = Config::default();
+        config.grid.columns.clear();
+
+        let reply = save_candidate(&config, &store);
+        assert!(matches!(
+            reply,
+            DaemonToClient::Error { ref code, .. } if code == "invalid_config"
+        ));
+        assert!(store.load().is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Regression: `ProdOverlay` must forward client replies. The trait has a
     /// no-op default, and omitting this delegation makes every `Reload`,
-    /// `Update`, `Status`, and `GetConfig` caller time out even though the
-    /// daemon processed the request.
+    /// `Save`, `Update`, `Status`, and `GetConfig` caller time out even though
+    /// the daemon processed the request.
     #[test]
     fn prod_overlay_forwards_client_replies() {
         let dir = std::env::temp_dir().join(format!(
