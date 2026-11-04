@@ -120,6 +120,7 @@ mod tests {
                 },
             )],
             highlight: None,
+            appearance: Default::default(),
         }
     }
 

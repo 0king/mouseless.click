@@ -601,6 +601,7 @@ mod tests {
                         scale: 1.0,
                     },
                     primary: true,
+                    connector: None,
                 }],
             },
             cursor: CursorPos { x: 10, y: 20 },
@@ -631,6 +632,7 @@ mod tests {
                 },
             )],
             highlight: None,
+            appearance: Default::default(),
         };
         overlay.show(&model).unwrap();
         assert_eq!(read_frame(&mut client), DaemonToOverlay::Show { model });
@@ -718,6 +720,7 @@ mod tests {
                 },
             )],
             highlight: None,
+            appearance: Default::default(),
         };
         overlay.show(&model).unwrap();
 

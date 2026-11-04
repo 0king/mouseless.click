@@ -17,12 +17,12 @@
 //! - overlay actions (multi-click, drag, nudges, monitor switch, cursor hide);
 //! - custom free mode (`lyr-free`) with an 8 ms fixed-step physics tick.
 
-use mouseless_config::{Config as FileConfig, Easing as FileEasing};
+use mouseless_config::{parse_hex_color, Config as FileConfig, Easing as FileEasing};
 use mouseless_core::{
     cursor_hide_target, select_monitor, subcell_bounds, Corner, GridConfig, Monitor,
     MonitorDirection, Point, PrimaryGrid, Rect,
 };
-use mouseless_ipc::{CursorPos, GridCell, GridModel, MonitorLayout};
+use mouseless_ipc::{CursorPos, GridAppearance, GridCell, GridModel, MonitorLayout};
 use mouseless_kbd::{
     CellGrab, CellKey, CellKeySource, KbdError, KeyEvent, KeyboardBackend, LayerEvent, Modifiers,
 };
@@ -155,6 +155,18 @@ pub enum DefaultAction {
     Move,
 }
 
+/// Which monitor an overlay/free-mode session opens on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum MonitorAssignment {
+    /// Monitor under the cursor, falling back to the primary (default).
+    #[default]
+    Auto,
+    /// Always the compositor-reported primary monitor.
+    Single,
+    /// First connector in `custom_monitors` that is present, else primary.
+    Custom,
+}
+
 /// Backend selection is config, never a refactor (plan §3 rule 2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
@@ -171,6 +183,13 @@ pub struct DaemonConfig {
     pub grid: PrimaryGrid,
     /// Subgrid inside a selected cell: 10×3, keyboard-row layout by default.
     pub subgrid: GridConfig,
+    /// Which monitor the overlay opens on.
+    pub monitor_assignment: MonitorAssignment,
+    /// Connector/output names for [`MonitorAssignment::Custom`], in priority
+    /// order. Ignored for the other policies.
+    pub custom_monitors: Vec<String>,
+    /// Draw-only colours sent with every grid model.
+    pub appearance: GridAppearance,
     /// Custom physics (`lyr-free`) or kanata's `lyr-mouse` fallback.
     pub free_mode_engine: FreeModeEngine,
     /// Free-mode movement/auto-off parameters.
@@ -218,6 +237,9 @@ impl Default for DaemonConfig {
             socket_path: mouseless_ipc::SOCKET_PATH.into(),
             grid: default_grid(),
             subgrid: default_subgrid(),
+            monitor_assignment: MonitorAssignment::Auto,
+            custom_monitors: Vec::new(),
+            appearance: GridAppearance::default(),
             free_mode_engine: FreeModeEngine::Custom,
             free_mode: FreeModeParams::default(),
             wheel: WheelParams::default(),
@@ -257,6 +279,26 @@ impl DaemonConfig {
             cols: config.grid.subgrid.columns,
             rows: config.grid.subgrid.rows,
             keys: config.grid.subgrid.keys.chars().collect(),
+        };
+        self.monitor_assignment = match config.grid.monitor_assignment {
+            mouseless_config::MonitorAssignment::Auto => MonitorAssignment::Auto,
+            mouseless_config::MonitorAssignment::Single => MonitorAssignment::Single,
+            mouseless_config::MonitorAssignment::Custom => MonitorAssignment::Custom,
+        };
+        self.custom_monitors = config.grid.custom_monitors.clone();
+        let fallback = GridAppearance::default();
+        self.appearance = GridAppearance {
+            grid_color: parse_hex_color(&config.appearance.grid_color)
+                .unwrap_or(fallback.grid_color),
+            grid_opacity: if config.appearance.grid_opacity.is_finite() {
+                config.appearance.grid_opacity.clamp(0.0, 1.0)
+            } else {
+                fallback.grid_opacity
+            },
+            label_color: parse_hex_color(&config.appearance.label_color)
+                .unwrap_or(fallback.label_color),
+            highlight_color: parse_hex_color(&config.appearance.highlight_color)
+                .unwrap_or(fallback.highlight_color),
         };
         self.initial_action_location = match config.behavior.initial_action_location {
             mouseless_config::InitialActionLocation::ScreenCenter => {
@@ -515,11 +557,16 @@ where
             return Err(DaemonError::NoLayout);
         };
         let cursor = self.overlay.last_cursor();
-        let Some(monitor) = pick_monitor(&layout, cursor) else {
+        let Some(monitor) = pick_monitor(
+            &layout,
+            cursor,
+            self.config.monitor_assignment,
+            &self.config.custom_monitors,
+        ) else {
             self.degrade_base();
             return Err(DaemonError::NoLayout);
         };
-        let model = build_grid_model(&self.config.grid, &monitor);
+        let model = build_grid_model(&self.config.grid, &monitor, self.config.appearance);
         self.release_free_buttons();
         self.teardown(false);
         // Grab before showing: if the grab fails, the user sees no overlay
@@ -572,10 +619,14 @@ where
         }
         self.release_free_buttons();
         self.teardown(false);
-        let monitor = self
-            .overlay
-            .last_layout()
-            .and_then(|layout| pick_monitor(&layout, self.overlay.last_cursor()));
+        let monitor = self.overlay.last_layout().and_then(|layout| {
+            pick_monitor(
+                &layout,
+                self.overlay.last_cursor(),
+                self.config.monitor_assignment,
+                &self.config.custom_monitors,
+            )
+        });
         match (self.grab_factory)() {
             Ok(grab) => self.grab = Some(grab),
             Err(KbdError::Busy) => return Err(DaemonError::Kbd(KbdError::Busy)),
@@ -821,6 +872,7 @@ where
                             &self.config.subgrid,
                             &monitor,
                             index,
+                            self.config.appearance,
                         )?;
                         self.pending_column = None;
                         self.selected_cell = Some(index);
@@ -1041,7 +1093,7 @@ where
         self.pending_click_deadline_ms = None;
         let _ = self.machine.reset_to_overlay();
         if let Some(monitor) = self.active_monitor {
-            let model = build_grid_model(&self.config.grid, &monitor);
+            let model = build_grid_model(&self.config.grid, &monitor, self.config.appearance);
             let _ = self.overlay.show(&model);
         }
     }
@@ -1059,7 +1111,7 @@ where
             return Ok(());
         };
         let monitor = monitors[next];
-        let model = build_grid_model(&self.config.grid, &monitor);
+        let model = build_grid_model(&self.config.grid, &monitor, self.config.appearance);
         self.active_monitor = Some(monitor);
         self.selected_cell = None;
         self.pending_column = None;
@@ -1565,11 +1617,33 @@ fn clamp_point(monitor: &Monitor, point: Point) -> Point {
     }
 }
 
-/// Pick the monitor under the cursor, falling back to the primary monitor.
-fn pick_monitor(layout: &MonitorLayout, cursor: Option<CursorPos>) -> Option<Monitor> {
-    match cursor {
-        Some(cursor) => layout.monitor_at(cursor),
-        None => layout.primary(),
+/// Pick the session monitor according to the configured assignment policy.
+///
+/// `custom` falls back to the primary monitor when none of the requested
+/// connectors is currently reported (for example an external display was
+/// unplugged), so a stale custom list never blocks the overlay.
+fn pick_monitor(
+    layout: &MonitorLayout,
+    cursor: Option<CursorPos>,
+    assignment: MonitorAssignment,
+    custom_monitors: &[String],
+) -> Option<Monitor> {
+    match assignment {
+        MonitorAssignment::Auto => match cursor {
+            Some(cursor) => layout.monitor_at(cursor),
+            None => layout.primary(),
+        },
+        MonitorAssignment::Single => layout.primary(),
+        MonitorAssignment::Custom => custom_monitors
+            .iter()
+            .find_map(|name| {
+                layout
+                    .monitors
+                    .iter()
+                    .find(|info| info.connector.as_deref() == Some(name.as_str()))
+                    .map(|info| info.monitor)
+            })
+            .or_else(|| layout.primary()),
     }
 }
 
@@ -1589,7 +1663,11 @@ fn index_of(keys: &[char], c: char) -> Option<u32> {
 ///
 /// Every cell carries the concatenated column+row label (e.g. `AQ`); the
 /// extension only draws what is sent (never render/derive in JS).
-pub fn build_grid_model(config: &PrimaryGrid, monitor: &Monitor) -> GridModel {
+pub fn build_grid_model(
+    config: &PrimaryGrid,
+    monitor: &Monitor,
+    appearance: GridAppearance,
+) -> GridModel {
     let cells = (0..config.cell_count())
         .map(|i| {
             let cell = config.cell_id(i);
@@ -1600,6 +1678,7 @@ pub fn build_grid_model(config: &PrimaryGrid, monitor: &Monitor) -> GridModel {
         monitor: *monitor,
         cells,
         highlight: None,
+        appearance,
     }
 }
 
@@ -1609,6 +1688,7 @@ pub fn build_subgrid_model(
     sub: &GridConfig,
     monitor: &Monitor,
     parent: u32,
+    appearance: GridAppearance,
 ) -> Result<GridModel, DaemonError> {
     if parent >= config.cell_count() {
         return Err(DaemonError::InvalidCell(parent));
@@ -1630,6 +1710,7 @@ pub fn build_subgrid_model(
         monitor: *monitor,
         cells,
         highlight: None,
+        appearance,
     })
 }
 
@@ -1652,6 +1733,7 @@ mod tests {
                     scale: 1.0,
                 },
                 primary: true,
+                connector: Some("eDP-1".into()),
             }],
         }
     }
@@ -1668,6 +1750,7 @@ mod tests {
                         scale: 1.0,
                     },
                     primary: true,
+                    connector: Some("eDP-1".into()),
                 },
                 MonitorInfo {
                     monitor: Monitor {
@@ -1678,6 +1761,7 @@ mod tests {
                         scale: 1.0,
                     },
                     primary: false,
+                    connector: Some("DP-1".into()),
                 },
             ],
         }
@@ -1697,6 +1781,7 @@ mod tests {
                         scale: 1.0,
                     },
                     primary: true,
+                    connector: Some("HDMI-1".into()),
                 },
                 MonitorInfo {
                     monitor: Monitor {
@@ -1707,6 +1792,7 @@ mod tests {
                         scale: 1.0,
                     },
                     primary: false,
+                    connector: Some("eDP-1".into()),
                 },
             ],
         }
@@ -2096,7 +2182,14 @@ mod tests {
             h: 1080,
             scale: 1.0,
         };
-        let model = build_subgrid_model(&default_grid(), &default_subgrid(), &monitor, 0).unwrap();
+        let model = build_subgrid_model(
+            &default_grid(),
+            &default_subgrid(),
+            &monitor,
+            0,
+            GridAppearance::default(),
+        )
+        .unwrap();
         assert_eq!(model.cells.len(), 30);
         assert_eq!(model.cells[0].label, "Q");
         assert_eq!(
@@ -2912,10 +3005,10 @@ mod tests {
     fn apply_config_maps_schema_v1_sections_and_custom_layers() {
         let file = file_config(
             "config_version: 1\n\
-             grid:\n  columns: asd\n  rows: qwe\n  subgrid:\n    columns: 2\n    rows: 2\n    keys: qwer\n\
+             grid:\n  columns: asd\n  rows: qwe\n  subgrid:\n    columns: 2\n    rows: 2\n    keys: qwer\n  monitor_assignment: custom\n  custom_monitors: [DP-2, DP-1]\n\
              behavior:\n  grid_action_level: 2\n  default_action: move\n  free_mode_after_move: true\n\
              free_mode:\n  engine: kanata\n  easing: snappy\n\
-             appearance:\n  hide_cursor_on_click: true\n  cursor_hide_corner: bottom-left\n\
+             appearance:\n  grid_color: '#112233'\n  grid_opacity: 0.5\n  label_color: '#445566'\n  highlight_color: '#778899'\n  hide_cursor_on_click: true\n  cursor_hide_corner: bottom-left\n\
              keybindings:\n  overlay_layer: lyr-custom\n  free_mode_layer: lyr-custom-free\n  kanata_free_mode_layer: lyr-mouse\n",
         );
         let mut config = DaemonConfig::default();
@@ -2924,6 +3017,12 @@ mod tests {
         assert_eq!(config.grid.rows, 3);
         assert_eq!(config.subgrid.cols, 2);
         assert_eq!(config.subgrid.keys, vec!['q', 'w', 'e', 'r']);
+        assert_eq!(config.monitor_assignment, MonitorAssignment::Custom);
+        assert_eq!(config.custom_monitors, vec!["DP-2", "DP-1"]);
+        assert_eq!(config.appearance.grid_color, [0x11, 0x22, 0x33]);
+        assert_eq!(config.appearance.grid_opacity, 0.5);
+        assert_eq!(config.appearance.label_color, [0x44, 0x55, 0x66]);
+        assert_eq!(config.appearance.highlight_color, [0x77, 0x88, 0x99]);
         assert_eq!(config.grid_action_level, GridActionLevel::Two);
         assert_eq!(config.default_action, DefaultAction::Move);
         assert!(config.free_mode_after_move);
@@ -2938,6 +3037,99 @@ mod tests {
         d.on_layer_event(LayerEvent::LayerChanged("lyr-custom".into()))
             .unwrap();
         assert!(d.overlay_visible());
+    }
+
+    #[test]
+    fn default_config_appearance_matches_wire_defaults() {
+        let mut config = DaemonConfig::default();
+        config.apply_config(&FileConfig::default());
+        assert_eq!(config.appearance, GridAppearance::default());
+        assert_eq!(config.monitor_assignment, MonitorAssignment::Auto);
+        assert!(config.custom_monitors.is_empty());
+    }
+
+    #[test]
+    fn monitor_assignment_auto_follows_cursor_and_falls_back_to_primary() {
+        let layout = layout_dual();
+        assert_eq!(
+            pick_monitor(
+                &layout,
+                Some(CursorPos { x: 2000, y: 10 }),
+                MonitorAssignment::Auto,
+                &[]
+            )
+            .unwrap()
+            .w,
+            1080
+        );
+        assert_eq!(
+            pick_monitor(&layout, None, MonitorAssignment::Auto, &[])
+                .unwrap()
+                .w,
+            1920
+        );
+    }
+
+    #[test]
+    fn monitor_assignment_single_ignores_cursor() {
+        let layout = layout_dual();
+        let monitor = pick_monitor(
+            &layout,
+            Some(CursorPos { x: 2000, y: 10 }),
+            MonitorAssignment::Single,
+            &[],
+        )
+        .unwrap();
+        assert_eq!(monitor.w, 1920);
+        assert_eq!(monitor.x, 0);
+    }
+
+    #[test]
+    fn monitor_assignment_custom_uses_first_present_connector_then_primary() {
+        let layout = layout_dual();
+        let requested = vec!["DP-9".to_string(), "DP-1".to_string()];
+        let monitor = pick_monitor(
+            &layout,
+            Some(CursorPos { x: 10, y: 10 }),
+            MonitorAssignment::Custom,
+            &requested,
+        )
+        .unwrap();
+        assert_eq!(monitor.w, 1080);
+        assert_eq!(monitor.x, 1920);
+
+        let missing = vec!["DP-9".to_string()];
+        let fallback = pick_monitor(
+            &layout,
+            Some(CursorPos { x: 2000, y: 10 }),
+            MonitorAssignment::Custom,
+            &missing,
+        )
+        .unwrap();
+        assert_eq!(fallback.w, 1920);
+        assert_eq!(fallback.x, 0);
+    }
+
+    #[test]
+    fn grid_model_carries_configured_appearance() {
+        let monitor = Monitor {
+            x: 0,
+            y: 0,
+            w: 1920,
+            h: 1080,
+            scale: 1.0,
+        };
+        let appearance = GridAppearance {
+            grid_color: [1, 2, 3],
+            grid_opacity: 0.4,
+            label_color: [4, 5, 6],
+            highlight_color: [7, 8, 9],
+        };
+        let model = build_grid_model(&default_grid(), &monitor, appearance);
+        assert_eq!(model.appearance, appearance);
+        let sub = build_subgrid_model(&default_grid(), &default_subgrid(), &monitor, 0, appearance)
+            .unwrap();
+        assert_eq!(sub.appearance, appearance);
     }
 
     #[test]

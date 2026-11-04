@@ -361,10 +361,21 @@ fn check_multiplier(value: f64, field: &str, issues: &mut Vec<Issue>) {
 
 /// `#rrggbb` only; the GUI color picker always emits this form.
 pub fn is_hex_color(value: &str) -> bool {
-    let Some(hex) = value.strip_prefix('#') else {
-        return false;
-    };
-    hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit())
+    parse_hex_color(value).is_some()
+}
+
+/// Parse a strict `#rrggbb` colour into RGB components.
+///
+/// Returns `None` for any other spelling (no shorthand, alpha, names, or
+/// whitespace); [`validate`] uses the same parser, so a validated document
+/// always round-trips through this function.
+pub fn parse_hex_color(value: &str) -> Option<[u8; 3]> {
+    let hex = value.strip_prefix('#')?;
+    if hex.len() != 6 || !hex.is_ascii() {
+        return None;
+    }
+    let channel = |range: std::ops::Range<usize>| u8::from_str_radix(&hex[range], 16).ok();
+    Some([channel(0..2)?, channel(2..4)?, channel(4..6)?])
 }
 
 #[cfg(test)]
@@ -473,6 +484,10 @@ mod tests {
         assert!(!is_hex_color("#d4de0"));
         assert!(!is_hex_color("#gggggg"));
         assert!(!is_hex_color("#d4de04ff"));
+        assert_eq!(parse_hex_color("#d4de04"), Some([0xd4, 0xde, 0x04]));
+        assert_eq!(parse_hex_color("#ABCDEF"), Some([0xab, 0xcd, 0xef]));
+        // Six bytes but not six ASCII chars: must not slice a char boundary.
+        assert_eq!(parse_hex_color("#ééé"), None);
     }
 
     #[test]

@@ -28,7 +28,7 @@ pub use schema::{
     SUBGRID_KEY_POOL,
 };
 pub use store::{ConfigStore, StoreError};
-pub use validate::{validate, Issue, ValidationError};
+pub use validate::{parse_hex_color, validate, Issue, ValidationError};
 
 /// Errors shared by the config engine entry points.
 #[derive(Debug, thiserror::Error)]

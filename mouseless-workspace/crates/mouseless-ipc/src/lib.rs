@@ -115,6 +115,38 @@ impl GridCell {
     }
 }
 
+/// RGB colour components (0–255 per channel) on the wire.
+pub type Rgb = [u8; 3];
+
+/// Draw-only appearance attached to every [`GridModel`].
+///
+/// The daemon resolves the user's `appearance:` section to concrete colours so
+/// the extension never parses config or invents presentation values. The
+/// default matches the pinned Phase-3 look and is used when an older payload
+/// omits the field.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct GridAppearance {
+    /// Grid fill colour.
+    pub grid_color: Rgb,
+    /// Grid fill opacity in `0.0..=1.0` (`0.2` = 80% transparent).
+    pub grid_opacity: f64,
+    /// Cell label colour.
+    pub label_color: Rgb,
+    /// Highlighted-cell colour.
+    pub highlight_color: Rgb,
+}
+
+impl Default for GridAppearance {
+    fn default() -> Self {
+        Self {
+            grid_color: [0xd4, 0xde, 0x04],
+            grid_opacity: 0.2,
+            label_color: [0xeb, 0xe9, 0xe8],
+            highlight_color: [0xff, 0xb2, 0x2c],
+        }
+    }
+}
+
 /// Full grid model pushed by `Show`/`ShowSubgrid` (SPEC-ipc).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GridModel {
@@ -124,10 +156,13 @@ pub struct GridModel {
     pub cells: Vec<GridCell>,
     /// Highlighted cell index, if any.
     pub highlight: Option<u32>,
+    /// Draw-only appearance. Missing on pre-appearance payloads.
+    #[serde(default)]
+    pub appearance: GridAppearance,
 }
 
 /// One monitor in a [`MonitorLayout`].
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MonitorInfo {
     /// Geometry + scale.
     #[serde(flatten)]
@@ -135,6 +170,10 @@ pub struct MonitorInfo {
     /// Whether this is the primary monitor.
     #[serde(default)]
     pub primary: bool,
+    /// Compositor connector/output name (e.g. `DP-1`), when the overlay can
+    /// report it. Required for `monitor_assignment: custom`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub connector: Option<String>,
 }
 
 /// Monitor layout reported by the extension (SPEC-ipc `Report`).
@@ -321,6 +360,12 @@ mod tests {
                 },
             )],
             highlight: None,
+            appearance: GridAppearance {
+                grid_color: [1, 2, 3],
+                grid_opacity: 0.5,
+                label_color: [4, 5, 6],
+                highlight_color: [7, 8, 9],
+            },
         }
     }
 
@@ -357,6 +402,7 @@ mod tests {
                 monitors: vec![MonitorInfo {
                     monitor: monitor_1080p(),
                     primary: true,
+                    connector: Some("eDP-1".into()),
                 }],
             },
             cursor: CursorPos { x: 100, y: 200 },
@@ -376,6 +422,35 @@ mod tests {
     }
 
     #[test]
+    fn legacy_model_without_appearance_uses_pinned_default() {
+        let legacy = json!({
+            "monitor": {"x": 0, "y": 0, "w": 1920, "h": 1080, "scale": 1.0},
+            "cells": [{"index": 0, "label": "AQ", "x": 0, "y": 0, "w": 192, "h": 36}],
+            "highlight": null
+        });
+        let model: GridModel = serde_json::from_value(legacy).unwrap();
+        assert_eq!(model.appearance, GridAppearance::default());
+        assert_eq!(model.appearance.grid_color, [0xd4, 0xde, 0x04]);
+        assert_eq!(model.appearance.grid_opacity, 0.2);
+    }
+
+    #[test]
+    fn report_accepts_missing_connector() {
+        let legacy = json!({
+            "type": "Report",
+            "geometry": {"monitors": [
+                {"x": 0, "y": 0, "w": 1920, "h": 1080, "scale": 1.0, "primary": true}
+            ]},
+            "cursor": {"x": 0, "y": 0}
+        });
+        let report: OverlayToDaemon = serde_json::from_value(legacy).unwrap();
+        let OverlayToDaemon::Report { geometry, .. } = report else {
+            panic!("expected Report");
+        };
+        assert_eq!(geometry.monitors[0].connector, None);
+    }
+
+    #[test]
     fn layout_selects_monitor_at_cursor_then_primary() {
         let layout = MonitorLayout {
             monitors: vec![
@@ -388,6 +463,7 @@ mod tests {
                         scale: 1.0,
                     },
                     primary: false,
+                    connector: Some("eDP-1".into()),
                 },
                 MonitorInfo {
                     monitor: Monitor {
@@ -398,6 +474,7 @@ mod tests {
                         scale: 1.25,
                     },
                     primary: true,
+                    connector: Some("DP-1".into()),
                 },
             ],
         };
