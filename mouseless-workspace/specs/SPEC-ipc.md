@@ -5,7 +5,7 @@
 > Status as of 2026-11-04: **Implemented (v1)** — typed grid/layout payloads,
 > `QueryCursor`/`CursorReply`/`Error`, `kind` validation, 1 MiB limit,
 > `SO_PEERCRED` auth, Hello timeout, a checked-in malformed corpus, and the
-> one-shot client messages `Reload`/`Update`/`Status` with their replies.
+> one-shot client messages `Reload`/`Save`/`Update`/`Status` with their replies.
 >
 > This document IS the 1-page wire spec deliverable required by audit G2.
 
@@ -106,9 +106,10 @@ frames never crash either side; the socket is only usable by authorized peers.
 | Message | Payload schema |
 |---|---|
 | `Reload` | `{"type":"Reload"}` — re-read the daemon-owned config, validate-then-apply |
-| `Update` | `{"type":"Update","config":ConfigData}` — validate, persist, then apply (schema owned by `SPEC-settings.md`) |
+| `Update` | `{"type":"Update","config":ConfigData}` — validate, persist, then apply (schema owned by `SPEC-settings.md`); used by Restart App |
+| `Save` | `{"type":"Save","config":ConfigData}` — validate and persist **without** changing the running config; used by the settings auto-save |
 | `Status` | `{"type":"Status"}` — read-only daemon/overlay/session state |
-| `GetConfig` | `{"type":"GetConfig"}` — read-only effective config document (store: live → last-good → defaults; used by the settings GUI) |
+| `GetConfig` | `{"type":"GetConfig"}` — read-only effective config document (store: saved file → last-good → defaults; used by the settings GUI) |
 
 Clients connect, send exactly **one** frame, read exactly **one** reply, and
 close. They do not send `Hello`; the daemon classifies a peer as a client from
@@ -127,6 +128,8 @@ it. A client that stays silent past the 2 s handshake budget is closed.
 - `Error.code` is stable for scripts (`invalid_config`, `io`, …); `message` is
   for humans and may change.
 - A rejected `Reload`/`Update` leaves the previously applied config live.
+- `Save` returns an `Ack` merely because the document was persisted; the
+  running config is unchanged until a later `Reload`/`Update`.
 - The client helper uses a 1 s budget (`CLIENT_TIMEOUT`). On timeout the outcome
   is **unknown** (the daemon may have committed the write); callers re-read
   `Status` instead of retrying blindly.
@@ -160,7 +163,7 @@ daemon dies
 
 ```text
 client connects
-  → sends exactly one Reload/Update/Status frame (no Hello)
+  → sends exactly one Reload/Save/Update/Status frame (no Hello)
   → daemon validates/persists/applies, then replies Ack/Error/Status
   → client closes; a timeout leaves the outcome unknown
 ```
@@ -242,7 +245,7 @@ envelope + overlay message enums, `encode`/`decode`.
 - `QueryCursor` timeout falls back to the last `Report`; aborts the session when
   no cursor has ever been reported (`DaemonError::NoCursor`). *(exists in the
   daemon click path)*
-- Client `Reload`/`Update`/`Status` round-trips and a real Unix-socket
+- Client `Reload`/`Save`/`Update`/`Status` round-trips and a real Unix-socket
   request/reply (ack, error, timeout, missing socket). *(exists in `client.rs`;
   CLI parity covered by `crates/mouseless-cli/tests/daemon_client.rs`)*
 
@@ -261,7 +264,7 @@ envelope + overlay message enums, `encode`/`decode`.
 - [x] Newer schema refused; malformed input never panics.
 - [x] `Envelope` used by the daemon broadcast server (Phase 1.2).
 - [x] `QueryCursor`/`CursorReply`/`Error` implemented and tested; one-shot
-      `client` messages (`Reload`/`Update`/`Status`) implemented with replies.
+      `client` messages (`Reload`/`Save`/`Update`/`Status`) implemented with replies.
 - [x] `kind` direction validation (drop mismatched, never close).
 - [x] `SO_PEERCRED` predicate implemented + unit tests (audit G3).
 - [x] 1 MiB line limit enforced on decode and on the accepted socket.

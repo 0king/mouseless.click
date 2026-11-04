@@ -6,15 +6,16 @@
 > Status as of 2026-11-04: **Implemented.** The GTK-free `mouseless-config`
 > crate owns schema v1, validation, presets, atomic apply/rollback, and the
 > kanata include renderer + check gate. The daemon is the persistence writer:
-> `Reload`/`Update`/`Status`/`GetConfig` over `mouseless-ipc`, config under
+> `Reload`/`Save`/`Update`/`Status`/`GetConfig` over `mouseless-ipc`, config under
 > `/var/lib/mouseless/config.yaml` (`StateDirectory=mouseless`), and
 > `mouseless reload`/`status` exercise the same path. Grid geometry, behaviour,
 > free-mode, appearance, and monitor assignment are applied live; appearance
 > travels in each `GridModel`, while `Report` carries the optional connector
 > names used by `custom`. `mouseless-settings` (GTK4/Adwaita, built
 > programmatically in `crates/mouseless-gtk`) edits the daemon-owned document,
-> runs the same validation and optional kanata check locally, and pushes
-> `Update`; `mouseless://settings/<page>` deep links open the matching page.
+> validates every change locally, and auto-saves it with `Save` (persist only);
+> the running app keeps its previous values until “Restart App” sends `Update`.
+> `mouseless://settings/<page>` deep links open the matching page.
 
 ## Objective
 
@@ -41,11 +42,12 @@ can never brick input (plan §6, matrix #9).
   `/var/lib/mouseless/config.yaml`, written only by `mouselessd` (systemd
   `StateDirectory=mouseless`, mode `0750`) so it survives restarts and is
   readable without the user's session. The settings app never reads or writes a
-  separate user-level document: it fetches the live document with `GetConfig`
-  and pushes edits with `Update`. `ConfigStore::user_default()` still resolves
-  `${XDG_CONFIG_HOME:-~/.config}/mouseless/config.yaml` for library users and
-  locates user presets at `~/.config/mouseless/presets/`, but it is not part of
-  the running daemon's path. See OQ-2.
+  separate user-level document: it fetches the saved document with `GetConfig`,
+  auto-saves edits with `Save` (persist only), and applies them to the running
+  app with `Update` when the user presses Restart App. `ConfigStore::user_default()`
+  still resolves `${XDG_CONFIG_HOME:-~/.config}/mouseless/config.yaml` for
+  library users and locates user presets at `~/.config/mouseless/presets/`, but
+  it is not part of the running daemon's path. See OQ-2.
 - Top-level `config_version: 1` is required. Unknown keys are rejected on load
   (fail loudly, fall back to last-good). Missing sections/fields take the
   documented defaults, so a minimal file is just `config_version: 1`.
@@ -155,26 +157,32 @@ Import merges one preset file; export writes one preset file. Built-ins:
 
 ```text
 edit in GUI
-  → serialize candidate config (temp file)
+  → serialize candidate config
   → validate (schema + semantic: keys cover cells, no binding conflicts, values in range)
-  → for kanata-affecting changes: render the include → `kanata --check` against a
-    staged copy (never writes /etc)
-  → push `Update` to the daemon over the Unix socket
-  → daemon validates again, persists atomically under /var/lib/mouseless
-    (last-good backup), then swaps the live runtime config
-  → on ANY failure: the daemon replies `Error`, keeps the previous config live,
-    and the GUI surfaces the message (toast/banner)
+  → debounce (flushed when the window closes), then push `Save` to the daemon
+    (persist only)
+  → daemon validates again and persists atomically under /var/lib/mouseless
+    (last-good backup); the running app keeps its previous values
+  → invalid draft: nothing persisted, the footer shows the first issue inline
+  → click “Restart App” (or Ctrl+Enter):
+      → render the include for kanata-affecting changes → `kanata --check`
+        against a staged copy (never writes /etc)
+      → push `Update` to the daemon
+      → daemon validates again, persists, then swaps the live runtime config
+  → on ANY restart failure: the daemon replies `Error`, keeps the previous
+    config live, and the GUI surfaces the message (dialog/toast)
 ```
 
 Never write the live config in place; never leave a partially-applied state.
+Auto-save and live apply are deliberately separate so editing is non-destructive.
 
 Implemented split:
 
 | Layer | Owner | Responsibility |
 |---|---|---|
 | `mouseless-config` | shared crate | schema, validation, presets, atomic store, kanata render/check |
-| `mouselessd` | daemon | sole persistence writer (`StateDirectory`), runtime apply, `Ack`/`Error`/`Config` |
-| `mouseless-gtk` | GUI | edit, local validate + kanata check, push `Update`, show status/errors |
+| `mouselessd` | daemon | sole persistence writer (`StateDirectory`), runtime apply, `Ack`/`Error`/`Config`; `Save` persists only, `Update` persists + applies |
+| `mouseless-gtk` | GUI | edit, local validate, debounced `Save`, kanata check + `Update` on Restart App, show status/errors |
 | `mouseless` CLI | CLI | `reload`, `status`, `settings` routing against the same protocol |
 
 `ConfigStore::apply` performs validate → staged temp → check gate → last-good
@@ -250,7 +258,7 @@ mouseless settings appearance                    # installed CLI opens the same 
 - `crates/mouseless-gtk/src/form.rs` — editable Adwaita rows, `to_config`,
   `load`, field hints.
 - `crates/mouseless-gtk/src/preview.rs` — Cairo subgrid preview.
-- `crates/mouseless-gtk/src/state.rs` — load/apply/revert/presets/status.
+- `crates/mouseless-gtk/src/state.rs` — load/auto-save/restart/revert/presets/status.
 - `crates/mouseless-gtk/src/model.rs` — toolkit-free helpers + unit tests.
 - `ui/README.md` — why the UI is programmatic and how the files fit.
 - `platform/desktop/mouseless-url-handler.desktop`, `mouseless-settings.desktop`
@@ -276,23 +284,27 @@ mouseless settings appearance                    # installed CLI opens the same 
 - Appearance/monitor wiring: legacy `GridModel` payloads default appearance,
   `Report` accepts missing connectors, and daemon tests cover `auto`/`single`/
   `custom` selection plus configured appearance on both grid models. *(exists)*
-- GUI smoke: manual checklist (Phase 3): edit → apply → live update; import/export
-  preset round-trip; deep link opens correct page; kill-switch chord visible.
-  Automated coverage today: `mouseless-gtk` unit tests for paths, key-conflict
-  hints, colour/opacity formatting, the kanata gate, status formatting, and the
-  apply wire path (Update → Ack/Error/unreachable against a fake daemon);
-  CLI tests for settings deep-link routing/argument forwarding; plus a live
-  launch smoke on every settings page (clean stderr, window stays up).
+- GUI smoke: manual checklist (Phase 3): edit → auto-save → Restart App → live
+  update; import/export preset round-trip; deep link opens correct page;
+  kill-switch chord visible. Automated coverage today: `mouseless-gtk` unit
+  tests for paths, key-conflict hints, colour/opacity formatting, the kanata
+  gate, status formatting, and the save/restart wire paths (`Save` and
+  `Update` → Ack/Error/unreachable against a fake daemon); CLI tests for
+  settings deep-link routing/argument forwarding; daemon tests for
+  `save_candidate` persistence without runtime apply; plus a live launch smoke
+  on every settings page (clean stderr, window stays up).
   Smoke status 2026-11-04: live `GetConfig` → `Update` → invalid `Update`
   round-trip against a private daemon passed (the invalid update left the
   previous config live), the GUI launched with the daemon up and down, and
   `mouseless settings <page>` forwarded the page. A human click-through of
-  edit → Apply and the preset import/export dialogs is still pending.
+  auto-save → Restart App and the preset import/export dialogs is still
+  pending.
 
 ## Boundaries
 
-- **Always:** validate-then-apply + rollback; last-good copy retained; parity
-  with CLI/deep links; keep the config engine GTK-free.
+- **Always:** validate before auto-save or apply; validate-then-apply + rollback
+  on Restart App; last-good copy retained; parity with CLI/deep links; keep the
+  config engine GTK-free.
 - **Ask first:** config schema changes (bump `config_version`); changing who owns
   persistence (`/var/lib/mouseless` is daemon-only); privilege model for kanata
   include installs (OQ-3).
@@ -305,15 +317,16 @@ mouseless settings appearance                    # installed CLI opens the same 
 - [x] Config engine: load/validate/save/rollback with tests; no GTK dep.
 - [x] Presets Standard + Quick-Select+Free-Mode import/export round-trip.
 - [x] Kanata include regeneration + `--check` gate + rollback on failure.
-- [x] Daemon persists the last-applied config (`StateDirectory=mouseless`) and
-      serves `Reload`/`Update`/`Status`; CLI `reload`/`status` parity.
+- [x] Daemon persists the last saved/applied config
+      (`StateDirectory=mouseless`) and serves
+      `Reload`/`Save`/`Update`/`Status`; CLI `reload`/`status` parity.
 - [x] GTK app (Adwaita window/pages) over the engine — `mouseless-settings`,
       programmatic GTK4/Adwaita; `cargo test/clippy -p mouseless-gtk` green.
 - [x] Deep links open the right page; parity with `SPEC-cli.md` table
       (`Verb::Settings`, `MOUSELESS_SETTINGS`, single-instance activation).
 - [x] Kill-switch chord (`LCtrl+Space+Esc`) documented in the GUI (Status page
       and the keybinding reference).
-- [ ] Manual smoke checklist green on Ubuntu 26.04: edit → apply live,
+- [ ] Manual smoke checklist green on Ubuntu 26.04: auto-save → Restart App,
       preset import/export round-trip, deep link, daemon-down fallback.
 
 ## Open questions
@@ -324,19 +337,20 @@ mouseless settings appearance                    # installed CLI opens the same 
    `crates/mouseless-gtk`; the config engine, IPC, daemon, and CLI still build
    and test without GTK. A host without the `-dev` packages can skip
    `mouseless-gtk` and keep the daemon/CLI/extension.
-2. **Config ownership — resolved (2026-11-04).** The GUI validates the
-   user-facing document, then pushes `Update(ConfigData)` over the socket; the
-   daemon is the **sole persistence writer** and stores the last-applied copy at
+2. **Config ownership — resolved (2026-11-04, revised).** The GUI validates the
+   user-facing document, then auto-saves it with `Save`; the daemon is the
+   **sole persistence writer** and stores the last-saved copy at
    `/var/lib/mouseless/config.yaml` (`StateDirectory=mouseless`, mode `0750`).
-   The daemon has no session, so it never reads `~/.config`. On start it loads
-   `ConfigStore::effective()` (live → last-good → defaults) and logs the
-   fallback reason.
+   `Save` does not change the running app; `Update` (Restart App) persists and
+   applies. The daemon has no session, so it never reads `~/.config`. On start
+   it loads `ConfigStore::effective()` (live → last-good → defaults) and logs
+   the fallback reason.
 3. **Kanata include writes — resolved (2026-11-04).** The config engine renders
    the include and can run `kanata --check` against a staged copy without
    privileges (`kanata::KanataCheck`), but installing `/etc/kanata/mouseless.kbd`
    and reloading kanata stay with the root `platform/install-system.sh` runbook.
-   The daemon never writes `/etc`; `Update` only affects runtime behavior and
-   the daemon copy.
+   The daemon never writes `/etc`; `Save` only persists the daemon copy and
+   `Update` changes runtime behavior as well.
 4. **Keybinding conflict hints.** MVP scope question: which conflicts are
    checked (cell keys vs HRM keys vs modifiers)? Proposed: cell keys vs cell
    keys + reserved keys (`esc`, `space`) only; deeper analysis deferred.
