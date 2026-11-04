@@ -131,6 +131,61 @@ fn settings_deep_link_spawns_the_gui_with_the_page() {
 }
 
 #[test]
+fn settings_verb_accepts_a_page_argument() {
+    let dir = std::env::temp_dir().join(format!(
+        "mouseless-cli-settings-page-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let script = dir.join("fake-settings");
+    let args_file = dir.join("args");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nprintf '%s' \"$1\" > '{}'\n",
+            args_file.display()
+        ),
+    )
+    .unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let out = Command::new(bin())
+        .env("MOUSELESS_SETTINGS", &script)
+        .args(["settings", "appearance"])
+        .output()
+        .expect("run mouseless");
+    assert!(
+        out.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let mut args = String::new();
+    for _ in 0..100 {
+        if let Ok(text) = std::fs::read_to_string(&args_file) {
+            args = text;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(args, "mouseless://settings/appearance");
+    std::fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn settings_verb_rejects_an_unknown_page() {
+    let out = Command::new(bin())
+        .args(["settings", "bogus"])
+        .output()
+        .expect("run mouseless");
+    assert_eq!(out.status.code(), Some(2));
+}
+
+#[test]
 fn missing_settings_binary_exits_1() {
     let out = Command::new(bin())
         .env("MOUSELESS_SETTINGS", "/nonexistent/mouseless-settings")

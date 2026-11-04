@@ -4,7 +4,7 @@
 > `.agents/plan.md`. This map is the index of the module specs; each module id
 > below maps 1:1 to `specs/SPEC-<id>.md`.
 >
-> Status snapshot: 2026-11-04 · `cargo test --workspace` = 188 tests green;
+> Status snapshot: 2026-11-04 · `cargo test --workspace` = 190 tests green;
 > Phase 1.3 overlay + Phase 2 custom free mode/action semantics implemented
 > (headless Shell smoke and Phase-1.4 host e2e/visual acceptance passed).
 > Phase-3 grid layout landed: 10 columns × 30 rows primary grid with

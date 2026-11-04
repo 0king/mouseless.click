@@ -40,12 +40,13 @@ when the GUI is not wanted.
 | `status` | — | Print kanata layer plus daemon/overlay/session/free-mode/config state when the daemon is reachable | `mouseless://status` |
 | `--list-input-devices` | — | Parse `/proc/bus/input/devices`, tag kanata/mouseless entries | `mouseless://list-input-devices` |
 | `reload` | — | Send `Reload` client frame to the daemon | — |
-| `settings` | `settings/<page>` | Spawn `mouseless-settings` with the page URL (single instance opens that page) | `mouseless://settings` |
-| `settings/appearance` … `settings/status` | bare `<page>` name | Same, opening the named page | `mouseless://settings/<page>` |
+| `settings` | `settings/<page>`, `settings <page>` | Spawn `mouseless-settings` with the page URL (single instance opens that page) | `mouseless://settings` |
 
 Settings pages (toolkit-free `SettingsPage`, shared by the CLI and the GUI):
 `grid` (landing page, also `mouseless://settings/grid`), `appearance`,
-`behavior`, `free-mode`, `keybindings`, `presets`, `status`.
+`behavior`, `free-mode`, `keybindings`, `presets`, `status`. The two-argument
+form validates the page name before spawning, so a typo exits `2` without
+starting the GUI.
 
 **Show/hide go through kanata's layer switch, never a direct daemon socket
 command**: the layer is the single source of truth (plan §1.3); the daemon

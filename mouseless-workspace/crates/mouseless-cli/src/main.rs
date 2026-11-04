@@ -74,7 +74,10 @@ fn parse_args() -> Result<(KanataTcpConfig, String, String), String> {
             "--help" | "-h" => {
                 println!("usage: mouseless [--kanata HOST:PORT] [--socket PATH] <verb>");
                 println!(
-                    "verbs: show hide toggle enter-free-mode exit-free-mode status reload settings"
+                    "verbs: show hide toggle enter-free-mode exit-free-mode status reload settings [page]"
+                );
+                println!(
+                    "settings pages: grid appearance behavior free-mode keybindings presets status"
                 );
                 println!("flags: --list-input-devices, --version");
                 println!("exit: 0 success, 1 operational failure, 2 usage error");
@@ -85,7 +88,17 @@ fn parse_args() -> Result<(KanataTcpConfig, String, String), String> {
                 std::process::exit(0);
             }
             other => {
-                if verb.is_some() {
+                if let Some(existing) = verb.as_deref() {
+                    // `mouseless settings <page>` is sugar for
+                    // `mouseless settings/<page>` (the form forwarded by the
+                    // scheme handler). Page names are validated here so a
+                    // typo fails before any daemon I/O.
+                    if existing == "settings" {
+                        if let Some(page) = SettingsPage::parse(other) {
+                            verb = Some(format!("settings/{}", page.name()));
+                            continue;
+                        }
+                    }
                     return Err(format!("unexpected argument {other}"));
                 }
                 verb = Some(other.to_string());

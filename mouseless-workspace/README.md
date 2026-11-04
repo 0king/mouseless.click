@@ -147,7 +147,7 @@ stays headless.
 
 Phases 1.2/1.3/1.4 and Phase 2 (custom free-mode physics, multi-click,
 drag/drop, nudges, modifier clicks, monitor switching, cursor hiding) are
-implemented and covered by 188 hermetic tests; the Phase-1.4 host e2e and
+implemented and covered by 190 hermetic tests; the Phase-1.4 host e2e and
 visual/fractional acceptance passed on 2026-10-29. The Phase-2 kanata include
 is applied on the primary host (kanata on `lyr-base`, TCP `127.0.0.1:7070`),
 and live free-mode movement/click behavior was confirmed. The Phase-3 grid
