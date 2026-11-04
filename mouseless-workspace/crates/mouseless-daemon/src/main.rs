@@ -18,10 +18,9 @@
 //! mode is relative and keeps working without the extension, but a missing
 //! uinput device ends the session.
 
-use mouseless_daemon::{
-    Daemon, DaemonConfig, DaemonError, SessionStep, FREE_MODE_LAYER, FREE_MODE_TICK, OVERLAY_LAYER,
-};
-use mouseless_ipc::CursorPos;
+use mouseless_config::{Config, ConfigError, ConfigStore};
+use mouseless_daemon::{Daemon, DaemonConfig, DaemonError, SessionStep, FREE_MODE_TICK};
+use mouseless_ipc::{ClientToDaemon, CursorPos, DaemonToClient};
 use mouseless_kbd::{
     EvdevCellGrab, KanataSubscriber, KanataTcpConfig, KbdError, KeyboardBackend, LayerEvent,
 };
@@ -29,6 +28,7 @@ use mouseless_mouse::impls::UinputMouse;
 use mouseless_mouse::{MouseBackend, MouseButton, MouseError};
 use mouseless_overlay::impls::GnomeOverlay;
 use mouseless_overlay::{GridModel, MonitorLayout, OverlayBackend, OverlayError, OverlayEvent};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -206,8 +206,16 @@ enum SessionEnd {
     Layer(String),
 }
 
-fn parse_args() -> DaemonConfig {
+/// systemd sets `STATE_DIRECTORY`; `/var/lib/mouseless` is the unit default.
+fn default_state_dir() -> PathBuf {
+    std::env::var_os("STATE_DIRECTORY")
+        .and_then(|value| std::env::split_paths(&value).next())
+        .unwrap_or_else(|| PathBuf::from("/var/lib/mouseless"))
+}
+
+fn parse_args() -> (DaemonConfig, PathBuf) {
     let mut cfg = DaemonConfig::default();
+    let mut state_dir = default_state_dir();
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -221,8 +229,15 @@ fn parse_args() -> DaemonConfig {
                     cfg.socket_path = v;
                 }
             }
+            "--state-dir" => {
+                if let Some(v) = args.next() {
+                    state_dir = PathBuf::from(v);
+                }
+            }
             "--help" | "-h" => {
-                println!("usage: mouselessd [--kanata HOST:PORT] [--socket PATH] [--version]");
+                println!(
+                    "usage: mouselessd [--kanata HOST:PORT] [--socket PATH] [--state-dir DIR] [--version]"
+                );
                 std::process::exit(0);
             }
             "--version" | "-V" => {
@@ -235,15 +250,37 @@ fn parse_args() -> DaemonConfig {
             }
         }
     }
-    // Dev override without touching the systemd unit contract:
+    // Dev overrides without touching the systemd unit contract:
     if let Ok(sock) = std::env::var("MOUSELESS_SOCKET") {
         cfg.socket_path = sock;
     }
-    cfg
+    if let Ok(dir) = std::env::var("MOUSELESS_STATE_DIR") {
+        state_dir = PathBuf::from(dir);
+    }
+    (cfg, state_dir)
 }
 
 fn main() -> ExitCode {
-    let cfg = parse_args();
+    let (mut cfg, state_dir) = parse_args();
+    let store = ConfigStore::for_daemon(&state_dir);
+    // Load the daemon-owned last-applied config. Corruption falls back to
+    // last-good, then schema defaults, and is logged rather than fatal: the
+    // daemon must stay available to receive a corrected `Update`.
+    let (stored, config_error) = store.effective();
+    match &config_error {
+        Some(ConfigError::NotFound { .. }) => {
+            println!(
+                "mouselessd: no persisted config at {}; using defaults",
+                store.config_path().display()
+            );
+        }
+        Some(error) => eprintln!("mouselessd: config fallback ({error}); using last-good"),
+        None => println!("mouselessd: config {}", store.config_path().display()),
+    }
+    cfg.apply_config(&stored);
+    let start_overlay_layer = cfg.overlay_layer.clone();
+    let start_free_layer = cfg.free_mode_layer.clone();
+
     let (host, port) = cfg
         .kanata_addr
         .rsplit_once(':')
@@ -278,9 +315,10 @@ fn main() -> ExitCode {
 
     // A session may already be active when the daemon starts. Base and other
     // layers are reconciled through the idle loop without grabbing.
-    let mut pending_layer = match start.as_str() {
-        OVERLAY_LAYER | FREE_MODE_LAYER => Some(start),
-        _ => None,
+    let mut pending_layer = if start == start_overlay_layer || start == start_free_layer {
+        Some(start)
+    } else {
+        None
     };
 
     loop {
@@ -288,14 +326,7 @@ fn main() -> ExitCode {
         if let Err(e) = daemon.keyboard_mut().set_read_timeout(IDLE_READ_TIMEOUT) {
             eprintln!("mouselessd: idle read timeout: {e}");
         }
-        let mut overlay_lost = false;
-        for ev in daemon.poll_overlay_events() {
-            log_overlay_event(&ev);
-            if matches!(ev, OverlayEvent::Disconnected) {
-                overlay_lost = true;
-            }
-        }
-        if overlay_lost {
+        if drain_overlay_events(&mut daemon, &store) {
             eprintln!("mouselessd: overlay disconnected; releasing grab, typing unaffected");
             daemon.on_overlay_lost();
         }
@@ -320,30 +351,29 @@ fn main() -> ExitCode {
             },
         };
 
-        match name.as_str() {
-            OVERLAY_LAYER => {
-                let _ = daemon.poll_overlay_events();
-                match start_overlay_with_retry(&mut daemon) {
-                    Ok(()) => match run_overlay_session(&mut daemon) {
-                        SessionEnd::Done => {}
-                        SessionEnd::KanataGone => {
-                            let _ = daemon.on_kanata_lost();
-                            return ExitCode::from(1);
-                        }
-                        SessionEnd::Layer(next) => pending_layer = Some(next),
-                    },
-                    Err(e) => {
-                        eprintln!("mouselessd: overlay start degraded: {e}");
-                        // Never leave the user on an overlay layer without a
-                        // working grab: restore base so typing is unaffected.
-                        daemon.end_overlay();
+        if name == daemon.overlay_layer() {
+            let _ = drain_overlay_events(&mut daemon, &store);
+            match start_overlay_with_retry(&mut daemon) {
+                Ok(()) => match run_overlay_session(&mut daemon, &store) {
+                    SessionEnd::Done => {}
+                    SessionEnd::KanataGone => {
+                        let _ = daemon.on_kanata_lost();
+                        return ExitCode::from(1);
                     }
+                    SessionEnd::Layer(next) => pending_layer = Some(next),
+                },
+                Err(e) => {
+                    eprintln!("mouselessd: overlay start degraded: {e}");
+                    // Never leave the user on an overlay layer without a
+                    // working grab: restore base so typing is unaffected.
+                    daemon.end_overlay();
                 }
             }
-            FREE_MODE_LAYER => match start_free_with_retry(&mut daemon) {
+        } else if name == daemon.free_mode_layer() {
+            match start_free_with_retry(&mut daemon) {
                 Ok(()) => {
                     if daemon.free_mode_active() {
-                        match run_free_session(&mut daemon) {
+                        match run_free_session(&mut daemon, &store) {
                             SessionEnd::Done => {}
                             SessionEnd::KanataGone => {
                                 let _ = daemon.on_kanata_lost();
@@ -357,14 +387,13 @@ fn main() -> ExitCode {
                     eprintln!("mouselessd: free-mode start degraded: {e}");
                     daemon.end_free_mode();
                 }
-            },
-            _ => {
-                // Base and kanata's own `lyr-mouse` fallback both land here.
-                // `on_layer_event` releases buttons/grab and restores base
-                // except for `lyr-mouse`, which kanata chose deliberately.
-                if let Err(e) = daemon.on_layer_event(LayerEvent::LayerChanged(name)) {
-                    eprintln!("mouselessd: layer transition failed: {e}");
-                }
+            }
+        } else {
+            // Base and kanata's own free-mode fallback both land here.
+            // `on_layer_event` releases buttons/grab and restores base
+            // except for the kanata fallback layer, which kanata chose.
+            if let Err(e) = daemon.on_layer_event(LayerEvent::LayerChanged(name)) {
+                eprintln!("mouselessd: layer transition failed: {e}");
             }
         }
     }
@@ -399,29 +428,24 @@ fn start_free_with_retry(daemon: &mut ProdDaemon) -> Result<(), DaemonError> {
 ///
 /// The grab is held ONLY here (plan §5 rule 1). Esc/click/layer-exit all end
 /// the session; `end_overlay` releases the grab and restores the base layer.
-fn run_overlay_session(daemon: &mut ProdDaemon) -> SessionEnd {
+fn run_overlay_session(daemon: &mut ProdDaemon, store: &ConfigStore) -> SessionEnd {
     if let Err(e) = daemon.keyboard_mut().set_read_timeout(SESSION_READ_TIMEOUT) {
         eprintln!("mouselessd: session read timeout: {e}");
     }
 
     let mut next_tick = Instant::now();
     loop {
-        let mut overlay_lost = false;
-        for ev in daemon.poll_overlay_events() {
-            if matches!(ev, OverlayEvent::Disconnected) {
-                overlay_lost = true;
-            }
-        }
-        if overlay_lost {
+        if drain_overlay_events(daemon, store) {
             eprintln!("mouselessd: overlay disconnected mid-session; ending");
             break;
         }
 
         match daemon.keyboard_mut().next_layer_event() {
-            Ok(LayerEvent::LayerChanged(name)) if name != OVERLAY_LAYER => {
-                return SessionEnd::Layer(name);
+            Ok(LayerEvent::LayerChanged(name)) => {
+                if name != daemon.overlay_layer() {
+                    return SessionEnd::Layer(name);
+                }
             }
-            Ok(_) => {}
             Err(KbdError::Unavailable(_)) | Err(KbdError::Busy) => {}
             Err(KbdError::Io(msg)) => {
                 if is_kanata_gone(&msg) {
@@ -491,28 +515,25 @@ fn run_overlay_session(daemon: &mut ProdDaemon) -> SessionEnd {
 /// Free mode is relative, so an overlay disconnect only hides the overlay and
 /// leaves the session running. Esc, auto-off, uinput failure, or a layer change
 /// end it; held buttons are always released by `end_free_mode`/teardown.
-fn run_free_session(daemon: &mut ProdDaemon) -> SessionEnd {
+fn run_free_session(daemon: &mut ProdDaemon, store: &ConfigStore) -> SessionEnd {
     if let Err(e) = daemon.keyboard_mut().set_read_timeout(SESSION_READ_TIMEOUT) {
         eprintln!("mouselessd: free-mode read timeout: {e}");
     }
 
     let mut next_tick = Instant::now();
     loop {
-        let mut overlay_lost = false;
-        for ev in daemon.poll_overlay_events() {
-            if matches!(ev, OverlayEvent::Disconnected) {
-                overlay_lost = true;
-            }
-        }
-        if overlay_lost {
+        if drain_overlay_events(daemon, store) {
             // Relative motion keeps working; only the overlay is gone.
             eprintln!("mouselessd: overlay disconnected; free mode continues");
             daemon.on_overlay_lost();
         }
 
         match daemon.keyboard_mut().next_layer_event() {
-            Ok(LayerEvent::LayerChanged(name)) if name == FREE_MODE_LAYER => {}
-            Ok(LayerEvent::LayerChanged(name)) => return SessionEnd::Layer(name),
+            Ok(LayerEvent::LayerChanged(name)) => {
+                if name != daemon.free_mode_layer() {
+                    return SessionEnd::Layer(name);
+                }
+            }
             Err(KbdError::Unavailable(_)) | Err(KbdError::Busy) => {}
             Err(KbdError::Io(msg)) => {
                 if is_kanata_gone(&msg) {
@@ -574,6 +595,103 @@ fn run_free_session(daemon: &mut ProdDaemon) -> SessionEnd {
     SessionEnd::Done
 }
 
+/// Drain overlay events, applying any CLI/GUI `Reload`/`Update` requests.
+/// Returns whether a helloed overlay disconnected.
+fn drain_overlay_events(daemon: &mut ProdDaemon, store: &ConfigStore) -> bool {
+    let mut lost = false;
+    for ev in daemon.poll_overlay_events() {
+        log_overlay_event(&ev);
+        match ev {
+            OverlayEvent::Disconnected => lost = true,
+            OverlayEvent::ClientCommand {
+                request_id,
+                command,
+            } => process_client_command(daemon, store, request_id, &command),
+            _ => {}
+        }
+    }
+    lost
+}
+
+fn process_client_command(
+    daemon: &mut ProdDaemon,
+    store: &ConfigStore,
+    request_id: u64,
+    command: &ClientToDaemon,
+) {
+    let reply = match command {
+        ClientToDaemon::Reload => match store.load() {
+            Ok(config) => apply_candidate(daemon, &config, None),
+            Err(error) => config_error(&error),
+        },
+        ClientToDaemon::Update { config } => apply_candidate(daemon, config, Some(store)),
+        ClientToDaemon::Status => DaemonToClient::Status {
+            daemon_version: env!("CARGO_PKG_VERSION").into(),
+            overlay_connected: daemon.overlay_connected(),
+            session_active: daemon.session_active(),
+            free_mode: daemon.free_mode_active(),
+            config_path: store.config_path().display().to_string(),
+        },
+    };
+    match &reply {
+        DaemonToClient::Ack { message } => println!("mouselessd: client ack: {message}"),
+        DaemonToClient::Error { code, message } => {
+            eprintln!("mouselessd: client error ({code}): {message}");
+        }
+        DaemonToClient::Status { .. } => {}
+    }
+    if let Err(e) = daemon.reply_client(request_id, &reply) {
+        eprintln!("mouselessd: client reply failed: {e}");
+    }
+}
+
+/// Validate, optionally persist, then swap the live config. Persistence
+/// happens before the runtime swap so a failed write leaves the old behavior
+/// in place.
+fn apply_candidate(
+    daemon: &mut ProdDaemon,
+    config: &Config,
+    persist: Option<&ConfigStore>,
+) -> DaemonToClient {
+    if let Err(error) = mouseless_config::validate(config) {
+        return DaemonToClient::Error {
+            code: "invalid_config".into(),
+            message: error.to_string(),
+        };
+    }
+    if let Some(store) = persist {
+        if let Err(error) = store.save(config) {
+            return config_error(&error);
+        }
+    }
+    let mut next = daemon.config().clone();
+    next.apply_config(config);
+    daemon.apply_config(next);
+    DaemonToClient::Ack {
+        message: if persist.is_some() {
+            "configuration saved and applied"
+        } else {
+            "configuration reloaded"
+        }
+        .into(),
+    }
+}
+
+fn config_error(error: &ConfigError) -> DaemonToClient {
+    let code = match error {
+        ConfigError::NotFound { .. } => "not_found",
+        ConfigError::Parse { .. } => "parse",
+        ConfigError::UnsupportedVersion { .. } => "unsupported_version",
+        ConfigError::CheckFailed { .. } => "check_failed",
+        ConfigError::Io { .. } => "io",
+        ConfigError::Invalid(_) => "invalid_config",
+    };
+    DaemonToClient::Error {
+        code: code.into(),
+        message: error.to_string(),
+    }
+}
+
 /// Kanata TCP EOF/reset means the process died (kill switch, plan §7).
 fn is_kanata_gone(msg: &str) -> bool {
     msg.contains("EOF") || msg.contains("closed") || msg.contains("reset")
@@ -594,6 +712,9 @@ fn log_overlay_event(ev: &OverlayEvent) {
         ),
         OverlayEvent::CursorReply { cursor } => {
             eprintln!("mouselessd: cursor reply=({}, {})", cursor.x, cursor.y)
+        }
+        OverlayEvent::ClientCommand { command, .. } => {
+            eprintln!("mouselessd: client command {command:?}")
         }
         _ => {}
     }

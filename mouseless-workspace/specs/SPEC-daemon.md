@@ -3,12 +3,13 @@
 > Module: `daemon` · Paths: `crates/mouseless-daemon` · Depends on: `kbd`, `mouse`,
 > `overlay`, `state`, `core`, `ipc` · Plan refs: §1.2, §5, §6, §7, §8 #2/#3/#6/#10 ·
 > Matrix rows: #2, #3, #6, #10 (owner); supports #4, #5, #8, #9
-> Status as of 2026-10-29: **Implemented (Phase 1.3 MVP + Phase 2)** — real
-> kanata TCP, `EvdevCellGrab`, uinput mouse, GNOME socket server, grid/subgrid
-> models, FSM, click path, multi-click/drag/nudge/monitor/cursor-hide actions,
-> custom 8 ms free-mode loop, degrade modes, and kill-switch co-exit are wired.
-> Remaining gaps: `tracing` (prints today), process-level kill-switch/e2e tests,
-> and live-host smoke after the Phase-2 kanata apply.
+> Status as of 2026-11-04: **Implemented (Phase 1.3 MVP + Phase 2 + Phase 3
+> config)** — real kanata TCP, `EvdevCellGrab`, uinput mouse, GNOME socket server,
+> grid/subgrid models, FSM, click path,
+> multi-click/drag/nudge/monitor/cursor-hide actions, custom 8 ms free-mode loop,
+> degrade modes, kill-switch co-exit, and persisted `config.yaml` apply
+> (`Reload`/`Update`/`Status`) are wired. Remaining gaps: `tracing` (prints
+> today), process-level kill-switch/e2e tests, and live-host visual smoke.
 
 ## Objective
 
@@ -26,7 +27,8 @@ free-mode tick, and the kill switch. All math is `core`, all decisions are
   cadence, drag/drop, subgrid nudges, continuous mode, multi-monitor switching,
   cursor hiding, free-mode engine selection flag. *(implemented 2026-10-29)*
 - In (Phase 3): config apply (`Reload`/`Update`) with validate-then-apply (shared
-  with `settings`).
+  with `settings`). *(implemented 2026-11-04: daemon-owned persistence under
+  `StateDirectory`, startup fallback, one-shot client replies)*
 - Out: any backend logic (plan §1.2).
 
 ## Contracts
@@ -256,20 +258,25 @@ through `Daemon::with_grab`. `FakeMouse`/`FakeOverlay`/`FakeCellGrab` remain
 test-only. `ProdOverlay::Disabled` reports `is_connected() == false`, so the
 daemon degrades instead of grabbing with nowhere to draw.
 
-### Configuration (MVP)
+### Configuration (Phase 3)
 
-`DaemonConfig` carries: kanata addr, socket path, **grid config** (default:
-`PrimaryGrid` 10 columns × 30 rows — level-1 `a s d f g h j k l ;`, level-2
-`qwertyuiopasdfghjkl;zxcvbnm,./`; each displayed cell is labelled with its
-column char followed by its row char, e.g. `AQ`; selecting a cell takes two
-keys, then its 10×3 subgrid — labelled with the same 30 keys — takes one more;
-target = sub-cell center on the subgrid key, cell center on Space), backend
-names, free-mode engine (`custom | kanata`) + `FreeModeParams`/`WheelParams`,
-`multi_click_threshold_ms`, `nudges_per_cell`, `hold_subgrid_for_nudge`,
-`continuous_mode`, `hide_cursor_on_click`, `cursor_hide_corner`,
-`hold_for_right_button`, `hold_for_drag`, and `initial_action_location`.
-Until Phase-3 `config.yaml` exists, defaults live in code + `--kanata`/`--socket`
-+ the `MOUSELESS_SOCKET` env override. Config precedence: CLI > env > defaults.
+`mouselessd` loads its last-applied schema-v1 document from
+`$STATE_DIRECTORY/config.yaml` (`/var/lib/mouseless` by default;
+`--state-dir`/`MOUSELESS_STATE_DIR` override for dev), falling back to
+`config.last-good.yaml` and then built-in defaults, and logs which fallback it
+used. `DaemonConfig::apply_config` maps the document onto the runtime: grid
+columns/rows and subgrid dimensions, `grid_action_level` (`2` vs `subgrid`),
+`default_action` (`click` vs `move`), `free_mode_after_move`, dynamic
+overlay/free/kanata layer names, appearance, thresholds, and physics
+parameters. Built-in defaults equal `Config::default()`; `--kanata`/`--socket`
+still override transport addresses (CLI > env > stored config > defaults).
+
+Clients speak one-shot `Reload`/`Update`/`Status` frames over the overlay
+socket (`SPEC-ipc.md`). `Update` validates, persists atomically, then swaps the
+runtime; any failure leaves the previous config live and returns `Error`.
+Client peers bypass the overlay Hello budget and never receive overlay
+broadcasts. Applying a live config change tears down any active session so the
+next show uses the new geometry.
 
 ### Error handling & observability (plan §6, SKILL-05)
 
@@ -395,6 +402,9 @@ MOUSELESS_SOCKET=/tmp/mouseless.sock cargo run -p mouseless-daemon -- --kanata 1
 - [x] `mouseless-cli` show/hide/toggle/enter-free-mode/exit-free-mode speak
       kanata TCP; fake-TCP tests in `crates/mouseless-cli/tests/kanata_verbs.rs`.
 - [x] `SO_PEERCRED` server check (audit G3) wired in the GNOME overlay backend.
+- [x] Persisted config: startup loads live → last-good → defaults from
+      `StateDirectory`, `apply_config` maps schema v1 to runtime, one-shot
+      `Reload`/`Update`/`Status` replies, failed apply keeps the old config live.
 - [ ] Explicit `RequestCurrentLayerName` resync on the same connection after
       reconnect (matrix #3). Kanata 1.12 pushes `LayerChange` on connect and
       `reconnect_resyncs_from_connect_time_layer_push` covers that behavior;

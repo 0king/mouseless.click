@@ -28,6 +28,10 @@ Group=mouseless
 SupplementaryGroups=input uinput
 RuntimeDirectory=mouseless
 RuntimeDirectoryMode=0770
+# Last-applied config (config.yaml + config.last-good.yaml) survives restarts.
+# StateDirectory also carves a writable path out of ProtectSystem=strict.
+StateDirectory=mouseless
+StateDirectoryMode=0750
 UMask=0007
 ExecStart=/usr/local/bin/mouselessd --kanata 127.0.0.1:7070
 Restart=on-failure

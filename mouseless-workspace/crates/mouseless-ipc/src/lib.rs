@@ -11,14 +11,19 @@
 //! Direction is enforced twice: [`decode_for`] rejects frames whose `kind`
 //! does not match the expected peer role, and the daemon authenticates peers
 //! with [`peer_allowed`] (audit G3).
+//!
+//! Client → daemon frames (`Reload`/`Update`) live in [`client`] together with
+//! the one-shot blocking [`client::request`] helper used by the CLI and GUI.
 
 pub mod auth;
+pub mod client;
 
 use mouseless_core::{Monitor, Rect};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub use auth::{peer_allowed, AuthPolicy, PeerCred};
+pub use client::{request, ClientError, ClientToDaemon, DaemonToClient, CLIENT_TIMEOUT};
 
 /// Current protocol schema version. Bump on any breaking change.
 pub const SCHEMA_VERSION: u32 = 1;

@@ -11,7 +11,7 @@ use mouseless_kbd::{BASE_LAYER, FREE_MODE_LAYER, OVERLAY_LAYER};
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CliError {
     /// Unknown verb or bad arguments.
-    #[error("usage: mouseless <show|hide|toggle|enter-free-mode|exit-free-mode|status|--list-input-devices>")]
+    #[error("usage: mouseless <show|hide|toggle|enter-free-mode|exit-free-mode|status|reload|--list-input-devices>")]
     Usage,
 }
 
@@ -28,8 +28,10 @@ pub enum Verb {
     EnterFreeMode,
     /// `mouseless://exit-free-mode`.
     ExitFreeMode,
-    /// Local status (no daemon round-trip in the scaffold).
+    /// Kanata layer plus daemon/overlay/session/free-mode state.
     Status,
+    /// Re-read the daemon-owned config, validate, and apply it.
+    Reload,
     /// List `/dev/input` devices (mirrors upstream `--list-input-devices`).
     ListInputDevices,
 }
@@ -44,21 +46,26 @@ impl Verb {
             "enter-free-mode" => Ok(Verb::EnterFreeMode),
             "exit-free-mode" => Ok(Verb::ExitFreeMode),
             "status" => Ok(Verb::Status),
+            "reload" => Ok(Verb::Reload),
             "--list-input-devices" => Ok(Verb::ListInputDevices),
             _ => Err(CliError::Usage),
         }
     }
 
-    /// Deep-link URL for this verb (`mouseless://…`).
-    pub fn deep_link(&self) -> &'static str {
+    /// Deep-link URL for this verb (`mouseless://…`), when one exists.
+    ///
+    /// `reload` is deliberately socket-only (SPEC-cli): it targets the daemon
+    /// process, not a desktop session handler.
+    pub fn deep_link(&self) -> Option<&'static str> {
         match self {
-            Verb::Show => "mouseless://show-overlay",
-            Verb::Hide => "mouseless://hide-overlay",
-            Verb::Toggle => "mouseless://toggle-overlay",
-            Verb::EnterFreeMode => "mouseless://enter-free-mode",
-            Verb::ExitFreeMode => "mouseless://exit-free-mode",
-            Verb::Status => "mouseless://status",
-            Verb::ListInputDevices => "mouseless://list-input-devices",
+            Verb::Show => Some("mouseless://show-overlay"),
+            Verb::Hide => Some("mouseless://hide-overlay"),
+            Verb::Toggle => Some("mouseless://toggle-overlay"),
+            Verb::EnterFreeMode => Some("mouseless://enter-free-mode"),
+            Verb::ExitFreeMode => Some("mouseless://exit-free-mode"),
+            Verb::Status => Some("mouseless://status"),
+            Verb::Reload => None,
+            Verb::ListInputDevices => Some("mouseless://list-input-devices"),
         }
     }
 
@@ -72,7 +79,7 @@ impl Verb {
             Verb::Show => Some(OVERLAY_LAYER),
             Verb::Hide | Verb::ExitFreeMode => Some(BASE_LAYER),
             Verb::EnterFreeMode => Some(FREE_MODE_LAYER),
-            Verb::Toggle | Verb::Status | Verb::ListInputDevices => None,
+            Verb::Toggle | Verb::Status | Verb::Reload | Verb::ListInputDevices => None,
         }
     }
 }
@@ -102,8 +109,9 @@ mod tests {
             ("enter-free-mode", "mouseless://enter-free-mode"),
             ("exit-free-mode", "mouseless://exit-free-mode"),
         ] {
-            assert_eq!(Verb::parse(arg).unwrap().deep_link(), link);
+            assert_eq!(Verb::parse(arg).unwrap().deep_link(), Some(link));
         }
+        assert_eq!(Verb::parse("reload").unwrap().deep_link(), None);
     }
 
     #[test]
@@ -119,6 +127,7 @@ mod tests {
         assert_eq!(Verb::ExitFreeMode.layer_change(), Some(BASE_LAYER));
         assert_eq!(Verb::Toggle.layer_change(), None);
         assert_eq!(Verb::Status.layer_change(), None);
+        assert_eq!(Verb::Reload.layer_change(), None);
         assert_eq!(Verb::ListInputDevices.layer_change(), None);
     }
 

@@ -10,7 +10,9 @@ pub mod impls;
 use mouseless_ipc::CursorPos;
 use thiserror::Error;
 
-pub use mouseless_ipc::{GridCell, GridModel, MonitorInfo, MonitorLayout};
+pub use mouseless_ipc::{
+    ClientToDaemon, DaemonToClient, GridCell, GridModel, MonitorInfo, MonitorLayout,
+};
 
 /// Overlay backend errors (logged, never crash the Shell).
 #[derive(Debug, Error)]
@@ -45,6 +47,14 @@ pub enum OverlayEvent {
     },
     /// A previously-helloed client disconnected (Shell restart/crash).
     Disconnected,
+    /// A CLI/GUI client sent `Reload`/`Update`. The daemon applies it and
+    /// replies with [`OverlayBackend::reply_client`].
+    ClientCommand {
+        /// Request identifier used to address the reply.
+        request_id: u64,
+        /// Validated client frame (payload parsed, schema checked).
+        command: ClientToDaemon,
+    },
 }
 
 /// Swappable overlay backend (plan §1.8).
@@ -66,6 +76,13 @@ pub trait OverlayBackend {
     fn query_cursor(&mut self) -> Result<(), Self::Error>;
     /// Drain queued overlay events without blocking.
     fn poll_events(&mut self) -> Vec<OverlayEvent>;
+    /// Reply to a [`OverlayEvent::ClientCommand`] request.
+    ///
+    /// Default is a no-op so draw-only/fake backends stay source-compatible.
+    fn reply_client(&mut self, request_id: u64, reply: &DaemonToClient) -> Result<(), Self::Error> {
+        let _ = (request_id, reply);
+        Ok(())
+    }
     /// Latest cursor position reported by the compositor, if any.
     fn last_cursor(&self) -> Option<CursorPos>;
     /// Latest monitor layout reported by the compositor, if any.

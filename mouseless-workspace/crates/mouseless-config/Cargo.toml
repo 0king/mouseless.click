@@ -1,0 +1,11 @@
+[package]
+name = "mouseless-config"
+version = "0.1.0"
+edition = "2021"
+description = "GTK-free config schema, validation, presets, atomic store, and kanata include renderer."
+license = "MIT"
+
+[dependencies]
+serde = { workspace = true }
+thiserror = { workspace = true }
+serde_yaml_ng = { workspace = true }

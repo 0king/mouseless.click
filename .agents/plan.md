@@ -374,8 +374,11 @@ Trait-boundary rules (enforced in review + CI):
   transparency (20% opacity) with `#ebe9e8`, per-cell-sized labels. Core/daemon/kbd/kanata/extension
   updated and `cargo test --workspace` (112 tests) + clippy green; host visual
   acceptance and the kanata re-apply remain manual.
-- [ ] Re-apply `platform/kanata/mouseless.kbd` (the overlay layer now emits the
+- [x] Re-apply `platform/kanata/mouseless.kbd` (the overlay layer now emits the
   full 30-key block explicitly) and verify the 10×30 grid on the host.
+  *Verified 2026-11-04: `/etc/kanata/mouseless.kbd` matches the repo file
+  (`diff` clean), kanata 1.12.0 is active and listening on `127.0.0.1:7070`.
+  Interactive visual acceptance of the grid remains manual.*
 
 ### Packaging & service install (cross-phase, 2026-10-31)
 - [x] `sysusers.d` (`mouselessd` + `mouseless` socket group; daemon joins
@@ -397,9 +400,25 @@ Trait-boundary rules (enforced in review + CI):
   applied state here.
 
 ### Phase 3: GTK4 Settings GUI & Presets (Priority 3)
-- [ ] **3.1** `mouseless-gtk` (`Adw.PreferencesWindow`): live preview, keybinding
-  reference with conflict hints, monitor assignment, presets engine (YAML
-  import/export), deep links (`mouseless://`), tray/status integration; test #9.
+- [x] **3.1a** `mouseless-config` (GTK-free): frozen schema v1, semantic
+  validation with field-tagged issues, built-in/user presets (Standard,
+  Quick-Select+Free-Mode) with import/export, atomic store with last-good
+  rollback, kanata include renderer + `kanata --check` gate (real binary and
+  fake-runner tests). No GTK dependency; `cargo test -p mouseless-config`.
+- [x] **3.1b** Config lifecycle end-to-end: daemon `apply_config` (dynamic
+  layer names, grid action level, default action, free-mode-after-move),
+  persistence under `StateDirectory=mouseless`, startup fallback live →
+  last-good → defaults, one-shot `Reload`/`Update`/`Status` client frames with
+  `Ack`/`Error`/`Status` replies, overlay multi-role socket (clients bypass the
+  Hello budget and never receive overlay broadcasts), CLI `reload` and
+  daemon-aware `status`, systemd `StateDirectory`. `cargo test --workspace`
+  plus `cargo clippy --workspace --all-targets -- -D warnings` green.
+- [ ] **3.1c** `mouseless-gtk` (`Adw.PreferencesWindow`): live preview,
+  keybinding reference with conflict hints, monitor assignment, presets UI,
+  deep links (`mouseless://` + `.desktop`), tray/status page; test #9.
+  *Blocked 2026-11-04: `pkg-config` finds neither `gtk4` nor `libadwaita-1`;
+  `sudo -n true` fails (interactive auth required). Install
+  `libgtk-4-dev libadwaita-1-dev`, then build the UI over the finished engine.*
 
 ### Phase 4: Multi-distro / multi-backend extensibility (Priority 4)
 - [ ] **4.1** New `KeyboardBackend` impl (e.g. keyd) and/or `MouseBackend`

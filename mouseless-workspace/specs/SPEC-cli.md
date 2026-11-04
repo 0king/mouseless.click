@@ -1,12 +1,13 @@
 # SPEC-cli — Command-line frontend (`mouseless`)
 
 > Module: `cli` · Paths: `crates/mouseless-cli` · Depends on: `kbd` (kanata TCP),
-> `ipc` (Phase 3 client verbs) · Plan refs: §4 (contracts), SKILL-08 (parity) ·
+> `ipc` (client verbs) · Plan refs: §4 (contracts), SKILL-08 (parity) ·
 > Matrix row: #3 (as a ChangeLayer producer, indirectly)
-> Status as of 2026-10-29: **Implemented (Phase 1.2 + Phase 2 verbs)** — parsing,
-> parity table, `status`, `--list-input-devices`, and all layer-changing verbs
-> speak kanata TCP. `toggle` queries the current layer first. Free-mode verbs
-> target `lyr-free` (custom engine); `lyr-mouse` remains the kanata fallback.
+> Status as of 2026-11-04: **Implemented (Phase 1.2 + Phase 2 + Phase 3 verbs)** —
+> parsing, parity table, `status`, `reload`, `--list-input-devices`, and all
+> layer-changing verbs speak kanata TCP. `toggle` queries the current layer
+> first. Free-mode verbs target `lyr-free` (custom engine); `lyr-mouse` remains
+> the kanata fallback. `reload`/`status` also speak the daemon client protocol.
 
 ## Objective
 
@@ -19,8 +20,8 @@ when the GUI is not wanted.
 - In: `show|hide|toggle`, `enter-free-mode|exit-free-mode`, `status`,
   `--list-input-devices`; exits codes; `.desktop` deep-link parity (file owned
   by `platform`).
-- In (Phase 3): `reload` (config re-apply), mapping to the daemon `Reload`
-  client message.
+- In (Phase 3, done): `reload` (config re-apply) and daemon-aware `status`,
+  mapping to the daemon `Reload`/`Status` client messages.
 - Out: anything the daemon can do only while the overlay is visible (no GUI
   automation); label mode and other Phase-4 features.
 
@@ -35,9 +36,9 @@ when the GUI is not wanted.
 | `toggle` | `toggle-overlay` | Query current layer, then show-or-hide | `mouseless://toggle-overlay` |
 | `enter-free-mode` | — | `ChangeLayer lyr-free` (custom engine; the daemon starts physics on the layer event). `lyr-mouse` remains the kanata fallback | `mouseless://enter-free-mode` |
 | `exit-free-mode` | — | `ChangeLayer lyr-base` | `mouseless://exit-free-mode` |
-| `status` | — | Print `kanata: <layer>` (daemon/device summary deferred to Phase 3) | `mouseless://status` |
+| `status` | — | Print kanata layer plus daemon/overlay/session/free-mode/config state when the daemon is reachable | `mouseless://status` |
 | `--list-input-devices` | — | Parse `/proc/bus/input/devices`, tag kanata/mouseless entries | `mouseless://list-input-devices` |
-| `reload` (Phase 3) | — | Send `Reload` client frame to the daemon | — |
+| `reload` | — | Send `Reload` client frame to the daemon | — |
 
 **Show/hide go through kanata's layer switch, never a direct daemon socket
 command**: the layer is the single source of truth (plan §1.3); the daemon
@@ -49,9 +50,11 @@ reacts to `LayerChange`. A direct `Show` frame would desync kanata.
   unreachable, bad device list); `2` usage error (unknown verb/args).
 - Human-readable single lines on stdout; errors on stderr with a clear message
   (no stack traces). Keep output stable enough for scripts: layer changes print
-  `mouseless: layer <name>`; `status` prints `kanata: <layer>`.
-- Daemon reachability and the device count in `status` need a Phase-3 `Status`
-  client message; until then `--list-input-devices` covers diagnostics.
+  `mouseless: layer <name>`; `status` prints `kanata: <layer>` plus one
+  `daemon:`/`overlay:`/`session:`/`free-mode:`/`config:` line when reachable.
+- Daemon unreachability is informational for `status` (kanata still prints) and
+  a failure (exit 1) for `reload`; `--socket`/`MOUSELESS_SOCKET` override the
+  path.
 - Timeouts: kanata queries ≤ 3 s; daemon socket ops ≤ 1 s.
 
 ### Input device listing
@@ -94,6 +97,9 @@ cargo run -p mouseless-cli -- --list-input-devices
   reported layer; unreachable kanata → exit 1. *(exists)*
 - `--help` documents the exit-code contract. *(exists)*
 - `--list-input-devices` parsing against a fixture file.
+- Fake-daemon Unix-socket tests (`tests/daemon_client.rs`): `reload` sends
+  `Reload` and prints the ack; daemon error → exit 1; `status` prints the
+  reported state; missing socket → connect failure. *(exists)*
 
 ## Boundaries
 
@@ -114,7 +120,8 @@ cargo run -p mouseless-cli -- --list-input-devices
 - [x] Free-mode verbs wired (`lyr-free` for the custom engine; `lyr-mouse`
       remains available as the kanata fallback).
 - [x] Output/exit-code contract documented in `--help` and README.
-- [ ] Phase 3: `reload` client verb; `.desktop` deep links installed by platform.
+- [x] `reload` client verb and daemon-aware `status`; `.desktop` deep links
+      remain owned by `platform` (installed with the GTK slice).
 
 ## Open questions
 
@@ -125,6 +132,6 @@ cargo run -p mouseless-cli -- --list-input-devices
    `lyr-mouse` as the manual/fallback layer.
 2. **`toggle` race.** Query-then-switch is two round-trips; kanata has no atomic
    toggle. Accept the race (local, sub-ms) unless misfires appear.
-3. **`status` depth.** Should it query the overlay client count from the daemon
-   (needs a `Status` client message not yet in `SPEC-ipc.md`)? Proposed: defer
-   until Phase 3 settings needs the same data.
+3. **`status` depth — resolved (2026-11-04).** The daemon `Status` client
+   message now supplies daemon version, overlay connectivity, session/free-mode
+   state, and the config path; the CLI prints them when the daemon is reachable.

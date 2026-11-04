@@ -13,7 +13,14 @@ fn bin() -> &'static str {
 
 fn run(port: u16, verb: &str) -> Output {
     Command::new(bin())
-        .args(["--kanata", &format!("127.0.0.1:{port}"), verb])
+        .args([
+            "--kanata",
+            &format!("127.0.0.1:{port}"),
+            // Keep `status` deterministic even when a real daemon is running.
+            "--socket",
+            "/dev/null/mouseless.sock",
+            verb,
+        ])
         .output()
         .expect("run mouseless")
 }

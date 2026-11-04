@@ -10,6 +10,7 @@
 //! (useful for fake-TCP tests and non-default ports).
 
 use mouseless_cli::{toggle_target, CliError, Verb};
+use mouseless_ipc::{request, ClientToDaemon, DaemonToClient, CLIENT_TIMEOUT, SOCKET_PATH};
 use mouseless_kbd::{query_current_layer, send_layer_change, KanataTcpConfig};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -46,12 +47,16 @@ fn list_input_devices() {
 fn usage() {
     eprintln!("{}", CliError::Usage);
     eprintln!("  [--kanata HOST:PORT]   default 127.0.0.1:7070 (or MOUSELESS_KANATA)");
+    eprintln!("  [--socket PATH]        default {SOCKET_PATH} (or MOUSELESS_SOCKET)");
 }
 
-/// Parse `[--kanata ADDR] <verb>`; returns the endpoint and the raw verb.
-fn parse_args() -> Result<(KanataTcpConfig, String), String> {
+/// Parse `[--kanata ADDR] [--socket PATH] <verb>`.
+///
+/// Returns the kanata endpoint, the daemon socket path, and the raw verb.
+fn parse_args() -> Result<(KanataTcpConfig, String, String), String> {
     let mut addr =
         std::env::var("MOUSELESS_KANATA").unwrap_or_else(|_| "127.0.0.1:7070".to_string());
+    let mut socket = std::env::var("MOUSELESS_SOCKET").unwrap_or_else(|_| SOCKET_PATH.to_string());
     let mut verb: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
@@ -61,9 +66,14 @@ fn parse_args() -> Result<(KanataTcpConfig, String), String> {
                     .next()
                     .ok_or_else(|| "--kanata requires HOST:PORT".to_string())?;
             }
+            "--socket" => {
+                socket = args
+                    .next()
+                    .ok_or_else(|| "--socket requires PATH".to_string())?;
+            }
             "--help" | "-h" => {
-                println!("usage: mouseless [--kanata HOST:PORT] <verb>");
-                println!("verbs: show hide toggle enter-free-mode exit-free-mode status");
+                println!("usage: mouseless [--kanata HOST:PORT] [--socket PATH] <verb>");
+                println!("verbs: show hide toggle enter-free-mode exit-free-mode status reload");
                 println!("flags: --list-input-devices, --version");
                 println!("exit: 0 success, 1 operational failure, 2 usage error");
                 std::process::exit(0);
@@ -93,6 +103,7 @@ fn parse_args() -> Result<(KanataTcpConfig, String), String> {
             port,
             timeout: Duration::from_secs(3),
         },
+        socket,
         verb,
     ))
 }
@@ -116,7 +127,7 @@ fn query_error(e: &mouseless_kbd::KbdError) -> ExitCode {
 }
 
 fn main() -> ExitCode {
-    let (cfg, verb_arg) = match parse_args() {
+    let (cfg, socket, verb_arg) = match parse_args() {
         Ok(v) => v,
         Err(e) => {
             eprintln!("Error: {e}");
@@ -135,9 +146,60 @@ fn main() -> ExitCode {
         Verb::Status => match query_current_layer(&cfg) {
             Ok(name) => {
                 println!("kanata: {name}");
+                match request(&socket, &ClientToDaemon::Status, CLIENT_TIMEOUT) {
+                    Ok(DaemonToClient::Status {
+                        daemon_version,
+                        overlay_connected,
+                        session_active,
+                        free_mode,
+                        config_path,
+                    }) => {
+                        println!("daemon: ok ({daemon_version})");
+                        println!(
+                            "overlay: {}",
+                            if overlay_connected {
+                                "connected"
+                            } else {
+                                "disconnected"
+                            }
+                        );
+                        println!(
+                            "session: {}",
+                            if session_active { "active" } else { "idle" }
+                        );
+                        println!(
+                            "free-mode: {}",
+                            if free_mode { "active" } else { "inactive" }
+                        );
+                        println!("config: {config_path}");
+                    }
+                    Ok(DaemonToClient::Error { code, message }) => {
+                        eprintln!("daemon: error ({code}): {message}");
+                    }
+                    Ok(_) => eprintln!("daemon: unexpected reply"),
+                    Err(e) => eprintln!("daemon: unavailable ({e})"),
+                }
                 ExitCode::SUCCESS
             }
             Err(e) => query_error(&e),
+        },
+        Verb::Reload => match request(&socket, &ClientToDaemon::Reload, CLIENT_TIMEOUT) {
+            Ok(DaemonToClient::Ack { message }) => {
+                println!("mouseless: {message}");
+                ExitCode::SUCCESS
+            }
+            Ok(DaemonToClient::Error { code, message }) => {
+                eprintln!("mouseless: reload failed ({code}): {message}");
+                ExitCode::FAILURE
+            }
+            Ok(_) => {
+                eprintln!("mouseless: reload failed: unexpected daemon reply");
+                ExitCode::FAILURE
+            }
+            Err(e) => {
+                eprintln!("mouseless: reload failed: {e}");
+                ExitCode::FAILURE
+            }
         },
         Verb::ListInputDevices => {
             list_input_devices();

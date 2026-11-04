@@ -2,10 +2,10 @@
 
 > Module: `ipc` · Paths: `crates/mouseless-ipc` · Depends on: — ·
 > Plan refs: §3 rule 3, §4 (contracts), §8 #8, audit G2/G3 · Matrix row: #8
-> Status as of 2026-10-29: **Implemented (v1)** — typed grid/layout payloads,
+> Status as of 2026-11-04: **Implemented (v1)** — typed grid/layout payloads,
 > `QueryCursor`/`CursorReply`/`Error`, `kind` validation, 1 MiB limit,
-> `SO_PEERCRED` auth, Hello timeout, and a checked-in malformed corpus.
-> Phase-2/3 `client` messages (`Reload`/`Update`) remain unimplemented.
+> `SO_PEERCRED` auth, Hello timeout, a checked-in malformed corpus, and the
+> one-shot client messages `Reload`/`Update`/`Status` with their replies.
 >
 > This document IS the 1-page wire spec deliverable required by audit G2.
 
@@ -87,12 +87,33 @@ frames never crash either side; the socket is only usable by authorized peers.
   acceleration or scale distortion per move instead of with a fixed factor
   (see `SPEC-daemon.md` movement semantics).
 
-### client → daemon (kind `"client"`, Phase 2/3)
+### client → daemon (kind `"client"`, one-shot)
 
 | Message | Payload schema |
 |---|---|
-| `Reload` | `{"type":"Reload"}` — re-read config, validate-then-apply |
-| `Update` | `{"type":"Update","config":ConfigData}` — apply new config (schema owned by `SPEC-settings.md`) |
+| `Reload` | `{"type":"Reload"}` — re-read the daemon-owned config, validate-then-apply |
+| `Update` | `{"type":"Update","config":ConfigData}` — validate, persist, then apply (schema owned by `SPEC-settings.md`) |
+| `Status` | `{"type":"Status"}` — read-only daemon/overlay/session state |
+
+Clients connect, send exactly **one** frame, read exactly **one** reply, and
+close. They do not send `Hello`; the daemon classifies a peer as a client from
+its first frame, replies to that frame, and never broadcasts overlay messages to
+it. A client that stays silent past the 2 s handshake budget is closed.
+
+### daemon → client (kind `"daemon"`)
+
+| Message | Payload schema |
+|---|---|
+| `Ack` | `{"type":"Ack","message":"configuration saved and applied"}` |
+| `Error` | `{"type":"Error","code":"invalid_config","message":"…"}` |
+| `Status` | `{"type":"Status","daemon_version":"0.1.0","overlay_connected":true,"session_active":false,"free_mode":false,"config_path":"/var/lib/mouseless/config.yaml"}` |
+
+- `Error.code` is stable for scripts (`invalid_config`, `io`, …); `message` is
+  for humans and may change.
+- A rejected `Reload`/`Update` leaves the previously applied config live.
+- The client helper uses a 1 s budget (`CLIENT_TIMEOUT`). On timeout the outcome
+  is **unknown** (the daemon may have committed the write); callers re-read
+  `Status` instead of retrying blindly.
 
 ## Lifecycle
 
@@ -118,6 +139,16 @@ daemon dies
   is expected in practice). `Hello` replay covers late joiners.
 - The replay frame is the last `Show`/`ShowSubgrid` while visible (so a Shell
   restart restores the subgrid), otherwise `Hide`.
+- Client peers are not part of the overlay lifecycle: they never receive the
+  replay, and `Disconnected` is only reported for helloed overlays.
+
+```text
+client connects
+  → sends exactly one Reload/Update/Status frame (no Hello)
+  → daemon validates/persists/applies, then replies Ack/Error/Status
+  → client closes; a timeout leaves the outcome unknown
+```
+
 
 ## Version negotiation
 
@@ -172,8 +203,9 @@ printf '%s\n' '{"schema_version":1,"kind":"daemon","payload":{"type":"Hide"}}' |
 ## Project structure
 
 `crates/mouseless-ipc/src/lib.rs` — constants (`SCHEMA_VERSION`, `SOCKET_PATH`),
-envelope + message enums, `encode`/`decode`. When `client` messages land, add
-`client.rs` with `Reload`/`Update` and keep direction enums in `lib.rs`.
+envelope + overlay message enums, `encode`/`decode`.
+`crates/mouseless-ipc/src/client.rs` — one-shot `ClientToDaemon` /
+`DaemonToClient` frames and the blocking `request()` helper (1 s default).
 
 ## Code style
 
@@ -194,7 +226,9 @@ envelope + message enums, `encode`/`decode`. When `client` messages land, add
 - `QueryCursor` timeout falls back to the last `Report`; aborts the session when
   no cursor has ever been reported (`DaemonError::NoCursor`). *(exists in the
   daemon click path)*
-- Client `Reload`/`Update` round-trips. *(deferred to Phase 2/3 with the CLI/GUI)*
+- Client `Reload`/`Update`/`Status` round-trips and a real Unix-socket
+  request/reply (ack, error, timeout, missing socket). *(exists in `client.rs`;
+  CLI parity covered by `crates/mouseless-cli/tests/daemon_client.rs`)*
 
 ## Boundaries
 
@@ -210,8 +244,8 @@ envelope + message enums, `encode`/`decode`. When `client` messages land, add
 - [x] Envelope round-trips with `schema_version` enforced.
 - [x] Newer schema refused; malformed input never panics.
 - [x] `Envelope` used by the daemon broadcast server (Phase 1.2).
-- [x] `QueryCursor`/`CursorReply`/`Error` implemented and tested; `client`
-      messages (`Reload`/`Update`) are tracked for Phase 2/3.
+- [x] `QueryCursor`/`CursorReply`/`Error` implemented and tested; one-shot
+      `client` messages (`Reload`/`Update`/`Status`) implemented with replies.
 - [x] `kind` direction validation (drop mismatched, never close).
 - [x] `SO_PEERCRED` predicate implemented + unit tests (audit G3).
 - [x] 1 MiB line limit enforced on decode and on the accepted socket.

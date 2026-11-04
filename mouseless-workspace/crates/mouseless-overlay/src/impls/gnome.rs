@@ -10,12 +10,15 @@
 //!
 //! It is draw-only: nothing here captures input (plan §1.5).
 
-use crate::{GridModel, OverlayBackend, OverlayError, OverlayEvent};
+use crate::{
+    ClientToDaemon, DaemonToClient, GridModel, OverlayBackend, OverlayError, OverlayEvent,
+};
 use mouseless_ipc::auth::{group_gid, peer_allowed, peer_cred, peer_groups};
 use mouseless_ipc::{
-    decode_for, encode, AuthPolicy, CursorPos, DaemonToOverlay, Envelope, IpcError, MonitorLayout,
-    OverlayToDaemon, KIND_DAEMON, KIND_OVERLAY, SOCKET_PATH as IPC_SOCKET_PATH,
+    decode, encode, AuthPolicy, CursorPos, DaemonToOverlay, Envelope, IpcError, MonitorLayout,
+    OverlayToDaemon, KIND_CLIENT, KIND_DAEMON, KIND_OVERLAY, SOCKET_PATH as IPC_SOCKET_PATH,
 };
+use std::collections::HashMap;
 use std::io::{ErrorKind, Read, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::Path;
@@ -33,20 +36,32 @@ pub const SOCKET_GROUP: &str = "mouseless";
 /// A peer that connects must send `Hello` within this budget (SPEC-ipc).
 const HELLO_TIMEOUT: Duration = Duration::from_secs(2);
 
-/// One connected overlay client.
+/// Role a peer takes from its first frame. Overlays own the Hello lifecycle;
+/// clients are one-shot request/reply peers and never receive broadcasts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PeerRole {
+    Overlay,
+    Client,
+}
+
+/// One connected peer (overlay or client), classified on its first frame.
 struct Client {
     stream: UnixStream,
     pending: Vec<u8>,
     hello: bool,
+    role: Option<PeerRole>,
+    conn_id: u64,
     accepted: Instant,
 }
 
 impl Client {
-    fn new(stream: UnixStream) -> Self {
+    fn new(stream: UnixStream, conn_id: u64) -> Self {
         Self {
             stream,
             pending: Vec::new(),
             hello: false,
+            role: None,
+            conn_id,
             accepted: Instant::now(),
         }
     }
@@ -77,6 +92,18 @@ impl Client {
         line.push('\n');
         self.stream.write_all(line.as_bytes()).is_ok()
     }
+
+    /// Send a daemon → client reply. The client helper expects exactly one
+    /// NDJSON frame and then closes.
+    fn send_client(&mut self, reply: &DaemonToClient) -> bool {
+        let Ok(line) = encode(KIND_DAEMON, reply) else {
+            return false;
+        };
+        let Ok(env) = serde_json::from_str::<Envelope>(&line) else {
+            return false;
+        };
+        self.send(&env)
+    }
 }
 
 /// Build a daemon frame without a fallible parse step.
@@ -96,6 +123,10 @@ pub struct GnomeOverlay {
     last_model: Option<GridModel>,
     last_frame: Option<DaemonToOverlay>,
     events: Vec<OverlayEvent>,
+    next_conn_id: u64,
+    next_request_id: u64,
+    /// Client request id → connection id, so replies survive index shifts.
+    pending_requests: HashMap<u64, u64>,
 }
 
 impl GnomeOverlay {
@@ -125,6 +156,9 @@ impl GnomeOverlay {
             last_model: None,
             last_frame: None,
             events: Vec::new(),
+            next_conn_id: 1,
+            next_request_id: 1,
+            pending_requests: HashMap::new(),
         })
     }
 
@@ -171,7 +205,9 @@ impl GnomeOverlay {
                                 );
                                 continue;
                             }
-                            self.clients.push(Client::new(stream));
+                            let conn_id = self.next_conn_id;
+                            self.next_conn_id = self.next_conn_id.wrapping_add(1).max(1);
+                            self.clients.push(Client::new(stream, conn_id));
                         }
                         Err(e) => eprintln!("mouselessd: SO_PEERCRED failed: {e}"),
                     }
@@ -189,7 +225,12 @@ impl GnomeOverlay {
         let mut dead = Vec::new();
         let mut incoming: Vec<(usize, String)> = Vec::new();
         for (idx, client) in self.clients.iter_mut().enumerate() {
-            if !client.hello && client.accepted.elapsed() > HELLO_TIMEOUT {
+            // Only overlays (or peers that have not identified themselves yet)
+            // owe a Hello. Clients are one-shot and never send one.
+            if client.role != Some(PeerRole::Client)
+                && !client.hello
+                && client.accepted.elapsed() > HELLO_TIMEOUT
+            {
                 eprintln!("mouselessd: overlay peer sent no Hello within 2s; closing");
                 dead.push(idx);
                 continue;
@@ -235,9 +276,10 @@ impl GnomeOverlay {
         dead.dedup();
         for idx in dead.into_iter().rev() {
             if idx < self.clients.len() {
-                let had_hello = self.clients[idx].hello;
-                self.clients.remove(idx);
-                if had_hello {
+                let client = self.clients.remove(idx);
+                self.pending_requests
+                    .retain(|_, conn| *conn != client.conn_id);
+                if client.hello && client.role == Some(PeerRole::Overlay) {
                     self.events.push(OverlayEvent::Disconnected);
                 }
             }
@@ -245,29 +287,63 @@ impl GnomeOverlay {
     }
 
     fn handle_line(&mut self, idx: usize, line: &str) {
-        let env = match decode_for(line, KIND_OVERLAY) {
+        let env = match decode(line) {
             Ok(env) => env,
             Err(IpcError::VersionMismatch { got, expected }) => {
-                let msg = DaemonToOverlay::Error {
-                    code: "version_mismatch".into(),
-                    message: "extension schema is newer than daemon".into(),
-                    got: Some(got),
-                    expected: Some(expected),
-                };
-                if let (Some(client), Some(env)) = (self.clients.get_mut(idx), envelope(&msg)) {
-                    let _ = client.send(&env);
-                    let _ = client.stream.shutdown(std::net::Shutdown::Both);
-                }
-                eprintln!("mouselessd: overlay schema {got} > {expected}; closing peer");
+                self.send_protocol_error(idx, got, expected);
                 return;
             }
             Err(e) => {
-                eprintln!("mouselessd: overlay frame ignored: {e}");
+                eprintln!("mouselessd: peer frame ignored: {e}");
                 return;
             }
         };
 
-        let Ok(msg) = serde_json::from_value::<OverlayToDaemon>(env.payload) else {
+        match env.kind.as_str() {
+            KIND_OVERLAY => self.handle_overlay_frame(idx, env.payload),
+            KIND_CLIENT => self.handle_client_frame(idx, env.payload),
+            other => eprintln!("mouselessd: frame ignored (unexpected kind {other:?})"),
+        }
+    }
+
+    /// Send a version-mismatch error in the peer's shape, then close it.
+    fn send_protocol_error(&mut self, idx: usize, got: u32, expected: u32) {
+        let Some(client) = self.clients.get_mut(idx) else {
+            return;
+        };
+        match client.role {
+            Some(PeerRole::Client) => {
+                let _ = client.send_client(&DaemonToClient::Error {
+                    code: "version_mismatch".into(),
+                    message: "client schema is newer than daemon".into(),
+                });
+            }
+            _ => {
+                let msg = DaemonToOverlay::Error {
+                    code: "version_mismatch".into(),
+                    message: "peer schema is newer than daemon".into(),
+                    got: Some(got),
+                    expected: Some(expected),
+                };
+                if let Some(env) = envelope(&msg) {
+                    let _ = client.send(&env);
+                }
+            }
+        }
+        let _ = client.stream.shutdown(std::net::Shutdown::Both);
+        eprintln!("mouselessd: peer schema {got} > {expected}; closing peer");
+    }
+
+    fn handle_overlay_frame(&mut self, idx: usize, payload: serde_json::Value) {
+        match self.clients.get_mut(idx) {
+            None => return,
+            Some(client) if client.role == Some(PeerRole::Client) => {
+                eprintln!("mouselessd: overlay frame on a client connection ignored");
+                return;
+            }
+            Some(client) => client.role = Some(PeerRole::Overlay),
+        }
+        let Ok(msg) = serde_json::from_value::<OverlayToDaemon>(payload) else {
             // Unknown message type: forward-compatible ignore (SPEC-ipc).
             return;
         };
@@ -296,8 +372,36 @@ impl GnomeOverlay {
         }
     }
 
+    fn handle_client_frame(&mut self, idx: usize, payload: serde_json::Value) {
+        let conn_id = match self.clients.get_mut(idx) {
+            None => return,
+            Some(client) if client.role == Some(PeerRole::Overlay) => {
+                eprintln!("mouselessd: client frame on an overlay connection ignored");
+                return;
+            }
+            Some(client) => {
+                client.role = Some(PeerRole::Client);
+                client.conn_id
+            }
+        };
+        let Ok(command) = serde_json::from_value::<ClientToDaemon>(payload) else {
+            // Unknown client message: forward-compatible ignore (SPEC-ipc).
+            return;
+        };
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1).max(1);
+        self.pending_requests.insert(request_id, conn_id);
+        self.events.push(OverlayEvent::ClientCommand {
+            request_id,
+            command,
+        });
+    }
+
     /// Late-join replay: current frame while visible, Hide otherwise.
     fn replay(&mut self, idx: usize) {
+        if self.clients.get(idx).and_then(|client| client.role) != Some(PeerRole::Overlay) {
+            return;
+        }
         let replay = if self.visible {
             self.last_frame.clone()
         } else {
@@ -316,8 +420,41 @@ impl GnomeOverlay {
         let Some(env) = envelope(msg) else {
             return Err(OverlayError::Schema("frame does not serialize".into()));
         };
-        self.clients
-            .retain_mut(|client| !client.hello || client.send(&env));
+        // Broadcast only to helloed overlays: clients are request/reply peers
+        // and a silent overlay must never receive unrendered state.
+        self.clients.retain_mut(|client| {
+            if client.role == Some(PeerRole::Overlay) && client.hello {
+                client.send(&env)
+            } else {
+                true
+            }
+        });
+        Ok(())
+    }
+
+    /// Send the daemon reply and half-close the client's write side so the
+    /// one-shot helper sees EOF after the frame.
+    fn reply_client(
+        &mut self,
+        request_id: u64,
+        reply: &DaemonToClient,
+    ) -> Result<(), OverlayError> {
+        let Some(conn_id) = self.pending_requests.remove(&request_id) else {
+            return Ok(());
+        };
+        let Some(idx) = self
+            .clients
+            .iter()
+            .position(|client| client.conn_id == conn_id)
+        else {
+            return Ok(());
+        };
+        let client = &mut self.clients[idx];
+        let sent = client.send_client(reply);
+        let _ = client.stream.shutdown(std::net::Shutdown::Write);
+        if !sent {
+            self.clients.remove(idx);
+        }
         Ok(())
     }
 }
@@ -374,15 +511,21 @@ impl OverlayBackend for GnomeOverlay {
         self.last_layout.clone()
     }
 
+    fn reply_client(&mut self, request_id: u64, reply: &DaemonToClient) -> Result<(), Self::Error> {
+        GnomeOverlay::reply_client(self, request_id, reply)
+    }
+
     fn is_connected(&self) -> bool {
-        self.clients.iter().any(|c| c.hello)
+        self.clients
+            .iter()
+            .any(|c| c.hello && c.role == Some(PeerRole::Overlay))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mouseless_ipc::{GridCell, MonitorInfo, KIND_OVERLAY};
+    use mouseless_ipc::{GridCell, MonitorInfo, KIND_CLIENT, KIND_OVERLAY};
     use std::io::BufRead;
     use std::os::unix::net::UnixStream;
 
@@ -400,6 +543,26 @@ mod tests {
         reader.read_line(&mut line).unwrap();
         let env = mouseless_ipc::decode(&line).unwrap();
         serde_json::from_value(env.payload).unwrap()
+    }
+
+    fn read_client_reply(stream: &mut UnixStream) -> DaemonToClient {
+        let mut reader = std::io::BufReader::new(stream);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let env = mouseless_ipc::decode_for(&line, KIND_DAEMON).unwrap();
+        serde_json::from_value(env.payload).unwrap()
+    }
+
+    fn temp_socket(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "mouseless-overlay-{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        dir.join("d.sock")
     }
 
     #[test]
@@ -500,6 +663,69 @@ mod tests {
         overlay.clients[0].accepted = Instant::now() - HELLO_TIMEOUT - Duration::from_millis(1);
         overlay.poll_reads();
         assert_eq!(overlay.client_count(), 0);
+    }
+
+    #[test]
+    fn client_reload_is_queued_acked_and_never_broadcast_to() {
+        let path = temp_socket("client");
+        let path = path.to_str().unwrap();
+        let mut overlay = GnomeOverlay::bind(path).unwrap();
+
+        let mut client = UnixStream::connect(path).unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        let msg = ClientToDaemon::Reload;
+        let line = encode(KIND_CLIENT, &msg).unwrap();
+        client.write_all(format!("{line}\n").as_bytes()).unwrap();
+        std::thread::sleep(Duration::from_millis(50));
+        overlay.poll();
+
+        let request_id = overlay
+            .drain_events()
+            .into_iter()
+            .find_map(|ev| match ev {
+                OverlayEvent::ClientCommand {
+                    request_id,
+                    command,
+                } => {
+                    assert_eq!(command, msg);
+                    Some(request_id)
+                }
+                _ => None,
+            })
+            .expect("client command event");
+        // A client alone never counts as a connected overlay.
+        assert!(!overlay.is_connected());
+
+        // A broadcast while only the client is connected must not reach it.
+        let model = GridModel {
+            monitor: mouseless_core::Monitor {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+                scale: 1.0,
+            },
+            cells: vec![GridCell::new(
+                0,
+                "a",
+                mouseless_core::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 480.0,
+                    h: 540.0,
+                },
+            )],
+            highlight: None,
+        };
+        overlay.show(&model).unwrap();
+
+        let reply = DaemonToClient::Ack {
+            message: "reloaded".into(),
+        };
+        overlay.reply_client(request_id, &reply).unwrap();
+        assert_eq!(read_client_reply(&mut client), reply);
     }
 
     #[test]

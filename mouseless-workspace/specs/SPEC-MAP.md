@@ -4,12 +4,16 @@
 > `.agents/plan.md`. This map is the index of the module specs; each module id
 > below maps 1:1 to `specs/SPEC-<id>.md`.
 >
-> Status snapshot: 2026-11-03 · `cargo test --workspace` = 112 tests green;
+> Status snapshot: 2026-11-04 · `cargo test --workspace` = 164 tests green;
 > Phase 1.3 overlay + Phase 2 custom free mode/action semantics implemented
 > (headless Shell smoke and Phase-1.4 host e2e/visual acceptance passed).
 > Phase-3 grid layout landed: 10 columns × 30 rows primary grid with
 > two-character labels, 10×3 subgrid, and the `#d4de04`/50%-opacity overlay
 > styling (host visual acceptance pending).
+> Phase-3 config engine (`mouseless-config`), presets, atomic apply/rollback,
+> kanata render/check gate, daemon persistence, and CLI `reload`/`status` are
+> implemented; the Adwaita app and deep-link `.desktop` files wait on
+> `libgtk-4-dev libadwaita-1-dev`.
 > Packaging (installers, `sysusers`, runbook, platform checks) is complete;
 > live free-mode movement/click behavior is confirmed. The final host
 > service install waits on interactive sudo.
@@ -33,6 +37,7 @@ spec is re-negotiated with the human before code moves.
 |---|---|---|---|
 | `core` | Pure grid math: cell→pixel, layouts, scale-aware geometry. Zero I/O. | `crates/mouseless-core` | — |
 | `state` | Overlay state machine, free-mode physics, mouse-action semantics; `Clock` trait. | `crates/mouseless-state` | `core` |
+| `config` | GTK-free schema v1, validation, presets, atomic store/rollback, kanata include render/check. | `crates/mouseless-config` | — |
 | `ipc` | Versioned NDJSON wire protocol (daemon ↔ overlay ↔ clients) + socket auth contract. | `crates/mouseless-ipc` | — |
 | `kbd` | `KeyboardBackend` + `CellGrab` (kanata TCP subscriber, evdev temp grab). | `crates/mouseless-kbd` | — |
 | `mouse` | `MouseBackend` (uinput `mouseless-mouse`) + REL-delta math. | `crates/mouseless-mouse` | — |
@@ -60,13 +65,14 @@ core, state, ipc, kbd, mouse, platform      (foundations — mostly scaffolded)
 |---|---|---|
 | `core` | Implemented | Mixed-scale multi-monitor origin e2e (Phase 2.2, manual). |
 | `state` | Implemented (Phase 2) | Live-host tuning of easing/auto-off; Phase-4 label mode. |
-| `ipc` | Implemented (v1) | Phase-2/3 `client` messages (`Reload`/`Update`) not wired. |
+| `config` | Implemented (Phase 3) | GTK binding for the settings app. |
+| `ipc` | Implemented (v1) | — (`Reload`/`Update`/`Status` client messages wired). |
 | `kbd` | Implemented (Phase 2) | Live evdev grab/EBUSY smoke after the kanata config is applied. |
 | `mouse` | Implemented | Hi-res wheel decision; click-accuracy verified only in e2e (Phase 1.4). |
 | `overlay` | Implemented (1.3) | Mixed-scale multi-monitor origin e2e (Phase 2.2, manual). |
-| `daemon` | Implemented (Phase 2) | Live free-mode/drag/nudge/monitor/cursor-hide smoke. |
-| `cli` | Implemented (Phase 2) | Phase-3 `reload`; richer `status` needs a daemon client message. |
-| `settings` | Stub | Entire Phase 3; build prereq `libgtk-4-dev libadwaita-1-dev`. |
+| `daemon` | Implemented (Phase 2 + config) | Live free-mode/drag/nudge/monitor/cursor-hide smoke. |
+| `cli` | Implemented (Phase 3) | `.desktop` deep-link installation (platform). |
+| `settings` | Engine done; GTK app pending | Adwaita window/pages; build prereq `libgtk-4-dev libadwaita-1-dev`. |
 | `platform` | Packaged (host install pending) | Live `lyr-free` apply + service install (sudo), `.desktop` deep links, wider distro matrix. |
 
 ## Blocking test matrix → owners (plan §8, SKILL-07)

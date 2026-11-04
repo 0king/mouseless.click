@@ -8,13 +8,14 @@ config value, never a core refactor.
 |---|---|---|
 | `mouseless-core` | Pure grid math (cell→pixel, layouts, scale-aware) including the two-level `PrimaryGrid` (10 column keys × 30 row keys → two-character cell labels). Zero I/O. | — |
 | `mouseless-state` | State machine (`Normal→Overlay→Subgrid→Click`), action intents (multi-click/drag/nudge), `FreeModeSession` physics; `Clock` trait (real/fake). I/O-free. | — |
-| `mouseless-ipc` | Versioned JSON protocol (`schema_version`; negotiate/refuse), newline-delimited envelopes. | — |
+| `mouseless-config` | GTK-free config engine: schema v1, semantic validation, presets, atomic store with last-good rollback, kanata include render/check. No I/O outside caller-supplied paths. | — |
+| `mouseless-ipc` | Versioned JSON protocol (`schema_version`; negotiate/refuse), newline-delimited envelopes, one-shot `Reload`/`Update`/`Status` client frames + replies. | — |
 | `mouseless-kbd` | `KeyboardBackend` (layer events, `set_layer`, resync, reload) + `CellGrab` RAII contract. | `impls/kanata.rs` (TCP); future `keyd`, `evdev_raw` |
 | `mouseless-mouse` | `MouseBackend` (`move_rel`/`click`/`button_down`/`button_up`/`scroll`) + `compute_delta` (saturating). | `impls/uinput.rs` (identity); future `libei` |
 | `mouseless-overlay` | `OverlayBackend` (`show`/`highlight`/`show_subgrid`/`hide`, reports), draw-only; daemon-side Unix-socket server. | `impls/gnome.rs` (server + JSON); GNOME extension is the client; future `wlr`, `x11` |
-| `mouseless-daemon` | `mouselessd`: thin orchestration (single-flight machine, grab lifecycle, action execution, overlay/free session loops, 8 ms tick, kill-switch co-exit). | — |
-| `mouseless-cli` | `mouseless` verbs with deep-link parity + kanata TCP layer switching + `--list-input-devices`. | — |
-| `mouseless-gtk` | Settings stub → Phase-3 `Adw.PreferencesWindow`. | — |
+| `mouseless-daemon` | `mouselessd`: thin orchestration (single-flight machine, grab lifecycle, action execution, overlay/free session loops, 8 ms tick, kill-switch co-exit) + config persistence/apply. | — |
+| `mouseless-cli` | `mouseless` verbs with deep-link parity + kanata TCP layer switching + `--list-input-devices` + daemon `reload`/`status`. | — |
+| `mouseless-gtk` | Settings app; Phase-3 Adwaita UI over `mouseless-config` (pending GTK dev packages). | — |
 
 ## Data flow (plan §2.4)
 

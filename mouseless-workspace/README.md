@@ -103,9 +103,16 @@ The kanata overlay layer must emit the full 30-key block plainly; re-apply
 cargo run -p mouseless-cli -- show|hide|toggle
 cargo run -p mouseless-cli -- enter-free-mode|exit-free-mode
 cargo run -p mouseless-cli -- status
+cargo run -p mouseless-cli -- reload
 cargo run -p mouseless-cli -- --list-input-devices
 cargo run -p mouseless-cli -- --version
 ```
+
+`status` prints the live kanata layer plus daemon/overlay/session/free-mode and
+config-path lines when the daemon socket is reachable (`--socket` or
+`MOUSELESS_SOCKET` to override). `reload` asks the daemon to re-read its stored
+`/var/lib/mouseless/config.yaml`; an invalid file returns an error and leaves the
+previous config running.
 
 Usage errors exit `2`; kanata/daemon operational failures exit `1`. Both
 installed binaries accept `--version`/`-V` (for example
@@ -115,17 +122,17 @@ installed binaries accept `--version`/`-V` (for example
 
 Phases 1.2/1.3/1.4 and Phase 2 (custom free-mode physics, multi-click,
 drag/drop, nudges, modifier clicks, monitor switching, cursor hiding) are
-implemented and covered by 112 hermetic tests; the Phase-1.4 host e2e and
+implemented and covered by 164 hermetic tests; the Phase-1.4 host e2e and
 visual/fractional acceptance passed on 2026-10-29. The Phase-2 kanata include
 is applied on the primary host (kanata on `lyr-base`, TCP `127.0.0.1:7070`),
 and live free-mode movement/click behavior was confirmed. The Phase-3 grid
 layout is implemented: a 10×30 primary grid (columns `asdfghjkl;`, rows
 `qwertyuiopasdfghjkl;zxcvbnm,./`) whose cells are labelled with both keys
 (e.g. `AQ`), a 10×3 keyboard-shaped subgrid, and a `#d4de04` grid at 80%
-transparency (20% opacity) with `#ebe9e8` labels. Re-apply `platform/kanata/mouseless.kbd` to the host so the overlay
-layer emits the full 30-key block. The remaining host step is the
-system-service install (`platform/install-system.sh`) plus a final end-to-end
-smoke. `mouseless-gtk` is a stub until
-`apt install libgtk-4-dev libadwaita-1-dev` (plan §10.5); the real
-`Adw.PreferencesWindow` app lands in Phase 3. See `specs/SPEC-MAP.md` for
-per-module status.
+transparency (20% opacity) with `#ebe9e8` labels. The Phase-3 config engine,
+presets, atomic apply/rollback, kanata include renderer/check gate, daemon
+persistence (`/var/lib/mouseless/config.yaml`), and CLI `reload`/`status` are
+implemented and tested headless. The remaining Phase-3 slice is the Adwaita
+settings app and deep-link `.desktop` files, which need
+`apt install libgtk-4-dev libadwaita-1-dev` (plan §10.5). See
+`specs/SPEC-MAP.md` for per-module status.

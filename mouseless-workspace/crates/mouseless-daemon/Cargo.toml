@@ -15,6 +15,7 @@ serde = { workspace = true }
 mouseless-core = { workspace = true }
 mouseless-state = { workspace = true }
 mouseless-ipc = { workspace = true }
+mouseless-config = { workspace = true }
 mouseless-kbd = { workspace = true }
 mouseless-mouse = { workspace = true }
 mouseless-overlay = { workspace = true }

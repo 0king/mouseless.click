@@ -17,6 +17,7 @@
 //! - overlay actions (multi-click, drag, nudges, monitor switch, cursor hide);
 //! - custom free mode (`lyr-free`) with an 8 ms fixed-step physics tick.
 
+use mouseless_config::{Config as FileConfig, Easing as FileEasing};
 use mouseless_core::{
     cursor_hide_target, select_monitor, subcell_bounds, Corner, GridConfig, Monitor,
     MonitorDirection, Point, PrimaryGrid, Rect,
@@ -134,6 +135,26 @@ pub enum InitialActionLocation {
     SystemCursor,
 }
 
+/// Keypresses required before the overlay executes a mouse action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum GridActionLevel {
+    /// Open the subgrid after the two-key cell selection (default).
+    #[default]
+    Subgrid,
+    /// Execute at the selected primary cell after two keys.
+    Two,
+}
+
+/// Default action for a cell/sub-cell selection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum DefaultAction {
+    /// Left-click at the target (default).
+    #[default]
+    Click,
+    /// Move the cursor to the target.
+    Move,
+}
+
 /// Backend selection is config, never a refactor (plan §3 rule 2).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonConfig {
@@ -174,6 +195,18 @@ pub struct DaemonConfig {
     pub hold_for_drag: bool,
     /// Where `Space` clicks before a cell selection.
     pub initial_action_location: InitialActionLocation,
+    /// Whether a cell selection opens the subgrid or acts immediately.
+    pub grid_action_level: GridActionLevel,
+    /// Default action for a cell/sub-cell selection.
+    pub default_action: DefaultAction,
+    /// Enter custom free mode after a `move` action.
+    pub free_mode_after_move: bool,
+    /// Overlay layer name (must match the kanata include).
+    pub overlay_layer: String,
+    /// Custom free-mode layer name.
+    pub free_mode_layer: String,
+    /// Kanata-native free-mode fallback layer name.
+    pub kanata_free_mode_layer: String,
 }
 
 impl Default for DaemonConfig {
@@ -197,7 +230,96 @@ impl Default for DaemonConfig {
             hold_for_right_button: true,
             hold_for_drag: true,
             initial_action_location: InitialActionLocation::ScreenCenter,
+            grid_action_level: GridActionLevel::Subgrid,
+            default_action: DefaultAction::Click,
+            free_mode_after_move: false,
+            overlay_layer: OVERLAY_LAYER.into(),
+            free_mode_layer: FREE_MODE_LAYER.into(),
+            kanata_free_mode_layer: KANATA_FREE_MODE_LAYER.into(),
         }
+    }
+}
+
+impl DaemonConfig {
+    /// Copy the user-facing schema-v1 sections into the runtime config.
+    ///
+    /// Backend selection, socket path, and kanata address are daemon-owned and
+    /// intentionally not part of `config.yaml`. Callers must validate `config`
+    /// first (`mouseless_config::validate`); this method never writes files.
+    pub fn apply_config(&mut self, config: &FileConfig) {
+        self.grid = PrimaryGrid {
+            cols: config.grid.columns.chars().count() as u32,
+            rows: config.grid.rows.chars().count() as u32,
+            column_keys: config.grid.columns.chars().collect(),
+            row_keys: config.grid.rows.chars().collect(),
+        };
+        self.subgrid = GridConfig {
+            cols: config.grid.subgrid.columns,
+            rows: config.grid.subgrid.rows,
+            keys: config.grid.subgrid.keys.chars().collect(),
+        };
+        self.initial_action_location = match config.behavior.initial_action_location {
+            mouseless_config::InitialActionLocation::ScreenCenter => {
+                InitialActionLocation::ScreenCenter
+            }
+            mouseless_config::InitialActionLocation::SystemCursor => {
+                InitialActionLocation::SystemCursor
+            }
+        };
+        self.grid_action_level = match config.behavior.grid_action_level {
+            mouseless_config::GridActionLevel::Subgrid => GridActionLevel::Subgrid,
+            mouseless_config::GridActionLevel::Two => GridActionLevel::Two,
+        };
+        self.default_action = match config.behavior.default_action {
+            mouseless_config::DefaultAction::Click => DefaultAction::Click,
+            mouseless_config::DefaultAction::Move => DefaultAction::Move,
+        };
+        self.free_mode_after_move = config.behavior.free_mode_after_move;
+        self.multi_click_threshold_ms = config.behavior.multi_click_threshold_ms;
+        self.nudges_per_cell = config.behavior.nudges_per_cell;
+        self.hold_subgrid_for_nudge = config.behavior.hold_subgrid_for_nudge;
+        self.continuous_mode = config.behavior.continuous_mode;
+        self.hold_for_right_button = config.behavior.hold_for_right_button;
+        self.hold_for_drag = config.behavior.hold_for_drag;
+
+        self.free_mode_engine = match config.free_mode.engine {
+            mouseless_config::Engine::Custom => FreeModeEngine::Custom,
+            mouseless_config::Engine::Kanata => FreeModeEngine::Kanata,
+        };
+        self.free_mode = FreeModeParams {
+            base_px_per_tick: config.free_mode.base_px_per_tick,
+            speed_multiplier: config.free_mode.speed_multiplier,
+            easing: map_easing(config.free_mode.easing),
+            auto_off_secs: config.free_mode.auto_off_secs,
+        };
+        self.wheel = WheelParams {
+            base_lines_per_tick: config.free_mode.wheel.base_lines_per_tick,
+            speed_multiplier: config.free_mode.wheel.speed_multiplier,
+            easing: map_easing(config.free_mode.wheel.easing),
+            step_size: config.free_mode.wheel.step_size,
+            step_size_large: config.free_mode.wheel.step_size_large,
+        };
+
+        self.hide_cursor_on_click = config.appearance.hide_cursor_on_click;
+        self.cursor_hide_corner = match config.appearance.cursor_hide_corner {
+            mouseless_config::CursorCorner::TopLeft => Corner::TopLeft,
+            mouseless_config::CursorCorner::TopRight => Corner::TopRight,
+            mouseless_config::CursorCorner::BottomLeft => Corner::BottomLeft,
+            mouseless_config::CursorCorner::BottomRight => Corner::BottomRight,
+        };
+
+        self.overlay_layer = config.keybindings.overlay_layer.clone();
+        self.free_mode_layer = config.keybindings.free_mode_layer.clone();
+        self.kanata_free_mode_layer = config.keybindings.kanata_free_mode_layer.clone();
+    }
+}
+
+fn map_easing(easing: FileEasing) -> mouseless_state::Easing {
+    match easing {
+        FileEasing::Loose => mouseless_state::Easing::Loose,
+        FileEasing::Natural => mouseless_state::Easing::Natural,
+        FileEasing::Snappy => mouseless_state::Easing::Snappy,
+        FileEasing::Instant => mouseless_state::Easing::Instant,
     }
 }
 
@@ -252,7 +374,6 @@ struct ShiftPress {
 #[derive(Debug, Clone, Copy)]
 struct HeldSubcell {
     key: CellKey,
-    button: Button,
     rect: Rect,
     target: Point,
 }
@@ -278,6 +399,9 @@ pub struct Daemon<K, M, O, G = CellGrab> {
     pending_click_deadline_ms: Option<u64>,
     shift_press: Option<ShiftPress>,
     held_subcell: Option<HeldSubcell>,
+    /// Events seen while blocked in `refresh_cursor` (client commands must
+    /// not be lost just because a move was in flight).
+    deferred_events: Vec<OverlayEvent>,
     clock_origin: Instant,
 }
 
@@ -344,6 +468,7 @@ where
             pending_click_deadline_ms: None,
             shift_press: None,
             held_subcell: None,
+            deferred_events: Vec::new(),
             clock_origin: Instant::now(),
         }
     }
@@ -355,9 +480,13 @@ where
     /// events are safe: both starts are idempotent (plan §5).
     pub fn on_layer_event(&mut self, ev: LayerEvent) -> Result<(), DaemonError> {
         match ev {
-            LayerEvent::LayerChanged(name) if name == OVERLAY_LAYER => self.start_overlay(),
-            LayerEvent::LayerChanged(name) if name == FREE_MODE_LAYER => self.start_free_mode(),
-            LayerEvent::LayerChanged(name) if name == KANATA_FREE_MODE_LAYER => {
+            LayerEvent::LayerChanged(name) if name == self.config.overlay_layer => {
+                self.start_overlay()
+            }
+            LayerEvent::LayerChanged(name) if name == self.config.free_mode_layer => {
+                self.start_free_mode()
+            }
+            LayerEvent::LayerChanged(name) if name == self.config.kanata_free_mode_layer => {
                 // Kanata's own fallback layer: never grab. Do not force base —
                 // kanata already chose this layer deliberately.
                 self.release_free_buttons();
@@ -532,9 +661,12 @@ where
         self.end_overlay();
     }
 
-    /// Poll the overlay backend for reports/cursor replies (non-blocking).
+    /// Poll the overlay backend for reports/cursor replies/client commands
+    /// (non-blocking), including events deferred during a blocking move.
     pub fn poll_overlay_events(&mut self) -> Vec<OverlayEvent> {
-        self.overlay.poll_events()
+        let mut events = std::mem::take(&mut self.deferred_events);
+        events.extend(self.overlay.poll_events());
+        events
     }
 
     /// Poll the grabbed device for one cell key press (legacy press-only).
@@ -633,13 +765,9 @@ where
         }
         if self.held_subcell.as_ref().is_some_and(|h| h.key == ev.key) {
             if let Some(held) = self.held_subcell.take() {
-                // Nudge mode holds the subcell key; Alt on release must still
-                // begin/continue a drag instead of always clicking.
-                if self.drag.is_dragging() || (ev.modifiers.alt && self.config.hold_for_drag) {
-                    return self.final_action(held.target, ev.modifiers, now_ms);
-                }
-                self.click_at(held.button, held.target, now_ms, ev.modifiers)?;
-                return Ok(SessionStep::Clicked);
+                // Nudge mode holds the subcell key; release performs the
+                // configured action (click or move), including drag/drop.
+                return self.final_action(held.target, ev.modifiers, now_ms);
             }
         }
         Ok(SessionStep::Continue)
@@ -652,11 +780,11 @@ where
         now_ms: u64,
     ) -> Result<SessionStep, DaemonError> {
         // A different subgrid key while a nudge is held finishes the pending
-        // click first, then processes the new key (if the session survived).
+        // action first, then processes the new key (if the session survived).
         if self.held_subcell.is_some() {
             if let Some(held) = self.held_subcell.take() {
-                self.click_at(held.button, held.target, now_ms, modifiers)?;
-                if !self.overlay_visible() {
+                self.final_action(held.target, modifiers, now_ms)?;
+                if !self.overlay_visible() || self.free_mode_active() {
                     return Ok(SessionStep::Clicked);
                 }
             }
@@ -677,6 +805,17 @@ where
                     if let Some(row) = self.config.grid.row_of(c) {
                         let index = self.config.grid.index(column, row);
                         let monitor = self.active_monitor.ok_or(DaemonError::NoLayout)?;
+                        if self.config.grid_action_level == GridActionLevel::Two {
+                            // Quick-select: the second key executes at the
+                            // primary cell center without opening a subgrid.
+                            self.pending_column = None;
+                            self.selected_cell = None;
+                            let target = self
+                                .config
+                                .grid
+                                .center(&monitor, self.config.grid.cell_id(index));
+                            return self.final_action(target, modifiers, now_ms);
+                        }
                         let model = build_subgrid_model(
                             &self.config.grid,
                             &self.config.subgrid,
@@ -707,12 +846,10 @@ where
             &self.config.subgrid,
             cell_id(&self.config.subgrid, sub),
         );
-        let button = self.button_for(modifiers);
         if self.config.hold_subgrid_for_nudge {
             let target = sub_rect.center();
             self.held_subcell = Some(HeldSubcell {
                 key: CellKey::Char(c),
-                button,
                 rect: sub_rect,
                 target,
             });
@@ -749,9 +886,26 @@ where
             self.mark_shift_used(modifiers);
             self.pending_click_deadline_ms = None;
             Ok(SessionStep::Continue)
+        } else if self.config.default_action == DefaultAction::Move {
+            self.mark_shift_used(modifiers);
+            self.execute_action(ActionIntent::Move { to: target })?;
+            self.after_move()?;
+            Ok(SessionStep::Clicked)
         } else {
             self.click_at(button, target, now_ms, modifiers)?;
             Ok(SessionStep::Clicked)
+        }
+    }
+
+    /// Finish a `move` action: either continue into custom free mode or end
+    /// the overlay session. Mirrors [`Self::after_click`] for clicks.
+    fn after_move(&mut self) -> Result<(), DaemonError> {
+        self.held_subcell = None;
+        if self.config.free_mode_after_move {
+            self.start_free_mode()
+        } else {
+            self.end_overlay();
+            Ok(())
         }
     }
 
@@ -1189,8 +1343,10 @@ where
         let deadline = Instant::now() + timeout;
         while Instant::now() < deadline {
             for ev in self.overlay.poll_events() {
-                if let OverlayEvent::CursorReply { cursor } = ev {
-                    return Some(cursor);
+                match ev {
+                    OverlayEvent::CursorReply { cursor } => return Some(cursor),
+                    // Never drop client commands/disconnects while waiting.
+                    other => self.deferred_events.push(other),
                 }
             }
             std::thread::sleep(Duration::from_millis(2));
@@ -1292,6 +1448,41 @@ where
     /// Access the active config (diagnostics/tests).
     pub fn config(&self) -> &DaemonConfig {
         &self.config
+    }
+
+    /// Replace the live config. An in-flight grab/session is torn down first
+    /// so a click can never execute against a half-applied grid.
+    pub fn apply_config(&mut self, config: DaemonConfig) {
+        if self.session_active() {
+            self.teardown(true);
+        }
+        self.nudge = NudgeState::new(config.nudges_per_cell);
+        self.config = config;
+    }
+
+    /// Configured overlay layer name (dynamic so `Update` is effective).
+    pub fn overlay_layer(&self) -> &str {
+        &self.config.overlay_layer
+    }
+
+    /// Configured custom free-mode layer name.
+    pub fn free_mode_layer(&self) -> &str {
+        &self.config.free_mode_layer
+    }
+
+    /// Whether a Helloed overlay is connected (status reports).
+    pub fn overlay_connected(&self) -> bool {
+        self.overlay.is_connected()
+    }
+
+    /// Reply to a queued [`OverlayEvent::ClientCommand`].
+    pub fn reply_client(
+        &mut self,
+        request_id: u64,
+        reply: &mouseless_ipc::DaemonToClient,
+    ) -> Result<(), DaemonError> {
+        self.overlay.reply_client(request_id, reply)?;
+        Ok(())
     }
 
     fn now_ms(&self) -> u64 {
@@ -2711,5 +2902,108 @@ mod tests {
         assert!(!d.free_mode_active());
         // Kanata already chose its own layer: do not force base.
         assert!(d.kbd.set_layer_calls.is_empty());
+    }
+
+    fn file_config(yaml: &str) -> FileConfig {
+        FileConfig::from_yaml_str(yaml).unwrap()
+    }
+
+    #[test]
+    fn apply_config_maps_schema_v1_sections_and_custom_layers() {
+        let file = file_config(
+            "config_version: 1\n\
+             grid:\n  columns: asd\n  rows: qwe\n  subgrid:\n    columns: 2\n    rows: 2\n    keys: qwer\n\
+             behavior:\n  grid_action_level: 2\n  default_action: move\n  free_mode_after_move: true\n\
+             free_mode:\n  engine: kanata\n  easing: snappy\n\
+             appearance:\n  hide_cursor_on_click: true\n  cursor_hide_corner: bottom-left\n\
+             keybindings:\n  overlay_layer: lyr-custom\n  free_mode_layer: lyr-custom-free\n  kanata_free_mode_layer: lyr-mouse\n",
+        );
+        let mut config = DaemonConfig::default();
+        config.apply_config(&file);
+        assert_eq!(config.grid.cols, 3);
+        assert_eq!(config.grid.rows, 3);
+        assert_eq!(config.subgrid.cols, 2);
+        assert_eq!(config.subgrid.keys, vec!['q', 'w', 'e', 'r']);
+        assert_eq!(config.grid_action_level, GridActionLevel::Two);
+        assert_eq!(config.default_action, DefaultAction::Move);
+        assert!(config.free_mode_after_move);
+        assert_eq!(config.free_mode_engine, FreeModeEngine::Kanata);
+        assert_eq!(config.free_mode.easing, mouseless_state::Easing::Snappy);
+        assert!(config.hide_cursor_on_click);
+        assert_eq!(config.cursor_hide_corner, Corner::BottomLeft);
+        assert_eq!(config.overlay_layer, "lyr-custom");
+        assert_eq!(config.free_mode_layer, "lyr-custom-free");
+
+        let mut d = daemon_with(config, layout_1080p());
+        d.on_layer_event(LayerEvent::LayerChanged("lyr-custom".into()))
+            .unwrap();
+        assert!(d.overlay_visible());
+    }
+
+    #[test]
+    fn quick_select_two_key_move_enters_free_mode() {
+        let file = file_config(
+            "config_version: 1\n\
+             behavior:\n  grid_action_level: 2\n  default_action: move\n  free_mode_after_move: true\n",
+        );
+        let mut config = DaemonConfig {
+            multi_click_threshold_ms: 0,
+            ..Default::default()
+        };
+        config.apply_config(&file);
+        let mut d = daemon_with(config, layout_1080p());
+        d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
+            .unwrap();
+        assert_eq!(
+            d.handle_cell_key(CellKey::Char('a')).unwrap(),
+            SessionStep::Continue
+        );
+        // Level 2 + move: the second key moves to the primary cell center
+        // instead of opening the subgrid, then free mode starts.
+        assert_eq!(
+            d.handle_cell_key(CellKey::Char('q')).unwrap(),
+            SessionStep::Clicked
+        );
+        assert!(d.free_mode_active());
+        assert!(d.mouse.clicks.is_empty());
+        assert_near(d.mouse.position(), (96, 18));
+    }
+
+    #[test]
+    fn default_action_move_does_not_click_in_the_subgrid() {
+        let file = file_config("config_version: 1\nbehavior:\n  default_action: move\n");
+        let mut config = DaemonConfig {
+            multi_click_threshold_ms: 0,
+            ..Default::default()
+        };
+        config.apply_config(&file);
+        let mut d = daemon_with(config, layout_1080p());
+        d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
+            .unwrap();
+        d.handle_cell_key(CellKey::Char('a')).unwrap();
+        d.handle_cell_key(CellKey::Char('q')).unwrap();
+        assert_eq!(
+            d.handle_cell_key(CellKey::Char('q')).unwrap(),
+            SessionStep::Clicked
+        );
+        assert!(d.mouse.clicks.is_empty());
+        assert!(!d.free_mode_active());
+        assert!(!d.overlay_visible());
+        assert_near(d.mouse.position(), (10, 6));
+    }
+
+    #[test]
+    fn live_config_update_tears_down_an_active_session() {
+        let mut d = daemon();
+        d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
+            .unwrap();
+        assert!(d.overlay_visible());
+        let mut next = d.config().clone();
+        next.multi_click_threshold_ms = 700;
+        d.apply_config(next);
+        assert!(!d.overlay_visible());
+        assert!(!d.grab_held());
+        assert_eq!(d.config().multi_click_threshold_ms, 700);
+        assert_eq!(d.kbd.set_layer_calls, vec![BASE_LAYER.to_string()]);
     }
 }

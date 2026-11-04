@@ -11,7 +11,7 @@ udev rule, `sysusers`, installers, and the platform checks. Architecture:
 | `kanata/mouseless.kbd` | `/etc/kanata/mouseless.kbd` | Overlay + custom free-mode layers. Sourced by `unicfg.kbd`. |
 | `kanata/apply-phase11.sh` | run in place | Backs up + edits `unicfg.kbd`, validates with `kanata --check`, installs the drop-in, restarts kanata. |
 | `systemd/kanata.service.d-override.conf` | `/etc/systemd/system/kanata.service.d/mouseless.conf` | Localhost TCP, SIGTERM restart, `SupplementaryGroups=input uinput` (idempotent; no-op when kanata already has them). |
-| `systemd/mouselessd.service` | `/etc/systemd/system/mouselessd.service` | Daemon unit; `mouselessd:mouseless`, `SupplementaryGroups=input uinput`, `RuntimeDirectory=mouseless`. |
+| `systemd/mouselessd.service` | `/etc/systemd/system/mouselessd.service` | Daemon unit; `mouselessd:mouseless`, `SupplementaryGroups=input uinput`, `RuntimeDirectory=mouseless`, `StateDirectory=mouseless` (0750) for the last-applied config. |
 | `sysusers/mouseless.conf` | `/usr/lib/sysusers.d/mouseless.conf` | Creates `mouselessd`, the `mouseless` socket group, and joins the existing `uinput`/`input` device groups. |
 | `udev/99-mouseless.rules` | `/etc/udev/rules.d/99-mouseless.rules` | `/dev/uinput` for the `uinput` device group (kanata + daemon). No libinput acceleration override. |
 | `install-system.sh` | run in place | Installs the system files above + binaries. |
@@ -103,6 +103,7 @@ journalctl -u mouselessd.service -b
 /usr/local/bin/mouseless --version
 /usr/local/bin/mouselessd --version
 /usr/local/bin/mouseless status
+/usr/local/bin/mouseless reload
 /usr/local/bin/mouseless --list-input-devices
 gnome-extensions info mouseless@sonuscape.example
 ```
@@ -116,7 +117,28 @@ Expected:
 - `mouseless-mouse` appears in `/proc/bus/input/devices` and is
   kanata-excluded;
 - `journalctl` shows `overlay hello (extension …)` after login;
-- `mouseless status` prints `kanata: lyr-base` (or the current layer).
+- `mouseless status` prints `kanata: lyr-base` (or the current layer) plus
+  `daemon:`, `overlay:`, `session:`, `free-mode:`, and `config:` lines;
+- `mouseless reload` prints the daemon ack (`configuration reloaded`), or a
+  clear `Error` when the stored config is invalid — the previous config stays
+  live.
+
+## Config lifecycle
+
+`mouselessd` is the only writer of the applied config:
+
+| Path | Owner | Purpose |
+|---|---|---|
+| `/var/lib/mouseless/config.yaml` | `mouselessd` (0750 state dir) | last-applied schema-v1 document, loaded on start |
+| `/var/lib/mouseless/config.last-good.yaml` | `mouselessd` | previous validated document; used when the live file is corrupt |
+| `~/.config/mouseless/config.yaml` | desktop user | user-facing copy edited by the settings app (Phase 3) |
+
+On start the daemon calls `ConfigStore::effective()` (live → last-good →
+defaults) and logs which fallback it used. A client `Update` is validated,
+persisted atomically, then swapped into the live runtime; `Reload` re-reads the
+stored file. Installing `/etc/kanata/mouseless.kbd` remains a root action of
+`install-system.sh` — the daemon never writes outside its state directory.
+
 
 ## Upgrade
 
@@ -147,7 +169,10 @@ sudo udevadm control --reload-rules
 ```
 
 Remove `/usr/local/bin/mouselessd` and `/usr/local/bin/mouseless` if no longer
-needed. The `mouselessd` user and `mouseless` group can stay (harmless) or be
+needed. The applied config state (`/var/lib/mouseless/`) is data, not an
+install artifact: `sudo rm -rf /var/lib/mouseless` only if you deliberately want
+to discard the saved config and its last-good copy. The `mouselessd` user and
+`mouseless` group can stay (harmless) or be
 removed with `userdel mouselessd` / `groupdel mouseless` after checking no
 other service uses them, and after removing the desktop user from `mouseless`
 (`sudo gpasswd -d <user> mouseless`). Leave the shared `uinput` and `input`
