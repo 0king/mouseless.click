@@ -3,16 +3,18 @@
 > Module: `settings` · Paths: `crates/mouseless-config`, `crates/mouseless-gtk`,
 > `ui`, config files · Depends on: `ipc`, `platform` · Plan refs: §1.6, §4,
 > §8 #9, §10.5 · Matrix row: #9 (owner, with `platform`)
-> Status as of 2026-11-04: **Config engine and runtime application implemented**
-> in the GTK-free `mouseless-config` crate (schema v1, validation, presets,
-> atomic apply/rollback, kanata include renderer + check gate). The daemon is
-> the persistence writer: `Reload`/`Update`/`Status` over `mouseless-ipc`, config
-> under `/var/lib/mouseless/config.yaml` (`StateDirectory=mouseless`), and
+> Status as of 2026-11-04: **Implemented.** The GTK-free `mouseless-config`
+> crate owns schema v1, validation, presets, atomic apply/rollback, and the
+> kanata include renderer + check gate. The daemon is the persistence writer:
+> `Reload`/`Update`/`Status`/`GetConfig` over `mouseless-ipc`, config under
+> `/var/lib/mouseless/config.yaml` (`StateDirectory=mouseless`), and
 > `mouseless reload`/`status` exercise the same path. Grid geometry, behaviour,
 > free-mode, appearance, and monitor assignment are applied live; appearance
 > travels in each `GridModel`, while `Report` carries the optional connector
-> names used by `custom`. The GTK app and UI are the remaining
-> Phase-3 slice and still need `libgtk-4-dev libadwaita-1-dev` (OQ-1).
+> names used by `custom`. `mouseless-settings` (GTK4/Adwaita, built
+> programmatically in `crates/mouseless-gtk`) edits the daemon-owned document,
+> runs the same validation and optional kanata check locally, and pushes
+> `Update`; `mouseless://settings/<page>` deep links open the matching page.
 
 ## Objective
 
@@ -35,11 +37,15 @@ can never brick input (plan §6, matrix #9).
 
 ### Config file (`config.yaml`, schema v1) — **frozen 2026-11-04**
 
-- Path: `${XDG_CONFIG_HOME:-~/.config}/mouseless/config.yaml` is the user-facing
-  document the GUI edits. The **authoritative runtime copy** is
+- Path: the **authoritative runtime copy** is
   `/var/lib/mouseless/config.yaml`, written only by `mouselessd` (systemd
   `StateDirectory=mouseless`, mode `0750`) so it survives restarts and is
-  readable without the user's session. See OQ-2.
+  readable without the user's session. The settings app never reads or writes a
+  separate user-level document: it fetches the live document with `GetConfig`
+  and pushes edits with `Update`. `ConfigStore::user_default()` still resolves
+  `${XDG_CONFIG_HOME:-~/.config}/mouseless/config.yaml` for library users and
+  locates user presets at `~/.config/mouseless/presets/`, but it is not part of
+  the running daemon's path. See OQ-2.
 - Top-level `config_version: 1` is required. Unknown keys are rejected on load
   (fail loudly, fall back to last-good). Missing sections/fields take the
   documented defaults, so a minimal file is just `config_version: 1`.
@@ -167,9 +173,9 @@ Implemented split:
 | Layer | Owner | Responsibility |
 |---|---|---|
 | `mouseless-config` | shared crate | schema, validation, presets, atomic store, kanata render/check |
-| `mouselessd` | daemon | sole persistence writer (`StateDirectory`), runtime apply, `Ack`/`Error` |
-| `mouseless-gtk` | GUI (pending) | edit, local validate, push `Update`, show status/errors |
-| `mouseless` CLI | CLI | `reload`, `status` against the same protocol |
+| `mouselessd` | daemon | sole persistence writer (`StateDirectory`), runtime apply, `Ack`/`Error`/`Config` |
+| `mouseless-gtk` | GUI | edit, local validate + kanata check, push `Update`, show status/errors |
+| `mouseless` CLI | CLI | `reload`, `status`, `settings` routing against the same protocol |
 
 `ConfigStore::apply` performs validate → staged temp → check gate → last-good
 backup → atomic rename; `save` is the daemon path (already-validated document,
@@ -190,10 +196,21 @@ presets are files under `~/.config/mouseless/presets/`.
 
 ### Deep links
 
-`mouseless://` scheme handled by a `.desktop` entry (owned by `platform`).
-Settings opens the relevant page for verbs that target the GUI; overlay verbs
-route to `cli` (parity table in `SPEC-cli.md`). `gnome-settings`-style single
-instance via `Gio.Application` flags.
+`mouseless://settings` and `mouseless://settings/<page>` route to the GUI.
+`mouseless-url-handler.desktop` calls `mouseless %u`; the CLI parses the link
+as `Verb::Settings(page)` and spawns `mouseless-settings` with it (the
+`MOUSELESS_SETTINGS` environment variable overrides the binary path for
+development). The app is a single-instance `AdwApplication`: a link that
+arrives while it is running activates the existing window and switches to the
+requested page instead of starting a second process.
+
+Pages: `grid` (default, also `mouseless://settings/grid`), `appearance`,
+`behavior`, `free-mode`, `keybindings`, `presets`, `status`. Overlay and
+free-mode verbs keep routing to the CLI (parity table in `SPEC-cli.md`).
+`mouseless-settings.desktop` in the application menu opens the default page.
+Unknown pages are usage errors: the CLI exits `2` without side effects. A bad
+argument forwarded to an already-running instance is rejected by the receiving
+process with exit `2`; the open window keeps its current page.
 
 ### Status integration
 
@@ -202,27 +219,42 @@ uinput device present — sourced from the same queries as `mouseless status`.
 
 ## Tech stack
 
-Rust `gtk4` + `libadwaita` (CRATES, when buildable); UI definitions in
-Blueprint (`.blp`) under `ui/`. Build prereq: `apt install libgtk-4-dev
-libadwaita-1-dev` (plan §10.5). The config engine lives in the separate,
-GTK-free `mouseless-config` crate so matrix #9 runs in plain cargo tests.
+Rust `gtk4` 0.11 (crate `gtk4`, aliased to `gtk`) and `libadwaita` 0.9
+(`v1_5`), all inside `crates/mouseless-gtk`. The widget tree is typed Rust
+built in code, not Blueprint: `blueprint-compiler` is not a system package on
+every host and the `gtk-blueprint` crate is GPL-3.0, which the workspace does
+not accept; `ui/README.md` records the deviation. Build prerequisite:
+`apt install libgtk-4-dev libadwaita-1-dev` (plan §10.5). The config engine
+lives in the separate, GTK-free `mouseless-config` crate so matrix #9 runs in
+plain cargo tests.
 
 ## Commands
 
 ```sh
 sudo apt install libgtk-4-dev libadwaita-1-dev   # prerequisite for the GTK app
 cargo test -p mouseless-config                   # config engine (no GTK needed)
-cargo test -p mouseless-ipc -p mouseless-cli     # protocol + reload/status
-cargo run -p mouseless-gtk                       # requires the -dev packages
+cargo test -p mouseless-ipc -p mouseless-cli     # protocol + reload/status/settings routing
+cargo test -p mouseless-gtk                      # toolkit-free helpers under the UI
+cargo run -p mouseless-gtk -- mouseless://settings/appearance
+mouseless settings appearance                    # installed CLI opens the same page
 ```
 
 ## Project structure
 
 - `crates/mouseless-config/` — schema, validation, presets, atomic store,
-  kanata renderer/checker (pure, implemented).
-- `crates/mouseless-gtk/src/main.rs` — app entry (stub until deps exist).
-- `ui/*.blp` — window/pages (Phase 3), edited with GNOME Builder or blueprint-compiler.
-- `platform/` — `.desktop` files + scheme handler (Phase 3).
+  kanata renderer/checker (pure, headless).
+- `crates/mouseless-gtk/src/main.rs` — single-instance app, command-line page
+  routing, help/version.
+- `crates/mouseless-gtk/src/pages.rs` — the seven pages, action groups, preset
+  rows, status widgets.
+- `crates/mouseless-gtk/src/form.rs` — editable Adwaita rows, `to_config`,
+  `load`, field hints.
+- `crates/mouseless-gtk/src/preview.rs` — Cairo subgrid preview.
+- `crates/mouseless-gtk/src/state.rs` — load/apply/revert/presets/status.
+- `crates/mouseless-gtk/src/model.rs` — toolkit-free helpers + unit tests.
+- `ui/README.md` — why the UI is programmatic and how the files fit.
+- `platform/desktop/mouseless-url-handler.desktop`, `mouseless-settings.desktop`
+  — scheme handler and app launcher.
 
 ## Code style
 
@@ -246,6 +278,10 @@ cargo run -p mouseless-gtk                       # requires the -dev packages
   `custom` selection plus configured appearance on both grid models. *(exists)*
 - GUI smoke: manual checklist (Phase 3): edit → apply → live update; import/export
   preset round-trip; deep link opens correct page; kill-switch chord visible.
+  Automated coverage today: `mouseless-gtk` unit tests for paths, key-conflict
+  hints, colour/opacity formatting, the kanata gate, and status formatting;
+  CLI tests for settings deep-link routing/argument forwarding; plus a live
+  launch smoke on every settings page (clean stderr, window stays up).
 
 ## Boundaries
 
@@ -265,17 +301,23 @@ cargo run -p mouseless-gtk                       # requires the -dev packages
 - [x] Kanata include regeneration + `--check` gate + rollback on failure.
 - [x] Daemon persists the last-applied config (`StateDirectory=mouseless`) and
       serves `Reload`/`Update`/`Status`; CLI `reload`/`status` parity.
-- [ ] GTK app (Adwaita window/pages) over the engine — blocked on OQ-1.
-- [ ] Deep links open the right page; parity with `SPEC-cli.md` table.
-- [ ] Kill-switch chord (`LCtrl+Space+Esc`) documented in the GUI.
-- [ ] Manual smoke checklist green on Ubuntu 26.04.
+- [x] GTK app (Adwaita window/pages) over the engine — `mouseless-settings`,
+      programmatic GTK4/Adwaita; `cargo test/clippy -p mouseless-gtk` green.
+- [x] Deep links open the right page; parity with `SPEC-cli.md` table
+      (`Verb::Settings`, `MOUSELESS_SETTINGS`, single-instance activation).
+- [x] Kill-switch chord (`LCtrl+Space+Esc`) documented in the GUI (Status page
+      and the keybinding reference).
+- [ ] Manual smoke checklist green on Ubuntu 26.04: edit → apply live,
+      preset import/export round-trip, deep link, daemon-down fallback.
 
 ## Open questions
 
-1. **Build prerequisite.** `libgtk-4-dev`/`libadwaita-1-dev` are not installed
-   on this machine yet (plan §10.5/§10.6). The config engine, IPC, daemon, and
-   CLI are complete and tested headless; only the Adwaita app/UI and deep-link
-   `.desktop` files wait on the packages.
+1. **Build prerequisite — resolved (2026-11-04).** `libgtk-4-dev` /
+   `libadwaita-1-dev` were missing on 2026-10-16 but are now present
+   (GTK 4.22.4, libadwaita 1.9.1). The GTK dependency is confined to
+   `crates/mouseless-gtk`; the config engine, IPC, daemon, and CLI still build
+   and test without GTK. A host without the `-dev` packages can skip
+   `mouseless-gtk` and keep the daemon/CLI/extension.
 2. **Config ownership — resolved (2026-11-04).** The GUI validates the
    user-facing document, then pushes `Update(ConfigData)` over the socket; the
    daemon is the **sole persistence writer** and stores the last-applied copy at

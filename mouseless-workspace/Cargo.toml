@@ -26,3 +26,4 @@ mouseless-ipc = { path = "crates/mouseless-ipc" }
 mouseless-kbd = { path = "crates/mouseless-kbd" }
 mouseless-mouse = { path = "crates/mouseless-mouse" }
 mouseless-overlay = { path = "crates/mouseless-overlay" }
+mouseless-cli = { path = "crates/mouseless-cli" }

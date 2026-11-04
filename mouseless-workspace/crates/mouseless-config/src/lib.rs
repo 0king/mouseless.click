@@ -18,8 +18,8 @@ pub mod validate;
 
 pub use kanata::{render_include, CheckError, KanataCheck, ProcessRunner, Runner};
 pub use presets::{
-    apply_preset, builtin_preset, builtins, import_preset, load_user_presets, merge_preset,
-    save_preset, Preset, PresetError, QUICK_SELECT_FREE_MODE, STANDARD,
+    apply_preset, builtin_preset, builtins, export_preset, import_preset, load_user_presets,
+    merge_preset, save_preset, Preset, PresetError, QUICK_SELECT_FREE_MODE, STANDARD,
 };
 pub use schema::{
     AppearanceConfig, BehaviorConfig, Config, CursorCorner, DefaultAction, Easing, Engine,
