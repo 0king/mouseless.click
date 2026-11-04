@@ -283,6 +283,11 @@ mouseless settings appearance                    # installed CLI opens the same 
   apply wire path (Update → Ack/Error/unreachable against a fake daemon);
   CLI tests for settings deep-link routing/argument forwarding; plus a live
   launch smoke on every settings page (clean stderr, window stays up).
+  Smoke status 2026-11-04: live `GetConfig` → `Update` → invalid `Update`
+  round-trip against a private daemon passed (the invalid update left the
+  previous config live), the GUI launched with the daemon up and down, and
+  `mouseless settings <page>` forwarded the page. A human click-through of
+  edit → Apply and the preset import/export dialogs is still pending.
 
 ## Boundaries
 
