@@ -6,12 +6,14 @@
 #   sudo ./platform/install-system.sh
 #
 # Installs:
-#   /usr/local/bin/mouselessd, /usr/local/bin/mouseless
+#   /usr/local/bin/mouselessd, /usr/local/bin/mouseless,
+#   /usr/local/bin/mouseless-settings
 #   /etc/systemd/system/mouselessd.service
 #   /usr/lib/sysusers.d/mouseless.conf  (mouselessd user, mouseless group;
 #                                        daemon joins input + uinput)
 #   /etc/udev/rules.d/99-mouseless.rules
 #   /usr/share/applications/mouseless-url-handler.desktop
+#   /usr/share/applications/mouseless-settings.desktop
 #   /usr/local/share/doc/mouseless/README.md
 #   /etc/kanata/mouseless.kbd + kanata drop-in (via apply-phase11.sh)
 #
@@ -76,10 +78,12 @@ need_file() {
 
 need_file "$REPO_DIR/target/release/mouselessd"
 need_file "$REPO_DIR/target/release/mouseless"
+need_file "$REPO_DIR/target/release/mouseless-settings"
 need_file "$REPO_DIR/platform/systemd/mouselessd.service"
 need_file "$REPO_DIR/platform/udev/99-mouseless.rules"
 need_file "$REPO_DIR/platform/sysusers/mouseless.conf"
 need_file "$REPO_DIR/platform/desktop/mouseless-url-handler.desktop"
+need_file "$REPO_DIR/platform/desktop/mouseless-settings.desktop"
 need_file "$REPO_DIR/platform/README.md"
 
 for tool in systemctl systemd-sysusers udevadm; do
@@ -158,10 +162,14 @@ run udevadm trigger --sysname-match=uinput
 # 3. Binaries, unit, and the mouseless:// scheme handler.
 install_file "$REPO_DIR/target/release/mouselessd" /usr/local/bin/mouselessd 0755
 install_file "$REPO_DIR/target/release/mouseless" /usr/local/bin/mouseless 0755
+install_file "$REPO_DIR/target/release/mouseless-settings" \
+    /usr/local/bin/mouseless-settings 0755
 install_file "$REPO_DIR/platform/systemd/mouselessd.service" \
     /etc/systemd/system/mouselessd.service 0644
 install_file "$REPO_DIR/platform/desktop/mouseless-url-handler.desktop" \
     /usr/share/applications/mouseless-url-handler.desktop 0644
+install_file "$REPO_DIR/platform/desktop/mouseless-settings.desktop" \
+    /usr/share/applications/mouseless-settings.desktop 0644
 if command -v update-desktop-database >/dev/null 2>&1; then
     run update-desktop-database -q /usr/share/applications
 fi
@@ -170,8 +178,8 @@ install_file "$REPO_DIR/platform/README.md" \
 run systemctl daemon-reload
 
 # Register the handler for the invoking desktop user. The .desktop file routes
-# every mouseless:// verb to the CLI, so no GTK app is required for overlay
-# verbs; a future settings app can take over settings-only links.
+# every mouseless:// verb to the CLI, so overlay verbs keep working without the
+# GTK app; `mouseless://settings/...` is forwarded to `mouseless-settings`.
 _scheme_user="${SUDO_USER:-}"
 if [ -n "$_scheme_user" ] && [ "$_scheme_user" != root ] &&
     command -v xdg-mime >/dev/null 2>&1; then
@@ -268,6 +276,7 @@ System install complete. Verify:
   /usr/local/bin/mouseless status
   /usr/local/bin/mouseless --list-input-devices
   xdg-mime query default x-scheme-handler/mouseless
+  /usr/local/bin/mouseless settings    # opens the GTK settings app
 
 Install the GNOME extension as your desktop user:
   ./platform/install-extension.sh

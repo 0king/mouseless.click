@@ -16,7 +16,8 @@
 # - sysusers: mouselessd/mouseless/uinput/input; idempotency proven in a
 #   temp root (kanata GIDs preserved, second run is a no-op);
 # - installer: never adds a human account to input/uinput;
-# - desktop entry: scheme handler, single-URL Exec, no shell wrapper;
+# - desktop entry: scheme handler, single-URL Exec, settings launcher, no
+#   shell wrapper;
 # - cross-file names (kanata-mouseless, mouseless-mouse, extension UUID);
 # - installer paths and extension pack sources;
 # - POSIX shell syntax and systemd unit syntax.
@@ -32,6 +33,7 @@ DROPIN="$ROOT/platform/systemd/kanata.service.d-override.conf"
 UDEV="$ROOT/platform/udev/99-mouseless.rules"
 SYSUSERS="$ROOT/platform/sysusers/mouseless.conf"
 DESKTOP="$ROOT/platform/desktop/mouseless-url-handler.desktop"
+SETTINGS_DESKTOP="$ROOT/platform/desktop/mouseless-settings.desktop"
 INSTALL_SYSTEM="$ROOT/platform/install-system.sh"
 INSTALL_EXT="$ROOT/platform/install-extension.sh"
 EXT_META="$ROOT/gnome-extension/metadata.json"
@@ -182,8 +184,11 @@ require_literal "$DESKTOP" "Exec=/usr/local/bin/mouseless %u" "scheme handler pa
 require_literal "$DESKTOP" "MimeType=x-scheme-handler/mouseless;" "registers the mouseless scheme"
 require_literal "$DESKTOP" "TryExec=/usr/local/bin/mouseless" "handler hidden when the CLI is absent"
 forbid_regex "$DESKTOP" "^Exec=.*(sh -c|bash -c)" "no shell wrapper in Exec"
+require_literal "$SETTINGS_DESKTOP" "Exec=/usr/local/bin/mouseless-settings %u" "settings launcher opens the app"
+require_literal "$SETTINGS_DESKTOP" "TryExec=/usr/local/bin/mouseless-settings" "settings launcher hidden when the app is absent"
+forbid_regex "$SETTINGS_DESKTOP" "^Exec=.*(sh -c|bash -c)" "no shell wrapper in the settings launcher"
 if command -v desktop-file-validate >/dev/null 2>&1; then
-    if desktop-file-validate "$DESKTOP" >/dev/null 2>&1; then
+    if desktop-file-validate "$DESKTOP" "$SETTINGS_DESKTOP" >/dev/null 2>&1; then
         ok "desktop-file-validate"
     else
         bad "desktop-file-validate"
@@ -210,7 +215,9 @@ require_literal "$INSTALL_EXT" "--extra-source=render.js" "extension packs rende
 require_literal "$INSTALL_SYSTEM" "/usr/lib/sysusers.d/mouseless.conf" "installer sysusers path"
 require_literal "$INSTALL_SYSTEM" "/etc/systemd/system/mouselessd.service" "installer unit path"
 require_literal "$INSTALL_SYSTEM" "/usr/local/bin/mouselessd" "installer daemon path"
+require_literal "$INSTALL_SYSTEM" "/usr/local/bin/mouseless-settings" "installer settings path"
 require_literal "$INSTALL_SYSTEM" "/usr/share/applications/mouseless-url-handler.desktop" "installer desktop path"
+require_literal "$INSTALL_SYSTEM" "/usr/share/applications/mouseless-settings.desktop" "installer settings desktop path"
 require_literal "$INSTALL_SYSTEM" "x-scheme-handler/mouseless" "installer registers the scheme"
 
 echo "== scripts =="

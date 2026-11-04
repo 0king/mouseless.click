@@ -12,7 +12,8 @@ udev rule, `sysusers`, installers, and the platform checks. Architecture:
 | `kanata/apply-phase11.sh` | run in place | Backs up + edits `unicfg.kbd`, validates with `kanata --check`, installs the drop-in, restarts kanata. |
 | `systemd/kanata.service.d-override.conf` | `/etc/systemd/system/kanata.service.d/mouseless.conf` | Localhost TCP, SIGTERM restart, `SupplementaryGroups=input uinput` (idempotent; no-op when kanata already has them). |
 | `systemd/mouselessd.service` | `/etc/systemd/system/mouselessd.service` | Daemon unit; `mouselessd:mouseless`, `SupplementaryGroups=input uinput`, `RuntimeDirectory=mouseless`, `StateDirectory=mouseless` (0750) for the last-applied config. |
-| `desktop/mouseless-url-handler.desktop` | `/usr/share/applications/mouseless-url-handler.desktop` | `mouseless://` scheme handler → `mouseless %u` (overlay, free-mode, status, device list). |
+| `desktop/mouseless-url-handler.desktop` | `/usr/share/applications/mouseless-url-handler.desktop` | `mouseless://` scheme handler → `mouseless %u` (overlay, free-mode, status, device list, settings). |
+| `desktop/mouseless-settings.desktop` | `/usr/share/applications/mouseless-settings.desktop` | Application-menu entry → `mouseless-settings %u`. |
 | `sysusers/mouseless.conf` | `/usr/lib/sysusers.d/mouseless.conf` | Creates `mouselessd`, the `mouseless` socket group, and joins the existing `uinput`/`input` device groups. |
 | `udev/99-mouseless.rules` | `/etc/udev/rules.d/99-mouseless.rules` | `/dev/uinput` for the `uinput` device group (kanata + daemon). No libinput acceleration override. |
 | `install-system.sh` | run in place | Installs the system files above + binaries. |
@@ -36,8 +37,8 @@ The system installer:
 
 1. installs `sysusers` and runs `systemd-sysusers` (idempotent);
 2. installs the udev rule and triggers `/dev/uinput`;
-3. installs `mouselessd`/`mouseless` to `/usr/local/bin`;
-4. installs the unit, the `mouseless://` handler, and runs `systemctl daemon-reload`;
+3. installs `mouselessd`/`mouseless`/`mouseless-settings` to `/usr/local/bin`;
+4. installs the unit, both desktop entries, and runs `systemctl daemon-reload`;
 5. applies the kanata include/drop-in via `apply-phase11.sh` (creates any
    missing `input`/`uinput` group, backs up + edits `unicfg.kbd`, runs
    `kanata --check`, restarts kanata);
@@ -104,6 +105,7 @@ systemctl status mouselessd.service
 journalctl -u mouselessd.service -b
 /usr/local/bin/mouseless --version
 /usr/local/bin/mouselessd --version
+/usr/local/bin/mouseless-settings --version
 /usr/local/bin/mouseless status
 /usr/local/bin/mouseless reload
 /usr/local/bin/mouseless --list-input-devices
@@ -127,7 +129,9 @@ Expected:
   live;
 - `xdg-mime query default x-scheme-handler/mouseless` prints
   `mouseless-url-handler.desktop`; `xdg-open mouseless://status` runs the CLI
-  verb (its stdout goes to the journal in a desktop session).
+  verb (its stdout goes to the journal in a desktop session);
+- `xdg-open mouseless://settings/grid` activates `mouseless-settings` on the
+  Grid page (single instance; a second link switches pages).
 
 ## Deep links
 
@@ -137,14 +141,17 @@ handled by the installed `.desktop` entry, which calls `mouseless %u`. The CLI
 accepts the exact URL as its verb, so no extra router is needed. `reload` is
 socket-only and has no link. Unknown links exit `2` without side effects.
 
+`mouseless://settings` and `mouseless://settings/<page>` are the exception: the
+CLI forwards them to `mouseless-settings`, which activates (or starts) the
+single-instance window on that page. Pages: `grid` (default), `appearance`,
+`behavior`, `free-mode`, `keybindings`, `presets`, `status`. The same binary is
+also in the application menu via `mouseless-settings.desktop`.
+
 To register the handler manually (for a user the installer could not reach):
 
 ```sh
 xdg-mime default mouseless-url-handler.desktop x-scheme-handler/mouseless
 ```
-
-Settings-specific links will be added with the GTK app; until then they are
-usage errors.
 
 ## Config lifecycle
 
@@ -152,9 +159,9 @@ usage errors.
 
 | Path | Owner | Purpose |
 |---|---|---|
-| `/var/lib/mouseless/config.yaml` | `mouselessd` (0750 state dir) | last-applied schema-v1 document, loaded on start |
+| `/var/lib/mouseless/config.yaml` | `mouselessd` (0750 state dir) | last-applied schema-v1 document, loaded on start and returned by `GetConfig` |
 | `/var/lib/mouseless/config.last-good.yaml` | `mouselessd` | previous validated document; used when the live file is corrupt |
-| `~/.config/mouseless/config.yaml` | desktop user | user-facing copy edited by the settings app (Phase 3) |
+| `~/.config/mouseless/presets/*.yaml` | desktop user | user presets read/written by the settings app |
 
 On start the daemon calls `ConfigStore::effective()` (live → last-good →
 defaults) and logs which fallback it used. A client `Update` is validated,
@@ -185,6 +192,7 @@ The installers never delete user data. To remove the service:
 systemctl disable --now mouselessd.service
 sudo rm -f /etc/systemd/system/mouselessd.service
 sudo rm -f /usr/share/applications/mouseless-url-handler.desktop
+sudo rm -f /usr/share/applications/mouseless-settings.desktop
 sudo rm -f /usr/lib/sysusers.d/mouseless.conf
 sudo rm -f /etc/udev/rules.d/99-mouseless.rules
 sudo rm -f /etc/systemd/system/kanata.service.d/mouseless.conf
@@ -192,9 +200,9 @@ sudo systemctl daemon-reload
 sudo udevadm control --reload-rules
 ```
 
-Remove `/usr/local/bin/mouselessd` and `/usr/local/bin/mouseless` if no longer
-needed. The applied config state (`/var/lib/mouseless/`) is data, not an
-install artifact: `sudo rm -rf /var/lib/mouseless` only if you deliberately want
+Remove `/usr/local/bin/mouselessd`, `/usr/local/bin/mouseless`, and
+`/usr/local/bin/mouseless-settings` if no longer needed. The applied config
+state (`/var/lib/mouseless/`) is data, not an install artifact: `sudo rm -rf /var/lib/mouseless` only if you deliberately want
 to discard the saved config and its last-good copy. The `mouselessd` user and
 `mouseless` group can stay (harmless) or be
 removed with `userdel mouselessd` / `groupdel mouseless` after checking no
