@@ -6,9 +6,9 @@
 //! ANY failure: temp removed, live file untouched, last-good preserved
 //! ```
 //!
-//! The store is path-based on purpose: the GUI uses the user config path and
-//! the daemon uses its `StateDirectory` copy. It never invents paths or
-//! escalates privileges.
+//! The store is path-based on purpose: the daemon uses its `StateDirectory`
+//! copy for the authoritative config, while user presets live under the XDG
+//! config directory. It never invents paths or escalates privileges.
 
 use crate::schema::{Config, CONFIG_VERSION};
 use crate::util::{copy_atomic, write_atomic};

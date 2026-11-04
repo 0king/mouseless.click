@@ -408,10 +408,10 @@ Trait-boundary rules (enforced in review + CI):
 - [x] **3.1b** Config lifecycle end-to-end: daemon `apply_config` (dynamic
   layer names, grid action level, default action, free-mode-after-move),
   persistence under `StateDirectory=mouseless`, startup fallback live →
-  last-good → defaults, one-shot `Reload`/`Update`/`Status` client frames with
-  `Ack`/`Error`/`Status` replies, overlay multi-role socket (clients bypass the
-  Hello budget and never receive overlay broadcasts), CLI `reload` and
-  daemon-aware `status`, systemd `StateDirectory`. `cargo test --workspace`
+  last-good → defaults, one-shot `Reload`/`Save`/`Update`/`Status` client
+  frames with `Ack`/`Error`/`Status` replies, overlay multi-role socket
+  (clients bypass the Hello budget and never receive overlay broadcasts), CLI
+  `reload` and daemon-aware `status`, systemd `StateDirectory`. `cargo test --workspace`
   plus `cargo clippy --workspace --all-targets -- -D warnings` green.
 - [x] **3.1d** `mouseless://` deep links without GTK: the CLI accepts every
   exact link as a verb (`Verb::from_deep_link`, unknown links exit `2`), and
@@ -432,12 +432,13 @@ Trait-boundary rules (enforced in review + CI):
   settings deep links (the CLI handler above stays for overlay verbs), and a
   status page; test #9. Implemented 2026-11-04 as `mouseless-settings`:
   programmatic GTK4/Adwaita (no Blueprint compiler/GPL dependency), seven
-  pages, `GetConfig` → local validate → optional `kanata --check` → `Update`,
-  presets import/export, daemon-down fallback, Ctrl+Enter apply, and
+  pages, `GetConfig` → local validate → debounced `Save` auto-save → optional
+  `kanata --check` + `Update` on Restart App, presets import/export,
+  daemon-down fallback, Ctrl+Enter restart, and
   `mouseless://settings/<page>` single-instance routing. `cargo
   test/clippy/fmt -p mouseless-gtk` green plus a live launch smoke; the
-  operator checklist (edit → live apply, preset round-trip, daemon-down) is
-  still open in `SPEC-settings.md`.
+  operator checklist (auto-save → Restart App, preset round-trip, daemon-down)
+  is still open in `SPEC-settings.md`.
 
 ### Phase 4: Multi-distro / multi-backend extensibility (Priority 4)
 - [ ] **4.1** New `KeyboardBackend` impl (e.g. keyd) and/or `MouseBackend`

@@ -15,7 +15,7 @@ config value, never a core refactor.
 | `mouseless-overlay` | `OverlayBackend` (`show`/`highlight`/`show_subgrid`/`hide`, reports), draw-only; daemon-side Unix-socket server. | `impls/gnome.rs` (server + JSON); GNOME extension is the client; future `wlr`, `x11` |
 | `mouseless-daemon` | `mouselessd`: thin orchestration (single-flight machine, grab lifecycle, action execution, overlay/free session loops, 8 ms tick, kill-switch co-exit) + config persistence/apply. | — |
 | `mouseless-cli` | `mouseless` verbs with deep-link parity + kanata TCP layer switching + `--list-input-devices` + daemon `reload`/`status` + `settings` forwarding. | — |
-| `mouseless-gtk` | `mouseless-settings`: GTK4/Adwaita preferences window (programmatic Rust) over `mouseless-config`; reads `GetConfig`, pushes `Update`, never writes the live file. | — |
+| `mouseless-gtk` | `mouseless-settings`: GTK4/Adwaita preferences window (programmatic Rust) over `mouseless-config`; reads `GetConfig`, auto-saves with `Save`, applies on Restart App with `Update`, never writes the live file. | — |
 
 ## Data flow (plan §2.4)
 
@@ -27,8 +27,10 @@ physical kbd → kanata (grab, HRM, tap-dance, lyr-mouse fallback)
 mouselessd → uinput "mouseless-mouse" (REL deltas + BTN_*/WHEEL)
 mouselessd ↔ kanata TCP 127.0.0.1:port (LayerChange / ChangeLayer)
 mouselessd ↔ GNOME extension /run/mouseless/mouselessd.sock (JSON)
-mouseless-settings → mouselessd (GetConfig/Update over the same socket; the
-                    daemon remains the only writer of the live config)
+mouseless-settings → mouselessd (GetConfig/Save/Update over the same socket;
+                    Save auto-persists without changing the running app,
+                    Update on Restart App persists and applies; the daemon
+                    remains the only writer of the live config)
 ```
 
 No `cmd` anywhere (audit W1). `EvdevCellGrab` owns a fresh fd per overlay/free

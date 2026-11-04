@@ -22,17 +22,21 @@ types directly. There are no `.blp` files to compile here.
 - `src/pages.rs` — the seven preferences pages and preset rows.
 - `src/preview.rs` — Cairo subgrid preview (grid fill, opacity, labels,
   highlight).
-- `src/state.rs` — load → validate → `kanata --check` → daemon `Update`;
-  revert, presets, status, Ctrl+Enter apply shortcut.
+- `src/state.rs` — load → validate → debounced daemon `Save`; Restart App runs
+  `kanata --check` and daemon `Update`; revert, presets, status, Ctrl+Enter
+  restart shortcut.
 - `src/model.rs` — toolkit-free helpers with unit tests.
 
 ## Runtime contract
 
 The GUI never writes the live config. It reads `GetConfig` from the daemon,
-edits the daemon-owned document, and pushes `Update`; the daemon validates,
-persists atomically, and applies. When the daemon is down the app falls back
-to the last persisted copy (`/var/lib/mouseless/config.yaml`) read-only and
-says so on the Status page.
+edits the daemon-owned document, and auto-saves each valid change with `Save`
+(persist only; debounced and flushed on close). The running app keeps its
+previous values until “Restart App” runs `kanata --check` and sends `Update`,
+which persists and applies. When the
+daemon is down the app falls back to the last persisted copy
+(`/var/lib/mouseless/config.yaml`) and reports that edits cannot be saved on
+the Status page.
 
 Build prerequisite: `apt install libgtk-4-dev libadwaita-1-dev` (plan §10.5).
 The GTK dependency is confined to `crates/mouseless-gtk`; `mouseless-config`

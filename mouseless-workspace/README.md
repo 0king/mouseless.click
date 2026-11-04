@@ -126,11 +126,15 @@ installed binaries accept `--version`/`-V` (for example
 `mouseless-settings` (crate `mouseless-gtk`) is the GTK4/Adwaita settings
 window: grid and subgrid geometry with a live preview, appearance, behavior,
 free mode, keybinding reference with conflict hints, presets (built-in and
-user YAML), and a status page. It reads the live document with `GetConfig`,
-validates locally, optionally runs `kanata --check`, then pushes `Update`; the
-daemon stays the only writer of `/var/lib/mouseless/config.yaml`. When the
-daemon is unreachable the app opens the last persisted copy read-only and says
-so on the Status page.
+user YAML), and a status page. It reads the saved document with `GetConfig`,
+validates locally, and auto-saves every valid edit with `Save`; the daemon
+persists the document but keeps the running app on its previous values.
+“Restart App” (Ctrl+Enter) runs the optional kanata check and sends `Update`,
+which persists and applies the current values. Auto-save is debounced and
+flushed when the window closes. The daemon stays the only writer of
+`/var/lib/mouseless/config.yaml`. When the daemon is unreachable the app opens
+the last persisted copy and reports that edits cannot be saved on the Status
+page.
 
 ```sh
 sudo apt install libgtk-4-dev libadwaita-1-dev
@@ -164,5 +168,5 @@ CLI. The Adwaita settings app (`mouseless-settings`) is implemented over the
 same engine: seven pages, live subgrid preview, presets, keybinding conflict
 hints, status, and `mouseless://settings/<page>` deep links; install the
 `libgtk-4-dev`/`libadwaita-1-dev` packages to build it. Remaining: the operator
-smoke checklist (edit → live apply, preset round-trip, daemon-down fallback).
+smoke checklist (auto-save → restart, preset round-trip, daemon-down fallback).
 See `specs/SPEC-MAP.md` for per-module status.
