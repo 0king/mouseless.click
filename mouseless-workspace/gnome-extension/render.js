@@ -12,30 +12,26 @@ import Cogl from 'gi://Cogl';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
-// Every display constant lives here so Phase-3 settings can replace it.
-//
-// The grid background is #d4de04 at 80% transparency (20% opacity, alpha 51).
+// Display defaults and layout constants. Colors and opacity come from the
+// model; these defaults cover older/malformed payloads.
 // The primary overlay tiles the active monitor completely, so there is no
 // separate dim layer; the translucent fill is the overlay's only tint.
-// Labels are #ebe9e8 as requested.
-const GRID_RGB = [0xd4, 0xde, 0x04];
-const GRID_ALPHA = 51; // 80% transparent (20% opacity)
-const LABEL_RGB = [0xeb, 0xe9, 0xe8];
+const DEFAULT_APPEARANCE = {
+    grid_color: [0xd4, 0xde, 0x04],
+    grid_opacity: 0.2, // 80% transparent
+    label_color: [0xeb, 0xe9, 0xe8],
+    highlight_color: [255, 178, 44],
+};
+// Muted context behind an open subgrid keeps the same hue at 20/51 of the
+// configured grid alpha; labels drop to alpha 110 (pinned contrast).
+const MUTED_GRID_FACTOR = 20 / 51;
+const MUTED_LABEL_ALPHA = 110;
+const HIGHLIGHT_ALPHA = 235;
 // Visible separator between two adjacent cells is 2 × the per-edge inset, so
 // 0.5 px per edge yields the minimum 1 px line for both grids.
 const SEPARATOR_PX = 1;
 
-const STYLE = {
-    dim: [0, 0, 0, 0],
-    cell: [...GRID_RGB, GRID_ALPHA],
-    // Context behind the open subgrid: still the same hue, much fainter, so
-    // the selected cell's sub-cells stand out.
-    cellMuted: [...GRID_RGB, 20],
-    subCell: [...GRID_RGB, GRID_ALPHA],
-    highlight: [255, 178, 44, 235],
-    label: [...LABEL_RGB, 255],
-    labelMuted: [...LABEL_RGB, 110],
-    labelHighlight: [...LABEL_RGB, 255],
+const LAYOUT = {
     gap: SEPARATOR_PX / 2,
     subgridGap: SEPARATOR_PX / 2,
     minFontPx: 7,
@@ -49,6 +45,51 @@ const Color = Clutter.Color ?? Cogl.Color;
 
 function rgba([red, green, blue, alpha]) {
     return new Color({red, green, blue, alpha});
+}
+
+function isRgb(value) {
+    return Array.isArray(value) && value.length === 3 &&
+        value.every(channel => Number.isInteger(channel) &&
+            channel >= 0 && channel <= 255);
+}
+
+/** Resolve one model's appearance, falling back per field. */
+function appearanceFor(model) {
+    const raw = model?.appearance && typeof model.appearance === 'object'
+        ? model.appearance
+        : {};
+    const opacity = Number.isFinite(raw.grid_opacity)
+        ? Math.min(1, Math.max(0, raw.grid_opacity))
+        : DEFAULT_APPEARANCE.grid_opacity;
+    return {
+        grid_color: isRgb(raw.grid_color)
+            ? raw.grid_color
+            : DEFAULT_APPEARANCE.grid_color,
+        grid_opacity: opacity,
+        label_color: isRgb(raw.label_color)
+            ? raw.label_color
+            : DEFAULT_APPEARANCE.label_color,
+        highlight_color: isRgb(raw.highlight_color)
+            ? raw.highlight_color
+            : DEFAULT_APPEARANCE.highlight_color,
+    };
+}
+
+function styleFor(model) {
+    const appearance = appearanceFor(model);
+    const alpha = Math.round(appearance.grid_opacity * 255);
+    return {
+        cell: [...appearance.grid_color, alpha],
+        // Context behind the open subgrid: still the same hue, much fainter,
+        // so the selected cell's sub-cells stand out.
+        cellMuted: [...appearance.grid_color, Math.round(alpha * MUTED_GRID_FACTOR)],
+        subCell: [...appearance.grid_color, alpha],
+        highlight: [...appearance.highlight_color, HIGHLIGHT_ALPHA],
+        label: [...appearance.label_color, 255],
+        labelMuted: [...appearance.label_color, MUTED_LABEL_ALPHA],
+        labelHighlight: [...appearance.label_color, 255],
+        ...LAYOUT,
+    };
 }
 
 function inset(rect, gap) {
@@ -72,8 +113,8 @@ function fontNameFor(rect, label) {
     const byHeight = rect.h * 0.55;
     const byWidth = rect.w / (chars * 0.9);
     const size = Math.max(
-        STYLE.minFontPx,
-        Math.min(STYLE.maxFontPx, Math.floor(Math.min(byHeight, byWidth))));
+        LAYOUT.minFontPx,
+        Math.min(LAYOUT.maxFontPx, Math.floor(Math.min(byHeight, byWidth))));
     return `Sans Bold ${size}`;
 }
 
@@ -92,7 +133,7 @@ export class OverlayActor {
             visible: false,
             opacity: 255,
         });
-        this._root.set_background_color(rgba(STYLE.dim));
+        this._root.set_background_color(rgba([0, 0, 0, 0]));
         // Fill the stage across monitor/scale changes without polling.
         this._root.add_constraint(new Clutter.BindConstraint({
             source: global.stage,
@@ -101,6 +142,7 @@ export class OverlayActor {
         this._model = null;
         this._subgrid = null;
         this._highlight = null;
+        this._style = styleFor(null);
         this._layer = null;
         this._activeCells = new Map();
         // GNOME binds tracked-chrome visibility to fullscreen state
@@ -122,6 +164,7 @@ export class OverlayActor {
         this._model = model;
         this._subgrid = null;
         this._highlight = Number.isInteger(model.highlight) ? model.highlight : null;
+        this._style = styleFor(model);
         this._rebuild();
         this._root.show();
     }
@@ -129,6 +172,7 @@ export class OverlayActor {
     showSubgrid(parent, model) {
         this._subgrid = {parent, model};
         this._highlight = Number.isInteger(model.highlight) ? model.highlight : null;
+        this._style = styleFor(model);
         this._rebuild();
         this._root.show();
     }
@@ -177,6 +221,7 @@ export class OverlayActor {
         this._layer = new Clutter.Actor({reactive: false});
         this._root.add_child(this._layer);
 
+        const style = this._style;
         const subgrid = this._subgrid;
         if (this._model) {
             for (const cell of this._model.cells) {
@@ -186,17 +231,17 @@ export class OverlayActor {
                 // and leak its two-character label through them.
                 if (isParent)
                     continue;
-                const background = subgrid ? STYLE.cellMuted : STYLE.cell;
-                const labelColor = subgrid ? STYLE.labelMuted : STYLE.label;
+                const background = subgrid ? style.cellMuted : style.cell;
+                const labelColor = subgrid ? style.labelMuted : style.label;
                 this._addCell(this._model, cell, background, labelColor,
-                    STYLE.gap, subgrid === null);
+                    style.gap, subgrid === null);
             }
         }
 
         if (subgrid) {
             for (const cell of subgrid.model.cells) {
-                this._addCell(subgrid.model, cell, STYLE.subCell, STYLE.label,
-                    STYLE.subgridGap, true);
+                this._addCell(subgrid.model, cell, style.subCell, style.label,
+                    style.subgridGap, true);
             }
         }
 
@@ -231,9 +276,9 @@ export class OverlayActor {
         for (const [index, entry] of this._activeCells) {
             const highlighted = index === this._highlight;
             entry.actor.set_background_color(
-                rgba(highlighted ? STYLE.highlight : entry.background));
+                rgba(highlighted ? this._style.highlight : entry.background));
             entry.label?.set_color(
-                rgba(highlighted ? STYLE.labelHighlight : entry.labelColor));
+                rgba(highlighted ? this._style.labelHighlight : entry.labelColor));
         }
     }
 

@@ -10,6 +10,7 @@
 //   monitor geometry + cursor position.
 
 import GLib from 'gi://GLib';
+import Meta from 'gi://Meta';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
@@ -164,9 +165,10 @@ export default class MouselessOverlayExtension {
         if (!this._overlay || !this._socket)
             return;
         const primaryIndex = Main.layoutManager.primaryIndex;
-        const monitors = Main.layoutManager.monitors.map(monitor => {
+        const connectors = this._monitorConnectors();
+        const monitors = Main.layoutManager.monitors.map((monitor, position) => {
             const scale = monitor.geometry_scale || 1;
-            return {
+            const info = {
                 // Wire geometry is physical px; stage units are physical/scale.
                 x: Math.round(monitor.x * scale),
                 y: Math.round(monitor.y * scale),
@@ -175,12 +177,45 @@ export default class MouselessOverlayExtension {
                 scale,
                 primary: monitor.index === primaryIndex,
             };
+            // Custom monitor assignment needs the connector, which the Shell
+            // layout monitor does not carry directly. It is optional: older
+            // daemons and compositors without the API keep working.
+            const connector = connectors.get(monitor.index ?? position);
+            if (connector)
+                info.connector = connector;
+            return info;
         });
         this._socket.send(KIND_OVERLAY, {
             type: 'Report',
             geometry: {monitors},
             cursor: this._physicalPointer(),
         });
+    }
+
+    /**
+     * Map Shell monitor indices to compositor connector names (`eDP-1`, …).
+     *
+     * `Main.layoutManager.monitors` exposes geometry but not the connector;
+     * the Meta monitor manager does. Failure is non-fatal: the daemon falls
+     * back to the primary monitor when `custom_monitors` cannot be resolved.
+     */
+    _monitorConnectors() {
+        const byIndex = new Map();
+        try {
+            const manager = global.backend?.get_monitor_manager?.() ??
+                Meta.MonitorManager?.get?.();
+            const monitors = manager?.get_monitors?.() ?? [];
+            monitors.forEach((monitor, index) => {
+                const connector = monitor?.get_connector?.() ??
+                    (typeof monitor?.connector === 'string' ? monitor.connector : null);
+                if (typeof connector === 'string' && connector.length > 0)
+                    byIndex.set(index, connector);
+            });
+        } catch (error) {
+            this._warnOnce('connector',
+                `monitor connectors unavailable: ${error.message}`);
+        }
+        return byIndex;
     }
 
     _sendCursorReply() {

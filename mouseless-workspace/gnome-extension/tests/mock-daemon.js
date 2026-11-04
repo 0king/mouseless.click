@@ -22,6 +22,13 @@ try {
 }
 
 const monitor = {x: 0, y: 0, w: 1920, h: 1080, scale: 1.0};
+// Current daemon defaults, including the resolved appearance block.
+const appearance = {
+    grid_color: [0xd4, 0xde, 0x04],
+    grid_opacity: 0.2,
+    label_color: [0xeb, 0xe9, 0xe8],
+    highlight_color: [0xff, 0xb2, 0x2c],
+};
 // Match the daemon defaults so the smoke exercises the real cell counts:
 // primary = 10 columns × 30 rows with two-character labels, subgrid = 10×3.
 const columnKeys = 'asdfghjkl;';
@@ -109,14 +116,14 @@ service.connect('incoming', (service_, connection) => {
                 // Replay current state (the real daemon does this too).
                 send({
                     type: 'Show',
-                    model: {monitor, cells, highlight: null},
+                    model: {monitor, cells, highlight: null, appearance},
                 });
                 if (id === 1) {
                     later(400, () => send({type: 'HighlightCell', index: 137}));
                     later(800, () => send({
                         type: 'ShowSubgrid',
                         parent: 0,
-                        model: {monitor, cells: subCells, highlight: null},
+                        model: {monitor, cells: subCells, highlight: null, appearance},
                     }));
                     later(1200, () => send({type: 'QueryCursor'}));
                     later(1600, () => send({type: 'Hide'}));
