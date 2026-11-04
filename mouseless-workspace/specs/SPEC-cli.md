@@ -20,8 +20,9 @@ when the GUI is not wanted.
 - In: `show|hide|toggle`, `enter-free-mode|exit-free-mode`, `status`,
   `--list-input-devices`; exits codes; deep-link URLs accepted as verbs;
   `.desktop` scheme handler (owned by `platform`).
-- In (Phase 3, done): `reload` (config re-apply) and daemon-aware `status`,
-  mapping to the daemon `Reload`/`Status` client messages.
+- In (Phase 3, done): `reload` (config re-apply), daemon-aware `status`, and
+  `settings` page links routed to `mouseless-settings`, mapping to the daemon
+  `Reload`/`Status` client messages and the toolkit-free `SettingsPage` table.
 - Out: anything the daemon can do only while the overlay is visible (no GUI
   automation); label mode and other Phase-4 features.
 
@@ -39,6 +40,12 @@ when the GUI is not wanted.
 | `status` | — | Print kanata layer plus daemon/overlay/session/free-mode/config state when the daemon is reachable | `mouseless://status` |
 | `--list-input-devices` | — | Parse `/proc/bus/input/devices`, tag kanata/mouseless entries | `mouseless://list-input-devices` |
 | `reload` | — | Send `Reload` client frame to the daemon | — |
+| `settings` | `settings/<page>` | Spawn `mouseless-settings` with the page URL (single instance opens that page) | `mouseless://settings` |
+| `settings/appearance` … `settings/status` | bare `<page>` name | Same, opening the named page | `mouseless://settings/<page>` |
+
+Settings pages (toolkit-free `SettingsPage`, shared by the CLI and the GUI):
+`grid` (landing page, also `mouseless://settings/grid`), `appearance`,
+`behavior`, `free-mode`, `keybindings`, `presets`, `status`.
 
 **Show/hide go through kanata's layer switch, never a direct daemon socket
 command**: the layer is the single source of truth (plan §1.3); the daemon
@@ -48,6 +55,8 @@ Every verb with a deep link also accepts that exact URL as `argv[1]`
 (`mouseless://show-overlay`, trailing slash tolerated). This is what the
 `.desktop` scheme handler invokes. Unknown links are usage errors (exit `2`)
 and cause no side effects; `reload` has no link because it is socket-only.
+Settings links are the only links the CLI forwards instead of handling itself;
+`MOUSELESS_SETTINGS` overrides the GUI binary path for development.
 
 ### Exit codes & output
 

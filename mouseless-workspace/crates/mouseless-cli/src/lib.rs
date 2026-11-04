@@ -11,8 +11,99 @@ use mouseless_kbd::{BASE_LAYER, FREE_MODE_LAYER, OVERLAY_LAYER};
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CliError {
     /// Unknown verb or bad arguments.
-    #[error("usage: mouseless <show|hide|toggle|enter-free-mode|exit-free-mode|status|reload|--list-input-devices>")]
+    #[error("usage: mouseless <show|hide|toggle|enter-free-mode|exit-free-mode|status|reload|settings|--list-input-devices>")]
     Usage,
+}
+
+/// Settings pages reachable through `mouseless://settings/<page>`.
+///
+/// The GUI uses the same parser so the CLI, the `.desktop` handler, and the
+/// Adwaita window cannot drift apart. `Grid` is the landing page and accepts
+/// both `mouseless://settings` and `mouseless://settings/grid`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsPage {
+    /// Grid keys, subgrid, monitor assignment.
+    Grid,
+    /// Colors, opacity, cursor hiding.
+    Appearance,
+    /// Action level, thresholds, click/drag modifiers.
+    Behavior,
+    /// Free-mode engine and physics.
+    FreeMode,
+    /// Layer names, key roles, kill switch.
+    Keybindings,
+    /// Built-in and user presets.
+    Presets,
+    /// Live daemon/overlay/kanata state.
+    Status,
+}
+
+impl SettingsPage {
+    /// Every page in window order.
+    pub const ALL: [SettingsPage; 7] = [
+        SettingsPage::Grid,
+        SettingsPage::Appearance,
+        SettingsPage::Behavior,
+        SettingsPage::FreeMode,
+        SettingsPage::Keybindings,
+        SettingsPage::Presets,
+        SettingsPage::Status,
+    ];
+
+    /// Stable page name used by the GUI stack and deep links.
+    pub fn name(self) -> &'static str {
+        match self {
+            SettingsPage::Grid => "grid",
+            SettingsPage::Appearance => "appearance",
+            SettingsPage::Behavior => "behavior",
+            SettingsPage::FreeMode => "free-mode",
+            SettingsPage::Keybindings => "keybindings",
+            SettingsPage::Presets => "presets",
+            SettingsPage::Status => "status",
+        }
+    }
+
+    /// Human-readable page title.
+    pub fn title(self) -> &'static str {
+        match self {
+            SettingsPage::Grid => "Grid",
+            SettingsPage::Appearance => "Appearance",
+            SettingsPage::Behavior => "Behavior",
+            SettingsPage::FreeMode => "Free Mode",
+            SettingsPage::Keybindings => "Keybindings",
+            SettingsPage::Presets => "Presets",
+            SettingsPage::Status => "Status",
+        }
+    }
+
+    /// Canonical deep link for this page.
+    pub fn deep_link(self) -> &'static str {
+        match self {
+            SettingsPage::Grid => "mouseless://settings",
+            SettingsPage::Appearance => "mouseless://settings/appearance",
+            SettingsPage::Behavior => "mouseless://settings/behavior",
+            SettingsPage::FreeMode => "mouseless://settings/free-mode",
+            SettingsPage::Keybindings => "mouseless://settings/keybindings",
+            SettingsPage::Presets => "mouseless://settings/presets",
+            SettingsPage::Status => "mouseless://settings/status",
+        }
+    }
+
+    /// Parse a settings deep link (or a bare page name).
+    pub fn parse(value: &str) -> Option<Self> {
+        let path = value.strip_prefix("mouseless://").unwrap_or(value);
+        let path = path.strip_suffix('/').unwrap_or(path);
+        match path {
+            "settings" | "settings/grid" | "grid" => Some(SettingsPage::Grid),
+            "settings/appearance" | "appearance" => Some(SettingsPage::Appearance),
+            "settings/behavior" | "behavior" => Some(SettingsPage::Behavior),
+            "settings/free-mode" | "free-mode" => Some(SettingsPage::FreeMode),
+            "settings/keybindings" | "keybindings" => Some(SettingsPage::Keybindings),
+            "settings/presets" | "presets" => Some(SettingsPage::Presets),
+            "settings/status" | "status" => Some(SettingsPage::Status),
+            _ => None,
+        }
+    }
 }
 
 /// Verbs with exact deep-link parity.
@@ -34,6 +125,8 @@ pub enum Verb {
     Reload,
     /// List `/dev/input` devices (mirrors upstream `--list-input-devices`).
     ListInputDevices,
+    /// Open the settings GUI at a page (`mouseless://settings/...`).
+    Settings(SettingsPage),
 }
 
 impl Verb {
@@ -46,6 +139,11 @@ impl Verb {
         if arg.starts_with("mouseless://") {
             return Self::from_deep_link(arg).ok_or(CliError::Usage);
         }
+        if arg == "settings" || arg.starts_with("settings/") {
+            return SettingsPage::parse(arg)
+                .map(Verb::Settings)
+                .ok_or(CliError::Usage);
+        }
         match arg {
             "show" | "show-overlay" => Ok(Verb::Show),
             "hide" | "hide-overlay" => Ok(Verb::Hide),
@@ -54,6 +152,7 @@ impl Verb {
             "exit-free-mode" => Ok(Verb::ExitFreeMode),
             "status" => Ok(Verb::Status),
             "reload" => Ok(Verb::Reload),
+            "settings" => Ok(Verb::Settings(SettingsPage::Grid)),
             "--list-input-devices" => Ok(Verb::ListInputDevices),
             _ => Err(CliError::Usage),
         }
@@ -66,6 +165,9 @@ impl Verb {
     pub fn from_deep_link(link: &str) -> Option<Self> {
         let path = link.strip_prefix("mouseless://")?;
         let path = path.strip_suffix('/').unwrap_or(path);
+        if path == "settings" || path.starts_with("settings/") {
+            return SettingsPage::parse(link).map(Verb::Settings);
+        }
         match path {
             "show-overlay" => Some(Verb::Show),
             "hide-overlay" => Some(Verb::Hide),
@@ -92,6 +194,7 @@ impl Verb {
             Verb::Status => Some("mouseless://status"),
             Verb::Reload => None,
             Verb::ListInputDevices => Some("mouseless://list-input-devices"),
+            Verb::Settings(page) => Some(page.deep_link()),
         }
     }
 
@@ -105,7 +208,11 @@ impl Verb {
             Verb::Show => Some(OVERLAY_LAYER),
             Verb::Hide | Verb::ExitFreeMode => Some(BASE_LAYER),
             Verb::EnterFreeMode => Some(FREE_MODE_LAYER),
-            Verb::Toggle | Verb::Status | Verb::Reload | Verb::ListInputDevices => None,
+            Verb::Toggle
+            | Verb::Status
+            | Verb::Reload
+            | Verb::ListInputDevices
+            | Verb::Settings(_) => None,
         }
     }
 }
@@ -151,16 +258,48 @@ mod tests {
     }
 
     #[test]
+    fn settings_pages_have_deep_link_parity() {
+        for page in SettingsPage::ALL {
+            let verb = Verb::Settings(page);
+            assert_eq!(verb.deep_link(), Some(page.deep_link()));
+            assert_eq!(Verb::parse(page.deep_link()).unwrap(), verb);
+            assert_eq!(Verb::from_deep_link(page.deep_link()), Some(verb));
+            assert_eq!(SettingsPage::parse(page.name()), Some(page));
+        }
+        // The landing page is also reachable through the short form.
+        assert_eq!(
+            Verb::parse("mouseless://settings"),
+            Ok(Verb::Settings(SettingsPage::Grid))
+        );
+        assert_eq!(
+            Verb::parse("mouseless://settings/grid"),
+            Ok(Verb::Settings(SettingsPage::Grid))
+        );
+        assert_eq!(
+            SettingsPage::parse("mouseless://settings/appearance/"),
+            Some(SettingsPage::Appearance)
+        );
+        assert_eq!(
+            Verb::parse("settings/appearance"),
+            Ok(Verb::Settings(SettingsPage::Appearance))
+        );
+        assert_eq!(SettingsPage::parse("mouseless://settings/nope"), None);
+    }
+
+    #[test]
     fn unknown_verb_prints_usage() {
         assert_eq!(Verb::parse("frobnicate"), Err(CliError::Usage));
     }
 
     #[test]
     fn unknown_deep_link_is_usage() {
-        assert_eq!(Verb::parse("mouseless://settings"), Err(CliError::Usage));
         assert_eq!(Verb::parse("mouseless://"), Err(CliError::Usage));
         assert_eq!(
             Verb::parse("mouseless://show-overlay?x=1"),
+            Err(CliError::Usage)
+        );
+        assert_eq!(
+            Verb::parse("mouseless://settings-other"),
             Err(CliError::Usage)
         );
         assert_eq!(Verb::from_deep_link("https://show-overlay"), None);
@@ -176,6 +315,10 @@ mod tests {
         assert_eq!(Verb::Status.layer_change(), None);
         assert_eq!(Verb::Reload.layer_change(), None);
         assert_eq!(Verb::ListInputDevices.layer_change(), None);
+        assert_eq!(
+            Verb::Settings(SettingsPage::Appearance).layer_change(),
+            None
+        );
     }
 
     #[test]

@@ -9,10 +9,10 @@
 //! `--kanata ADDR` and `MOUSELESS_KANATA` override the localhost endpoint
 //! (useful for fake-TCP tests and non-default ports).
 
-use mouseless_cli::{toggle_target, CliError, Verb};
+use mouseless_cli::{toggle_target, CliError, SettingsPage, Verb};
 use mouseless_ipc::{request, ClientToDaemon, DaemonToClient, CLIENT_TIMEOUT, SOCKET_PATH};
 use mouseless_kbd::{query_current_layer, send_layer_change, KanataTcpConfig};
-use std::process::ExitCode;
+use std::process::{Command, ExitCode, Stdio};
 use std::time::Duration;
 
 fn list_input_devices() {
@@ -73,7 +73,9 @@ fn parse_args() -> Result<(KanataTcpConfig, String, String), String> {
             }
             "--help" | "-h" => {
                 println!("usage: mouseless [--kanata HOST:PORT] [--socket PATH] <verb>");
-                println!("verbs: show hide toggle enter-free-mode exit-free-mode status reload");
+                println!(
+                    "verbs: show hide toggle enter-free-mode exit-free-mode status reload settings"
+                );
                 println!("flags: --list-input-devices, --version");
                 println!("exit: 0 success, 1 operational failure, 2 usage error");
                 std::process::exit(0);
@@ -124,6 +126,32 @@ fn change_layer(cfg: &KanataTcpConfig, layer: &str) -> ExitCode {
 fn query_error(e: &mouseless_kbd::KbdError) -> ExitCode {
     eprintln!("kanata TCP unavailable: {e}");
     ExitCode::FAILURE
+}
+
+/// Hand a settings deep link to `mouseless-settings` (single instance).
+///
+/// The URL handler always points at this CLI so overlay verbs keep working
+/// without the GTK app; settings links are the only ones forwarded.
+fn open_settings(page: SettingsPage) -> ExitCode {
+    let program =
+        std::env::var("MOUSELESS_SETTINGS").unwrap_or_else(|_| "mouseless-settings".to_string());
+    let mut command = Command::new(&program);
+    command
+        .arg(page.deep_link())
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    match command.spawn() {
+        Ok(_) => {
+            println!("mouseless: opening settings ({})", page.title());
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("mouseless: cannot open settings with {program}: {error}");
+            eprintln!("install mouseless-settings or set MOUSELESS_SETTINGS to its path");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -205,6 +233,7 @@ fn main() -> ExitCode {
             list_input_devices();
             ExitCode::SUCCESS
         }
+        Verb::Settings(page) => open_settings(page),
         Verb::Toggle => match query_current_layer(&cfg) {
             Ok(current) => change_layer(&cfg, toggle_target(&current)),
             Err(e) => query_error(&e),
