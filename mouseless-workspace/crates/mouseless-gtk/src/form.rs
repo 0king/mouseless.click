@@ -525,7 +525,6 @@ impl Form {
             &self.action_key,
             &self.monitor_key,
             &self.drag_modifier,
-            &self.preset_name,
         ] {
             let changed = changed.clone();
             entry.connect_changed(move |_| changed());

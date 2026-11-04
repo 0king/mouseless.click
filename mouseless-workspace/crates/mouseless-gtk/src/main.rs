@@ -2,8 +2,9 @@
 //!
 //! Single-instance `AdwApplication`; a second launch forwards its
 //! `mouseless://settings/<page>` argument to the running window. The app is a
-//! thin shell over `mouseless-config`: edit → local validation → optional
-//! `kanata --check` → `Update` to the daemon. It never writes the live config.
+//! thin shell over `mouseless-config`: edits are validated locally and
+//! auto-saved with `Save` (persist only), while “Restart App” sends `Update`
+//! to make the saved values live. The app itself never writes the config file.
 
 mod form;
 mod model;

@@ -265,7 +265,7 @@ pub fn gather_status(socket: PathBuf) -> StatusSnapshot {
     }
 }
 
-/// Parse a `GetConfig` reply into the live document.
+/// Parse a `GetConfig` reply into the saved document.
 pub fn config_from_reply(reply: DaemonToClient) -> Result<Config, String> {
     match reply {
         DaemonToClient::Config { config } => Ok(*config),

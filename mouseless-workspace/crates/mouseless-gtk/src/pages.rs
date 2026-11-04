@@ -70,11 +70,12 @@ fn row(title: &str, subtitle: &str) -> adw::ActionRow {
         .build()
 }
 
-/// Apply/Revert group duplicated at the bottom of every page, because
-/// `AdwPreferencesWindow` has no public footer slot.
+/// Save status and actions duplicated at the bottom of every page, because
+/// `AdwPreferencesWindow` has no public footer slot. Edits auto-save; the
+/// suggested button deliberately applies them to the running app.
 fn action_group(state: &Rc<AppState>) -> adw::PreferencesGroup {
     let group = adw::PreferencesGroup::new();
-    let label = gtk::Label::new(Some("All changes applied"));
+    let label = gtk::Label::new(Some("Saved"));
     label.add_css_class("dim-label");
     label.set_halign(gtk::Align::Start);
     label.set_hexpand(true);
@@ -82,9 +83,12 @@ fn action_group(state: &Rc<AppState>) -> adw::PreferencesGroup {
 
     let revert = gtk::Button::with_label("Revert");
     revert.set_valign(gtk::Align::Center);
-    let apply = gtk::Button::with_label("Apply");
-    apply.add_css_class("suggested-action");
-    apply.set_valign(gtk::Align::Center);
+    let restart = gtk::Button::with_label("Restart App");
+    restart.add_css_class("suggested-action");
+    restart.set_valign(gtk::Align::Center);
+    restart.set_tooltip_text(Some(
+        "Save the current values and apply them to the running app (Ctrl+Enter)",
+    ));
 
     let weak = Rc::downgrade(state);
     revert.connect_clicked(move |_| {
@@ -93,23 +97,23 @@ fn action_group(state: &Rc<AppState>) -> adw::PreferencesGroup {
         }
     });
     let weak = Rc::downgrade(state);
-    apply.connect_clicked(move |_| {
+    restart.connect_clicked(move |_| {
         if let Some(state) = weak.upgrade() {
-            state.apply();
+            state.restart_app();
         }
     });
 
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     buttons.append(&label);
     buttons.append(&revert);
-    buttons.append(&apply);
+    buttons.append(&restart);
     buttons.set_margin_top(4);
     buttons.set_margin_bottom(4);
     group.add(&buttons);
 
     state.action_labels.borrow_mut().push(label);
     state.revert_buttons.borrow_mut().push(revert);
-    state.apply_buttons.borrow_mut().push(apply);
+    state.restart_buttons.borrow_mut().push(restart);
     group
 }
 
@@ -122,7 +126,7 @@ fn grid_page(state: &Rc<AppState>) -> adw::PreferencesPage {
         &format!(
             "Level 1 picks a column from “{}”; level 2 picks a row from “{}”. \
              The selected cell opens a subgrid. Duplicates and keys outside the \
-             pool are rejected before apply.",
+             pool are rejected before saving.",
             form::pool_labels().0,
             form::pool_labels().1
         ),
@@ -195,8 +199,9 @@ fn behavior_page(state: &Rc<AppState>) -> adw::PreferencesPage {
 
     let timing = group(
         "Timing and nudging",
-        "The tap window is part of the kanata include; changing it runs \
-         `kanata --check` when the binary and /etc/kanata/unicfg.kbd are present.",
+        "The tap window is part of the kanata include. Values are saved \
+         automatically; Restart App runs `kanata --check` when the binary and \
+         /etc/kanata/unicfg.kbd are present.",
     );
     timing.add(&form.multi_click);
     timing.add(&form.tap);
@@ -252,9 +257,9 @@ fn keybindings_page(state: &Rc<AppState>) -> adw::PreferencesPage {
 
     let editable = group(
         "Layers and key roles",
-        "Layer names must match the generated kanata include. Changing them updates \
-         the daemon immediately, but the include still has to be installed by root \
-         (OQ-3); use “Save include…” below.",
+        "Layer names must match the generated kanata include. Changes are saved \
+         automatically and applied by Restart App, but the include still has to \
+         be installed by root (OQ-3); use “Save include…” below.",
     );
     editable.add(&form.overlay_layer);
     editable.add(&form.free_mode_layer);
@@ -412,8 +417,9 @@ fn status_page(state: &Rc<AppState>) -> adw::PreferencesPage {
 
     let source = group(
         "Configuration source",
-        "The settings app always edits the daemon-owned document. When the daemon is \
-         down it falls back to the last persisted copy read-only.",
+        "Edits are saved automatically to the daemon-owned document and do not \
+         change the running app until you press Restart App. When the daemon is \
+         down the app falls back to the last persisted copy and cannot save.",
     );
     let source_row = row("Loaded from", &state.config_source.borrow());
     let warning = row(
@@ -436,17 +442,6 @@ fn status_page(state: &Rc<AppState>) -> adw::PreferencesPage {
         }
     });
     actions.add(&refresh);
-
-    let reload = gtk::Button::with_label("Reload config from daemon");
-    reload.add_css_class("pill");
-    reload.set_halign(gtk::Align::Start);
-    let weak = Rc::downgrade(state);
-    reload.connect_clicked(move |_| {
-        if let Some(state) = weak.upgrade() {
-            state.reload_from_daemon();
-        }
-    });
-    actions.add(&reload);
     page.add(&actions);
 
     *state.status_widgets.borrow_mut() = Some(StatusWidgets {
@@ -474,7 +469,7 @@ pub fn preset_row(state: &Rc<AppState>, preset: &Preset, builtin: bool) -> adw::
     );
     let row = row(&preset.name, &subtitle);
 
-    let apply = gtk::Button::with_label("Apply");
+    let apply = gtk::Button::with_label("Use");
     apply.set_valign(gtk::Align::Center);
     apply.add_css_class("flat");
     let weak = Rc::downgrade(state);

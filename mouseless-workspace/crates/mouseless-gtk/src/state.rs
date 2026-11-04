@@ -1,9 +1,9 @@
-//! Application state and the validate-then-apply lifecycle.
+//! Application state and the auto-save/restart lifecycle.
 //!
-//! The GUI never persists a shadow config: every apply is validated locally,
-//! optionally checked against kanata, pushed as `Update` to the daemon, and
-//! only then becomes the new baseline. A failure keeps the previous baseline
-//! and the draft dirty so nothing is silently lost.
+//! Every edit is validated and persisted automatically with the daemon's
+//! `Save` message. `Save` does not touch the running app, so the user can
+//! experiment safely; the “Restart App” button sends `Update`, which persists
+//! and applies the current draft to the live daemon.
 
 use crate::form::Form;
 use crate::model;
@@ -28,9 +28,17 @@ struct Loaded {
     warning: Option<String>,
 }
 
-/// Result of one background apply attempt.
-enum ApplyOutcome {
-    Applied {
+/// Result of one background auto-save attempt.
+enum SaveOutcome {
+    Saved { config: Box<Config> },
+    CheckRejected(String),
+    DaemonError { code: String, message: String },
+    Unreachable(String),
+}
+
+/// Result of one background restart (persist + apply) attempt.
+enum RestartOutcome {
+    Restarted {
         config: Box<Config>,
         message: String,
         warnings: Vec<String>,
@@ -49,14 +57,26 @@ pub struct AppState {
     pub window: adw::PreferencesWindow,
     /// Editable form.
     pub form: Form,
-    /// Last applied / loaded baseline.
+    /// Last saved / loaded baseline.
     pub loaded: RefCell<Config>,
-    /// Whether the form differs from `loaded`.
+    /// Whether the form differs from the last persisted baseline.
     pub dirty: Cell<bool>,
     /// Suppress change handlers while loading widgets.
     pub loading: Cell<bool>,
-    /// An apply is in flight.
+    /// A save or restart is in flight.
     pub busy: Cell<bool>,
+    /// The in-flight operation is a restart (affects the footer label).
+    pub restarting: Cell<bool>,
+    /// Whether the running app is known to use the saved values.
+    pub live_in_sync: Cell<bool>,
+    /// Debounced auto-save source.
+    autosave_source: RefCell<Option<glib::SourceId>>,
+    /// A change arrived while a save was in flight; save again afterwards.
+    resave_pending: Cell<bool>,
+    /// Last auto-save failure shown inline on every page.
+    save_error: RefCell<Option<String>>,
+    /// Last error toast, so repeated failures do not spam the window.
+    last_error_toast: RefCell<Option<String>>,
     /// User preset directory (`~/.config/mouseless/presets`).
     pub presets_dir: PathBuf,
     /// Preset rows container (installed by the Presets page).
@@ -64,10 +84,10 @@ pub struct AppState {
     /// Rows currently shown in [`Self::presets_group`], so a refresh removes
     /// only the rows we added instead of the group's internal container.
     pub preset_rows: RefCell<Vec<adw::ActionRow>>,
-    /// "Unsaved changes" labels on each page's action group.
+    /// Save/restart status labels on each page's action group.
     pub action_labels: RefCell<Vec<gtk::Label>>,
-    /// Apply buttons on each page.
-    pub apply_buttons: RefCell<Vec<gtk::Button>>,
+    /// Restart buttons on each page.
+    pub restart_buttons: RefCell<Vec<gtk::Button>>,
     /// Revert buttons on each page.
     pub revert_buttons: RefCell<Vec<gtk::Button>>,
     /// Status page widgets (installed by the Status page).
@@ -102,11 +122,17 @@ impl AppState {
             dirty: Cell::new(false),
             loading: Cell::new(false),
             busy: Cell::new(false),
+            restarting: Cell::new(false),
+            live_in_sync: Cell::new(false),
+            autosave_source: RefCell::new(None),
+            resave_pending: Cell::new(false),
+            save_error: RefCell::new(None),
+            last_error_toast: RefCell::new(None),
             presets_dir,
             presets_group: RefCell::new(None),
             preset_rows: RefCell::new(Vec::new()),
             action_labels: RefCell::new(Vec::new()),
-            apply_buttons: RefCell::new(Vec::new()),
+            restart_buttons: RefCell::new(Vec::new()),
             revert_buttons: RefCell::new(Vec::new()),
             status_widgets: RefCell::new(None),
             config_source: RefCell::new(loaded.source),
@@ -120,15 +146,16 @@ impl AppState {
         state.window.set_visible_page_name(page.name());
         state.update_actions();
 
-        // Ctrl+Enter applies from any page; the buttons remain the discoverable
-        // path. A single global controller avoids one handler per page.
+        // Ctrl+Enter restarts the app from any page; the buttons remain the
+        // discoverable path. A single global controller avoids one handler
+        // per page.
         let controller = gtk::ShortcutController::new();
         controller.set_scope(gtk::ShortcutScope::Global);
         let action = gtk::CallbackAction::new({
             let weak = state.self_ref.clone();
             move |_, _| {
                 if let Some(state) = weak.upgrade() {
-                    state.apply();
+                    state.restart_app();
                 }
                 glib::Propagation::Stop
             }
@@ -141,6 +168,14 @@ impl AppState {
         state.window.add_controller(controller);
 
         state.refresh_presets();
+
+        let weak = Rc::downgrade(&state);
+        state.window.connect_close_request(move |_| {
+            if let Some(state) = weak.upgrade() {
+                state.flush_autosave();
+            }
+            glib::Propagation::Proceed
+        });
 
         let weak = Rc::downgrade(&state);
         state
@@ -167,32 +202,44 @@ impl AppState {
             return;
         }
         self.dirty.set(true);
+        self.live_in_sync.set(false);
+        self.save_error.replace(None);
         self.update_actions();
+        self.schedule_autosave();
     }
 
     /// Mark dirty after a programmatic draft change (preset apply).
     pub fn mark_dirty(&self) {
-        self.dirty.set(true);
-        self.update_actions();
+        self.changed();
     }
 
-    /// Update each page's action buttons and labels.
+    /// Update each page's status label and action buttons.
     pub fn update_actions(&self) {
         let label = if self.busy.get() {
-            "Applying…"
+            if self.restarting.get() {
+                "Restarting app…".to_string()
+            } else {
+                "Saving…".to_string()
+            }
+        } else if let Some(error) = self.save_error.borrow().as_deref() {
+            format!("Not saved — {error}")
         } else if self.dirty.get() {
-            "Unsaved changes"
+            "Saving…".to_string()
+        } else if self.live_in_sync.get() {
+            "Saved and applied".to_string()
         } else {
-            "All changes applied"
+            "Saved".to_string()
         };
         for label_widget in self.action_labels.borrow().iter() {
-            label_widget.set_text(label);
+            label_widget.set_text(&label);
         }
-        for button in self.apply_buttons.borrow().iter() {
-            button.set_sensitive(!self.busy.get() && self.dirty.get());
+        for button in self.restart_buttons.borrow().iter() {
+            button.set_sensitive(!self.busy.get());
         }
+        let can_revert =
+            !self.busy.get() && (self.dirty.get() || self.save_error.borrow().is_some());
         for button in self.revert_buttons.borrow().iter() {
-            button.set_sensitive(!self.busy.get() && self.dirty.get());
+            button.set_sensitive(can_revert);
         }
     }
 
@@ -201,20 +248,151 @@ impl AppState {
         self.window.add_toast(adw::Toast::new(message));
     }
 
-    /// Validate the draft and push it to the daemon.
-    pub fn apply(&self) {
-        if self.busy.get() {
+    /// Cancel a pending debounced save.
+    fn cancel_autosave(&self) {
+        if let Some(source) = self.autosave_source.borrow_mut().take() {
+            source.remove();
+        }
+    }
+
+    /// Persist the latest draft synchronously when the window closes, so the
+    /// debounce cannot drop the last edit. This still runs while another save
+    /// is in flight; both requests carry full documents, and the newest one is
+    /// sent last. Invalid drafts are left unsaved rather than blocking the
+    /// close.
+    fn flush_autosave(&self) {
+        self.cancel_autosave();
+        if !self.dirty.get() {
             return;
         }
-        if !self.dirty.get() {
-            self.toast("No changes to apply");
+        let candidate = self.form.to_config(&self.loaded.borrow());
+        if validate(&candidate).is_err() {
+            return;
+        }
+        let previous = self.loaded.borrow().clone();
+        if let SaveOutcome::Saved { config } =
+            attempt_save(&model::socket_path(), &previous, &candidate)
+        {
+            *self.loaded.borrow_mut() = *config;
+            self.dirty.set(false);
+        }
+    }
+
+    /// Debounce form changes so typing does not hit the daemon per keystroke.
+    fn schedule_autosave(&self) {
+        self.cancel_autosave();
+        let weak = self.self_ref.clone();
+        let source = glib::timeout_add_local(Duration::from_millis(350), move || {
+            if let Some(state) = weak.upgrade() {
+                state.autosave_source.borrow_mut().take();
+                state.save_now();
+            }
+            glib::ControlFlow::Break
+        });
+        *self.autosave_source.borrow_mut() = Some(source);
+    }
+
+    /// Validate the current draft and persist it without touching the running
+    /// app. Invalid drafts stay dirty and show the first issue inline.
+    pub fn save_now(&self) {
+        if self.loading.get() {
             return;
         }
         let candidate = self.form.to_config(&self.loaded.borrow());
         if let Err(error) = validate(&candidate) {
+            self.save_error.replace(Some(summarize_issues(&error)));
+            self.dirty.set(true);
+            self.update_actions();
+            return;
+        }
+        if self.busy.get() {
+            self.resave_pending.set(true);
+            return;
+        }
+        self.save_error.replace(None);
+        self.start_save(candidate);
+    }
+
+    fn start_save(&self, candidate: Config) {
+        let previous = self.loaded.borrow().clone();
+        let socket = model::socket_path();
+        self.busy.set(true);
+        self.restarting.set(false);
+        self.update_actions();
+
+        let weak = self.self_ref.clone();
+        spawn_blocking(
+            move || attempt_save(&socket, &previous, &candidate),
+            move |outcome| {
+                if let Some(state) = weak.upgrade() {
+                    state.finish_save(outcome);
+                }
+            },
+        );
+    }
+
+    fn finish_save(&self, outcome: SaveOutcome) {
+        self.busy.set(false);
+        match outcome {
+            SaveOutcome::Saved { config, .. } => {
+                *self.loaded.borrow_mut() = *config;
+                let current = self.form.to_config(&self.loaded.borrow());
+                let unchanged = current == *self.loaded.borrow();
+                self.dirty.set(!unchanged);
+                if !unchanged {
+                    self.resave_pending.set(true);
+                }
+                self.save_error.replace(None);
+                self.last_error_toast.replace(None);
+                self.config_source.replace("saved daemon config".into());
+                self.config_warning.replace(None);
+                self.refresh_status();
+            }
+            SaveOutcome::CheckRejected(message) => {
+                self.save_error
+                    .replace(Some("kanata rejected the generated include".into()));
+                self.dirty.set(true);
+                self.notify_error_once(&format!(
+                    "Not saved: kanata rejected the generated include — {message}"
+                ));
+            }
+            SaveOutcome::DaemonError { code, message } => {
+                let error = format!("{code}: {message}");
+                self.save_error.replace(Some(error.clone()));
+                self.dirty.set(true);
+                self.notify_error_once(&format!("Not saved: {error}"));
+            }
+            SaveOutcome::Unreachable(message) => {
+                self.save_error.replace(Some("daemon unreachable".into()));
+                self.dirty.set(true);
+                self.notify_error_once(&format!("Not saved: {message}"));
+            }
+        }
+        if self.resave_pending.replace(false) {
+            self.schedule_autosave();
+        }
+        self.update_actions();
+    }
+
+    fn notify_error_once(&self, message: &str) {
+        let mut last = self.last_error_toast.borrow_mut();
+        if last.as_deref() != Some(message) {
+            *last = Some(message.to_string());
+            self.toast(message);
+        }
+    }
+
+    /// Save the current values and apply them to the running app.
+    pub fn restart_app(&self) {
+        if self.busy.get() {
+            return;
+        }
+        self.cancel_autosave();
+        let candidate = self.form.to_config(&self.loaded.borrow());
+        if let Err(error) = validate(&candidate) {
             show_dialog(
                 &self.window,
-                "Configuration not applied",
+                "The app was not restarted",
                 &format!("Fix these fields first:\n\n{}", format_issues(&error)),
             );
             return;
@@ -223,30 +401,41 @@ impl AppState {
         let previous = self.loaded.borrow().clone();
         let socket = model::socket_path();
         self.busy.set(true);
+        self.restarting.set(true);
+        self.resave_pending.set(false);
         self.update_actions();
-        self.toast("Applying configuration…");
+        self.toast("Saving and restarting the app…");
 
         let weak = self.self_ref.clone();
         spawn_blocking(
-            move || attempt_apply(&socket, &previous, &candidate),
+            move || attempt_restart(&socket, &previous, &candidate),
             move |outcome| {
                 if let Some(state) = weak.upgrade() {
-                    state.finish_apply(outcome);
+                    state.finish_restart(outcome);
                 }
             },
         );
     }
 
-    fn finish_apply(&self, outcome: ApplyOutcome) {
+    fn finish_restart(&self, outcome: RestartOutcome) {
         self.busy.set(false);
+        self.restarting.set(false);
         match outcome {
-            ApplyOutcome::Applied {
+            RestartOutcome::Restarted {
                 config,
                 message,
                 warnings,
             } => {
                 *self.loaded.borrow_mut() = *config;
-                self.dirty.set(false);
+                let current = self.form.to_config(&self.loaded.borrow());
+                let unchanged = current == *self.loaded.borrow();
+                self.dirty.set(!unchanged);
+                self.live_in_sync.set(unchanged);
+                if !unchanged {
+                    self.resave_pending.set(true);
+                }
+                self.save_error.replace(None);
+                self.last_error_toast.replace(None);
                 self.config_source.replace("live daemon".into());
                 self.toast(&message);
                 for warning in warnings {
@@ -255,58 +444,64 @@ impl AppState {
                 self.config_warning.replace(None);
                 self.refresh_status();
             }
-            ApplyOutcome::CheckRejected(message) => {
+            RestartOutcome::CheckRejected(message) => {
                 show_dialog(
                     &self.window,
                     "kanata rejected the generated include",
                     &format!(
-                        "{message}\n\nThe daemon still has the previous configuration. \
-                         Fix the layer names or tap timing, then apply again."
+                        "{message}\n\nThe app still runs the previous configuration. \
+                         The saved values are kept; fix the layer names or tap timing, \
+                         then restart again."
                     ),
                 );
             }
-            ApplyOutcome::DaemonError { code, message } => {
+            RestartOutcome::DaemonError { code, message } => {
                 show_dialog(
                     &self.window,
                     "The daemon rejected the configuration",
                     &format!("{code}: {message}\n\nThe previous configuration is still live."),
                 );
             }
-            ApplyOutcome::Unreachable(message) => {
+            RestartOutcome::Unreachable(message) => {
                 show_dialog(
                     &self.window,
                     "The daemon is not reachable",
                     &format!(
                         "{message}\n\nStart the daemon with \
-                         `sudo systemctl start mouselessd`, then apply again. \
-                         The previous configuration was not changed."
+                         `sudo systemctl start mouselessd`, then restart the app. \
+                         The running configuration was not changed."
                     ),
                 );
             }
         }
+        if self.resave_pending.replace(false) {
+            self.schedule_autosave();
+        }
         self.update_actions();
     }
 
-    /// Discard the draft and reload the daemon-owned document.
+    /// Discard in-form changes and reload the daemon's saved document.
     pub fn revert(&self) {
         if self.busy.get() {
             return;
         }
-        let live = request(
+        self.cancel_autosave();
+        let saved = request(
             model::socket_path(),
             &ClientToDaemon::GetConfig,
             CLIENT_TIMEOUT,
         )
         .ok()
         .and_then(|reply| model::config_from_reply(reply).ok());
-        match live {
+        match saved {
             Some(config) => {
                 self.with_loading(|state| {
                     state.form.load(&config);
                     *state.loaded.borrow_mut() = config;
                 });
                 self.dirty.set(false);
-                self.toast("Reverted to the live configuration");
+                self.save_error.replace(None);
+                self.toast("Reverted to the saved configuration");
             }
             None => {
                 self.with_loading(|state| {
@@ -314,44 +509,9 @@ impl AppState {
                     state.form.load(&loaded);
                 });
                 self.dirty.set(false);
+                self.save_error.replace(None);
                 self.toast("Reverted unsaved changes");
             }
-        }
-        self.update_actions();
-    }
-
-    /// Ask the daemon to re-read its persisted file, then refresh the form.
-    pub fn reload_from_daemon(&self) {
-        let socket = model::socket_path();
-        match request(&socket, &ClientToDaemon::Reload, CLIENT_TIMEOUT) {
-            Ok(DaemonToClient::Ack { message }) => {
-                if let Ok(DaemonToClient::Config { config }) =
-                    request(&socket, &ClientToDaemon::GetConfig, CLIENT_TIMEOUT)
-                {
-                    self.with_loading(|state| {
-                        state.form.load(&config);
-                        *state.loaded.borrow_mut() = *config;
-                    });
-                    self.dirty.set(false);
-                }
-                self.toast(&message);
-                self.refresh_status();
-            }
-            Ok(DaemonToClient::Error { code, message }) => show_dialog(
-                &self.window,
-                "Reload failed",
-                &format!("{code}: {message}\n\nThe previous configuration is still live."),
-            ),
-            Ok(_) => show_dialog(
-                &self.window,
-                "Reload failed",
-                "The daemon sent an unexpected reply.",
-            ),
-            Err(error) => show_dialog(
-                &self.window,
-                "The daemon is not reachable",
-                &error.to_string(),
-            ),
         }
         self.update_actions();
     }
@@ -483,16 +643,16 @@ impl AppState {
         }
     }
 
-    /// Merge a preset into the current draft (behavior only) without applying.
+    /// Merge a preset into the current draft (behavior only), then auto-save.
     pub fn apply_preset(&self, preset: &Preset) {
-        // Merge against the current draft so unsaved grid/appearance edits in
+        // Merge against the current draft so pending grid/appearance edits in
         // other sections are kept; a preset only replaces `behavior`.
         let draft = self.form.to_config(&self.loaded.borrow());
         let merged = mouseless_config::merge_preset(&draft, preset);
         self.with_loading(|state| state.form.load(&merged));
         self.mark_dirty();
         self.toast(&format!(
-            "{} applied to the draft — press Apply to make it live",
+            "{} loaded — saved automatically; use Restart App to apply it",
             preset.name
         ));
     }
@@ -552,7 +712,7 @@ impl AppState {
     }
 }
 
-/// One-line-per-issue rendering shared by apply and include export.
+/// One-line-per-issue rendering shared by restart and include export.
 fn format_issues(error: &mouseless_config::ValidationError) -> String {
     error
         .issues()
@@ -562,10 +722,52 @@ fn format_issues(error: &mouseless_config::ValidationError) -> String {
         .join("\n")
 }
 
-fn attempt_apply(socket: &std::path::Path, previous: &Config, candidate: &Config) -> ApplyOutcome {
+/// Compact one-line validation error for the footer while typing.
+fn summarize_issues(error: &mouseless_config::ValidationError) -> String {
+    match error.issues().split_first() {
+        Some((first, [])) => format!("{}: {}", first.field, first.message),
+        Some((first, rest)) => format!("{}: {} (+{} more)", first.field, first.message, rest.len()),
+        None => error.to_string(),
+    }
+}
+
+/// Persist the candidate with `Save`; the running app is left untouched.
+///
+/// Kanata-affecting edits run the same include check as Restart App before
+/// they are persisted, so a rejected include cannot become the startup config.
+fn attempt_save(socket: &std::path::Path, previous: &Config, candidate: &Config) -> SaveOutcome {
+    match model::check_kanata_candidate(previous, candidate) {
+        Ok(_) => {}
+        Err(message) => return SaveOutcome::CheckRejected(message),
+    }
+    match request(
+        socket,
+        &ClientToDaemon::Save {
+            config: Box::new(candidate.clone()),
+        },
+        CLIENT_TIMEOUT,
+    ) {
+        Ok(DaemonToClient::Ack { .. }) => SaveOutcome::Saved {
+            config: Box::new(candidate.clone()),
+        },
+        Ok(DaemonToClient::Error { code, message }) => SaveOutcome::DaemonError { code, message },
+        Ok(other) => SaveOutcome::DaemonError {
+            code: "unexpected_reply".into(),
+            message: format!("{other:?}"),
+        },
+        Err(error) => SaveOutcome::Unreachable(error.to_string()),
+    }
+}
+
+/// Persist and apply the candidate with `Update` (the Restart App action).
+fn attempt_restart(
+    socket: &std::path::Path,
+    previous: &Config,
+    candidate: &Config,
+) -> RestartOutcome {
     let warnings = match model::check_kanata_candidate(previous, candidate) {
         Ok(warnings) => warnings,
-        Err(message) => return ApplyOutcome::CheckRejected(message),
+        Err(message) => return RestartOutcome::CheckRejected(message),
     };
     match request(
         socket,
@@ -574,17 +776,19 @@ fn attempt_apply(socket: &std::path::Path, previous: &Config, candidate: &Config
         },
         CLIENT_TIMEOUT,
     ) {
-        Ok(DaemonToClient::Ack { message }) => ApplyOutcome::Applied {
+        Ok(DaemonToClient::Ack { message }) => RestartOutcome::Restarted {
             config: Box::new(candidate.clone()),
             message,
             warnings,
         },
-        Ok(DaemonToClient::Error { code, message }) => ApplyOutcome::DaemonError { code, message },
-        Ok(other) => ApplyOutcome::DaemonError {
+        Ok(DaemonToClient::Error { code, message }) => {
+            RestartOutcome::DaemonError { code, message }
+        }
+        Ok(other) => RestartOutcome::DaemonError {
             code: "unexpected_reply".into(),
             message: format!("{other:?}"),
         },
-        Err(error) => ApplyOutcome::Unreachable(error.to_string()),
+        Err(error) => RestartOutcome::Unreachable(error.to_string()),
     }
 }
 
@@ -594,7 +798,7 @@ fn load_config() -> Loaded {
         Ok(reply) => match model::config_from_reply(reply) {
             Ok(config) => Loaded {
                 config,
-                source: "live daemon".into(),
+                source: "saved daemon config".into(),
                 warning: None,
             },
             Err(error) => fallback_config(Some(format!("daemon config read failed: {error}"))),
@@ -735,8 +939,12 @@ mod tests {
         dir
     }
 
-    /// A one-shot daemon that asserts the GUI sent `Update` and replies once.
-    fn fake_daemon(dir: &std::path::Path, reply: DaemonToClient) -> PathBuf {
+    /// A one-shot daemon that asserts the GUI sent `expected` and replies once.
+    fn fake_daemon(
+        dir: &std::path::Path,
+        expected: &'static str,
+        reply: DaemonToClient,
+    ) -> PathBuf {
         let socket = dir.join("daemon.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         std::thread::spawn(move || {
@@ -746,7 +954,7 @@ mod tests {
             reader.read_line(&mut line).unwrap();
             let envelope = decode(&line).unwrap();
             assert_eq!(envelope.kind, KIND_CLIENT);
-            assert_eq!(envelope.payload["type"], "Update");
+            assert_eq!(envelope.payload["type"], expected);
             let line = encode(KIND_DAEMON, &reply).unwrap();
             stream.write_all(format!("{line}\n").as_bytes()).unwrap();
         });
@@ -754,44 +962,39 @@ mod tests {
     }
 
     #[test]
-    fn apply_pushes_update_and_returns_the_ack() {
-        let dir = socket_dir("apply-ack");
+    fn save_persists_with_save_and_returns_the_ack() {
+        let dir = socket_dir("save-ack");
         let socket = fake_daemon(
             &dir,
+            "Save",
             DaemonToClient::Ack {
-                message: "configuration saved and applied".into(),
+                message: "configuration saved; restart the app to apply it".into(),
             },
         );
         let config = Config::default();
-        let outcome = attempt_apply(&socket, &config, &config);
-        match outcome {
-            ApplyOutcome::Applied {
-                config: applied,
-                message,
-                warnings,
-            } => {
-                assert_eq!(*applied, config);
-                assert_eq!(message, "configuration saved and applied");
-                assert!(warnings.is_empty());
+        match attempt_save(&socket, &config, &config) {
+            SaveOutcome::Saved { config: saved } => {
+                assert_eq!(*saved, config);
             }
-            _ => panic!("expected an applied outcome"),
+            _ => panic!("expected a saved outcome"),
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn apply_surfaces_a_daemon_rejection() {
-        let dir = socket_dir("apply-error");
+    fn save_surfaces_a_daemon_rejection() {
+        let dir = socket_dir("save-error");
         let socket = fake_daemon(
             &dir,
+            "Save",
             DaemonToClient::Error {
                 code: "invalid_config".into(),
                 message: "behavior.tap_threshold_ms: bad".into(),
             },
         );
         let config = Config::default();
-        match attempt_apply(&socket, &config, &config) {
-            ApplyOutcome::DaemonError { code, message } => {
+        match attempt_save(&socket, &config, &config) {
+            SaveOutcome::DaemonError { code, message } => {
                 assert_eq!(code, "invalid_config");
                 assert!(message.contains("tap_threshold_ms"));
             }
@@ -801,11 +1004,70 @@ mod tests {
     }
 
     #[test]
-    fn apply_reports_an_unreachable_daemon() {
-        let dir = socket_dir("apply-missing");
+    fn save_reports_an_unreachable_daemon() {
+        let dir = socket_dir("save-missing");
         let config = Config::default();
-        match attempt_apply(&dir.join("missing.sock"), &config, &config) {
-            ApplyOutcome::Unreachable(message) => assert!(!message.is_empty()),
+        match attempt_save(&dir.join("missing.sock"), &config, &config) {
+            SaveOutcome::Unreachable(message) => assert!(!message.is_empty()),
+            _ => panic!("expected an unreachable outcome"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restart_pushes_update_and_returns_the_ack() {
+        let dir = socket_dir("restart-ack");
+        let socket = fake_daemon(
+            &dir,
+            "Update",
+            DaemonToClient::Ack {
+                message: "configuration saved and applied".into(),
+            },
+        );
+        let config = Config::default();
+        match attempt_restart(&socket, &config, &config) {
+            RestartOutcome::Restarted {
+                config: applied,
+                message,
+                warnings,
+            } => {
+                assert_eq!(*applied, config);
+                assert_eq!(message, "configuration saved and applied");
+                assert!(warnings.is_empty());
+            }
+            _ => panic!("expected a restarted outcome"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restart_surfaces_a_daemon_rejection() {
+        let dir = socket_dir("restart-error");
+        let socket = fake_daemon(
+            &dir,
+            "Update",
+            DaemonToClient::Error {
+                code: "invalid_config".into(),
+                message: "behavior.tap_threshold_ms: bad".into(),
+            },
+        );
+        let config = Config::default();
+        match attempt_restart(&socket, &config, &config) {
+            RestartOutcome::DaemonError { code, message } => {
+                assert_eq!(code, "invalid_config");
+                assert!(message.contains("tap_threshold_ms"));
+            }
+            _ => panic!("expected a daemon error"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn restart_reports_an_unreachable_daemon() {
+        let dir = socket_dir("restart-missing");
+        let config = Config::default();
+        match attempt_restart(&dir.join("missing.sock"), &config, &config) {
+            RestartOutcome::Unreachable(message) => assert!(!message.is_empty()),
             _ => panic!("expected an unreachable outcome"),
         }
         let _ = std::fs::remove_dir_all(&dir);
