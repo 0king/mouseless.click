@@ -160,9 +160,11 @@ One crate, split by concern:
    for late/early/duplicate `LayerChange`. Needs human confirmation.
 2. **Defaults — resolved (2026-10-29):** `multi_click_threshold_ms 500`,
    `nudges_per_cell 4`, initial action location `screen_center`, default action
-   `click`, `hold_subgrid_for_nudge false`, `continuous_mode false`,
+   `click`,    `hold_subgrid_for_nudge false`, `continuous_mode false`,
    `hide_cursor_on_click false`, `cursor_hide_corner top_right`, wheel
    `base_lines_per_tick 1.0` / `step_size 3` / `step_size_large 10`.
+   Modifier policy on sub-cell selection: `Shift` toggles the default action
+   (click→move-only, move→left-click); `Ctrl` performs a right-click.
 3. **Production tick rate — resolved (2026-10-29):** the daemon uses a fixed
    8 ms tick (`FREE_MODE_TICK`); 1 ms sleep cap bounds jitter.
 4. **Custom free-mode input path — resolved (2026-10-29):** a dedicated

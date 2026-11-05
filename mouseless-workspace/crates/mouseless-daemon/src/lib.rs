@@ -1074,13 +1074,18 @@ where
             self.mark_shift_used(modifiers);
             self.pending_click_deadline_ms = None;
             Ok(SessionStep::Continue)
-        } else if self.config.default_action == DefaultAction::Move {
-            self.mark_shift_used(modifiers);
-            self.execute_action(ActionIntent::Move { to: target })?;
-            self.after_move()?;
-            Ok(SessionStep::Clicked)
         } else {
-            self.click_at(button, target, now_ms, modifiers)?;
+            // Shift toggles the default action for sub-cell selection:
+            // click→move-only, move→left-click. Control selects right-click.
+            let should_click =
+                (self.config.default_action == DefaultAction::Click) != modifiers.shift;
+            if should_click {
+                self.click_at(button, target, now_ms, modifiers)?;
+            } else {
+                self.mark_shift_used(modifiers);
+                self.execute_action(ActionIntent::Move { to: target })?;
+                self.after_move()?;
+            }
             Ok(SessionStep::Clicked)
         }
     }
@@ -1148,7 +1153,7 @@ where
     }
 
     fn button_for(&self, modifiers: Modifiers) -> Button {
-        if modifiers.shift && self.config.hold_for_right_button {
+        if modifiers.ctrl {
             Button::Right
         } else {
             Button::Left
@@ -3180,7 +3185,7 @@ mod tests {
     fn apply_config_maps_schema_v1_sections_and_custom_layers() {
         let file = file_config(
             "config_version: 1\n\
-             grid:\n  columns: asd\n  rows: qwe\n  subgrid:\n    columns: 2\n    rows: 2\n    keys: qwer\n  monitor_assignment: custom\n  custom_monitors: [DP-2, DP-1]\n\
+             grid:\n  columns: asdfg\n  rows: qwert\n  subgrid:\n    columns: 2\n    rows: 2\n    keys: qwer\n  monitor_assignment: custom\n  custom_monitors: [DP-2, DP-1]\n\
              behavior:\n  grid_action_level: 2\n  default_action: move\n  free_mode_after_move: true\n\
              free_mode:\n  engine: kanata\n  easing: snappy\n\
              appearance:\n  grid_color: '#112233'\n  grid_opacity: 0.5\n  label_color: '#445566'\n  highlight_color: '#778899'\n  hide_cursor_on_click: true\n  cursor_hide_corner: bottom-left\n\
@@ -3188,8 +3193,8 @@ mod tests {
         );
         let mut config = DaemonConfig::default();
         config.apply_config(&file);
-        assert_eq!(config.grid.cols, 3);
-        assert_eq!(config.grid.rows, 3);
+        assert_eq!(config.grid.cols, 5);
+        assert_eq!(config.grid.rows, 5);
         assert_eq!(config.subgrid.cols, 2);
         assert_eq!(config.subgrid.keys, vec!['q', 'w', 'e', 'r']);
         assert_eq!(config.monitor_assignment, MonitorAssignment::Custom);
