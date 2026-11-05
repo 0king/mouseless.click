@@ -211,7 +211,8 @@ fn behavior_page(state: &Rc<AppState>) -> adw::PreferencesPage {
     page.add(&timing);
 
     let modifiers = group("Modifiers", "");
-    modifiers.add(&form.hold_right);
+    modifiers.add(&form.toggle_modifier);
+    modifiers.add(&form.right_click_modifier);
     modifiers.add(&form.hold_drag);
     page.add(&modifiers);
 

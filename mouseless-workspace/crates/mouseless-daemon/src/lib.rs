@@ -287,8 +287,11 @@ pub struct DaemonConfig {
     pub hide_cursor_on_click: bool,
     /// Corner used by `hide_cursor_on_click`.
     pub cursor_hide_corner: Corner,
-    /// Shift held on the final key selects the right button.
-    pub hold_for_right_button: bool,
+    /// Modifier that toggles the default action on sub-cell selection
+    /// (click→move-only, move→left-click). Default "shift".
+    pub toggle_action_modifier: String,
+    /// Modifier that forces a right-click on sub-cell selection. Default "ctrl".
+    pub right_click_modifier: String,
     /// Alt held on the final key begins/continues a drag.
     pub hold_for_drag: bool,
     /// Where `Space` clicks before a cell selection.
@@ -332,7 +335,8 @@ impl Default for DaemonConfig {
             continuous_mode: false,
             hide_cursor_on_click: false,
             cursor_hide_corner: Corner::TopRight,
-            hold_for_right_button: true,
+            toggle_action_modifier: "shift".into(),
+            right_click_modifier: "ctrl".into(),
             hold_for_drag: true,
             initial_action_location: InitialActionLocation::ScreenCenter,
             grid_action_level: GridActionLevel::Subgrid,
@@ -443,7 +447,8 @@ impl DaemonConfig {
         self.nudges_per_cell = config.behavior.nudges_per_cell;
         self.hold_subgrid_for_nudge = config.behavior.hold_subgrid_for_nudge;
         self.continuous_mode = config.behavior.continuous_mode;
-        self.hold_for_right_button = config.behavior.hold_for_right_button;
+        self.toggle_action_modifier = config.behavior.toggle_action_modifier.clone();
+        self.right_click_modifier = config.behavior.right_click_modifier.clone();
         self.hold_for_drag = config.behavior.hold_for_drag;
 
         self.free_mode_engine = match config.free_mode.engine {
@@ -1071,24 +1076,26 @@ where
             self.execute_action(ActionIntent::Move { to: target })?;
             self.execute_action(ActionIntent::DragBegin { button })?;
             self.drag.begin(button);
-            self.mark_shift_used(modifiers);
+            self.mark_modifier_used(modifiers);
             self.pending_click_deadline_ms = None;
             Ok(SessionStep::Continue)
         } else {
             // Modifier policy on sub-cell selection:
-            //   Ctrl  → right-click (always overrides)
-            //   Shift → toggles the default action (click↔move-only)
+            //   right_click_modifier → right-click (always overrides)
+            //   toggle_action_modifier → toggles the default action
+            //                         (click↔move-only)
             //   none  → the configured default action
             let button = self.button_for(modifiers);
-            if modifiers.ctrl {
+            if self.modifier_active(&modifiers, &self.config.right_click_modifier) {
                 self.click_at(button, target, now_ms, modifiers)?;
             } else {
                 let default_is_click = self.config.default_action == DefaultAction::Click;
-                let should_click = default_is_click != modifiers.shift;
+                let toggling = self.modifier_active(&modifiers, &self.config.toggle_action_modifier);
+                let should_click = default_is_click != toggling;
                 if should_click {
                     self.click_at(button, target, now_ms, modifiers)?;
                 } else {
-                    self.mark_shift_used(modifiers);
+                    self.mark_modifier_used(modifiers);
                     self.execute_action(ActionIntent::Move { to: target })?;
                     self.after_move()?;
                 }
@@ -1160,10 +1167,30 @@ where
     }
 
     fn button_for(&self, modifiers: Modifiers) -> Button {
-        if modifiers.ctrl {
+        if self.modifier_active(&modifiers, &self.config.right_click_modifier) {
             Button::Right
         } else {
             Button::Left
+        }
+    }
+
+    /// Whether the configured modifier `name` is held in `modifiers`.
+    fn modifier_active(&self, modifiers: &Modifiers, name: &str) -> bool {
+        let name = name.trim().to_lowercase();
+        match name.as_str() {
+            "shift" => modifiers.shift,
+            "ctrl" | "control" => modifiers.ctrl,
+            "alt" => modifiers.alt,
+            "meta" | "super" => modifiers.meta,
+            _ => false,
+        }
+    }
+
+    fn mark_modifier_used(&mut self, modifiers: Modifiers) {
+        if modifiers.shift {
+            if let Some(press) = self.shift_press.as_mut() {
+                press.used = true;
+            }
         }
     }
 
@@ -1207,7 +1234,7 @@ where
         let count = self
             .click_counter
             .register(now_ms, self.config.multi_click_threshold_ms);
-        self.mark_shift_used(modifiers);
+        self.mark_modifier_used(modifiers);
         self.execute_action(ActionIntent::Move { to: target })?;
         self.execute_action(ActionIntent::Click { button, count })?;
         if self.config.hide_cursor_on_click {
@@ -1269,14 +1296,6 @@ where
         self.machine.reset_to_overlay()?;
         self.overlay.show(&model)?;
         Ok(())
-    }
-
-    fn mark_shift_used(&mut self, modifiers: Modifiers) {
-        if modifiers.shift {
-            if let Some(press) = self.shift_press.as_mut() {
-                press.used = true;
-            }
-        }
     }
 
     fn handle_free_key_event(
@@ -2978,6 +2997,75 @@ mod tests {
         };
         d.handle_key_event_at(key_mods('d', shift), 200).unwrap();
         assert_eq!(d.mouse.clicks, Vec::<MouseButton>::new());
+    }
+
+    #[test]
+    fn right_click_modifier_is_configurable() {
+        let mut d = daemon_with(
+            DaemonConfig {
+                multi_click_threshold_ms: 500,
+                right_click_modifier: "meta".into(),
+                ..Default::default()
+            },
+            layout_dual(),
+        );
+        d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
+            .unwrap();
+        d.handle_cell_key(CellKey::Char('a')).unwrap();
+        d.handle_cell_key(CellKey::Char('q')).unwrap();
+        let meta = Modifiers {
+            meta: true,
+            ..Default::default()
+        };
+        d.handle_key_event_at(key_mods('d', meta), 200).unwrap();
+        assert_eq!(d.mouse.clicks, vec![MouseButton::Right]);
+    }
+
+    #[test]
+    fn toggle_modifier_is_configurable() {
+        let mut d = daemon_with(
+            DaemonConfig {
+                multi_click_threshold_ms: 500,
+                toggle_action_modifier: "meta".into(),
+                right_click_modifier: "ctrl".into(),
+                ..Default::default()
+            },
+            layout_dual(),
+        );
+        d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
+            .unwrap();
+        d.handle_cell_key(CellKey::Char('a')).unwrap();
+        d.handle_cell_key(CellKey::Char('q')).unwrap();
+        // Default click + meta toggle → move-only, no click.
+        let meta = Modifiers {
+            meta: true,
+            ..Default::default()
+        };
+        d.handle_key_event_at(key_mods('d', meta), 200).unwrap();
+        assert_eq!(d.mouse.clicks, Vec::<MouseButton>::new());
+    }
+
+    #[test]
+    fn toggle_move_to_click() {
+        let mut d = daemon_with(
+            DaemonConfig {
+                multi_click_threshold_ms: 500,
+                default_action: DefaultAction::Move,
+                ..Default::default()
+            },
+            layout_dual(),
+        );
+        d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
+            .unwrap();
+        d.handle_cell_key(CellKey::Char('a')).unwrap();
+        d.handle_cell_key(CellKey::Char('q')).unwrap();
+        // Default move + shift toggle → left click.
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        d.handle_key_event_at(key_mods('d', shift), 200).unwrap();
+        assert_eq!(d.mouse.clicks, vec![MouseButton::Left]);
     }
 
     #[test]

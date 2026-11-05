@@ -14,7 +14,7 @@ use gtk::prelude::*;
 use libadwaita as adw;
 use mouseless_config::{
     BehaviorConfig, Config, CursorCorner, DefaultAction, Easing, Engine, GridActionLevel,
-    InitialActionLocation, MonitorAssignment, COLUMN_KEY_POOL, ROW_KEY_POOL,
+    InitialActionLocation, MonitorAssignment, ROW_KEY_POOL,
 };
 use std::rc::Rc;
 
@@ -129,8 +129,10 @@ pub struct Form {
     pub hold_subgrid: adw::SwitchRow,
     /// Keep the overlay visible after a click.
     pub continuous: adw::SwitchRow,
-    /// Shift selects the right button.
-    pub hold_right: adw::SwitchRow,
+    /// Modifier that toggles the default action (default "shift").
+    pub toggle_modifier: adw::EntryRow,
+    /// Modifier that forces a right-click (default "ctrl").
+    pub right_click_modifier: adw::EntryRow,
     /// Alt begins/continues a drag.
     pub hold_drag: adw::SwitchRow,
 
@@ -183,7 +185,7 @@ impl Form {
         let appearance = &crate::model::app_config().appearance;
         let opacity_percent = (appearance.grid_opacity * 100.0).clamp(0.0, 100.0);
         let form = Self {
-            columns: HintEntry::new("Level-1 keys (columns)", "asdfghjkl;"),
+            columns: HintEntry::new("Level-1 keys (columns)", "e.g. asdfghjkl;qwerty"),
             rows: HintEntry::new("Level-2 keys (rows)", "qwertyuiopasdfghjkl;zxcvbnm,./"),
             subgrid_columns: spin_row("Subgrid columns", 1.0, 30.0, 1.0, 0, 10.0),
             subgrid_rows: spin_row("Subgrid rows", 1.0, 10.0, 1.0, 0, 3.0),
@@ -244,11 +246,8 @@ impl Form {
                 "Keep the overlay visible after a click until Esc",
                 false,
             ),
-            hold_right: switch_row(
-                "Shift selects the right button",
-                "Hold Shift on the final key",
-                true,
-            ),
+            toggle_modifier: entry_row("Toggle default-action modifier"),
+            right_click_modifier: entry_row("Right-click modifier"),
             hold_drag: switch_row(
                 "Alt drags",
                 "Hold Alt on the final key to begin or continue a drag",
@@ -333,8 +332,10 @@ impl Form {
         self.hold_subgrid
             .set_active(config.behavior.hold_subgrid_for_nudge);
         self.continuous.set_active(config.behavior.continuous_mode);
-        self.hold_right
-            .set_active(config.behavior.hold_for_right_button);
+        self.toggle_modifier
+            .set_text(&config.behavior.toggle_action_modifier);
+        self.right_click_modifier
+            .set_text(&config.behavior.right_click_modifier);
         self.hold_drag.set_active(config.behavior.hold_for_drag);
 
         self.engine.set_selected(match config.free_mode.engine {
@@ -452,7 +453,8 @@ impl Form {
             nudges_per_cell: self.nudges.value().max(1.0) as u32,
             hold_subgrid_for_nudge: self.hold_subgrid.is_active(),
             continuous_mode: self.continuous.is_active(),
-            hold_for_right_button: self.hold_right.is_active(),
+            toggle_action_modifier: self.toggle_modifier.text().to_string(),
+            right_click_modifier: self.right_click_modifier.text().to_string(),
             hold_for_drag: self.hold_drag.is_active(),
         }
     }
@@ -537,6 +539,8 @@ impl Form {
             &self.action_key,
             &self.monitor_key,
             &self.drag_modifier,
+            &self.toggle_modifier,
+            &self.right_click_modifier,
         ] {
             let changed = changed.clone();
             entry.connect_changed(move |_| changed());
@@ -572,7 +576,6 @@ impl Form {
             &self.free_mode_after_move,
             &self.hold_subgrid,
             &self.continuous,
-            &self.hold_right,
             &self.hold_drag,
         ] {
             let changed = changed.clone();
@@ -738,5 +741,5 @@ fn easing_from_index(value: u32) -> Easing {
 
 /// Pool documented on the Grid page.
 pub fn pool_labels() -> (&'static str, &'static str) {
-    (COLUMN_KEY_POOL, ROW_KEY_POOL)
+    ("any unique ASCII keys (5–100, no esc/space)", ROW_KEY_POOL)
 }

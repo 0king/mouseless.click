@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 /// Config schema version implemented by this build.
 pub const CONFIG_VERSION: u32 = 1;
 
-/// Level-1 key pool (home row), left-to-right.
+/// Level-1 key pool (home row), left-to-right — legacy default, no longer enforced.
 pub const COLUMN_KEY_POOL: &str = "asdfghjkl;";
 /// Level-2 key pool (the full QWERTY letter block), top-to-bottom.
 pub const ROW_KEY_POOL: &str = "qwertyuiopasdfghjkl;zxcvbnm,./";
@@ -182,9 +182,13 @@ pub struct BehaviorConfig {
     /// Keep the overlay visible after a click until Esc/layer exit.
     #[serde(default)]
     pub continuous_mode: bool,
-    /// Shift held on the final key selects the right button.
-    #[serde(default = "default_true")]
-    pub hold_for_right_button: bool,
+    /// Modifier that toggles the default action on sub-cell selection
+    /// (click→move-only, move→left-click). Default "shift".
+    #[serde(default = "default_toggle_action_modifier")]
+    pub toggle_action_modifier: String,
+    /// Modifier that forces a right-click on sub-cell selection. Default "ctrl".
+    #[serde(default = "default_right_click_modifier")]
+    pub right_click_modifier: String,
     /// Alt held on the final key begins/continues a drag.
     #[serde(default = "default_true")]
     pub hold_for_drag: bool,
@@ -202,7 +206,8 @@ impl Default for BehaviorConfig {
             nudges_per_cell: default_nudges(),
             hold_subgrid_for_nudge: false,
             continuous_mode: false,
-            hold_for_right_button: true,
+            toggle_action_modifier: default_toggle_action_modifier(),
+            right_click_modifier: default_right_click_modifier(),
             hold_for_drag: true,
         }
     }
@@ -429,6 +434,14 @@ impl Default for KeybindingConfig {
             drag_modifier: default_drag_modifier(),
         }
     }
+}
+
+fn default_toggle_action_modifier() -> String {
+    "shift".into()
+}
+
+fn default_right_click_modifier() -> String {
+    "ctrl".into()
 }
 
 fn default_true() -> bool {
