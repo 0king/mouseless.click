@@ -4,6 +4,6 @@
   "description": "Draw-only grid overlay for Mouseless Linux (no input capture).",
   "shell-version": ["45", "46", "47", "48", "49", "50"],
   "version": 1,
-  "version-name": "0.1.0",
+  "version-name": "0.1.1",
   "url": "https://mouseless.click"
 }
