@@ -113,3 +113,13 @@ overflow/clamp/offsets, (6) both startup orders + exclusion assertions,
   change without a matching doc/test update is incomplete.
 - `lyr-mouse` removal stays post-MVP. wlroots/X11/label-mode stay Phase 4.
   Grid-click MVP with zero leaked keystrokes is the current definition of done.
+
+## SKILL-10 — Versioned releases
+
+- `VERSION` is the single source of truth. Never hardcode a version in a crate,
+  extension, or installer: workspace crates inherit it, and the extension's
+  `metadata.json` `version-name` plus the `extension_version` Hello field mirror
+  it. `scripts/check-version.sh` (wired into `check-platform.sh`) enforces this.
+- Every user-visible change gets a `CHANGELOG.md` entry. A release bumps the
+  mirrored version values, runs `./scripts/check-platform.sh`, commits, then
+  tags `vX.Y.Z` with an annotated tag. Never move or reuse a pushed tag.
