@@ -1075,16 +1075,23 @@ where
             self.pending_click_deadline_ms = None;
             Ok(SessionStep::Continue)
         } else {
-            // Shift toggles the default action for sub-cell selection:
-            // click→move-only, move→left-click. Control selects right-click.
-            let should_click =
-                (self.config.default_action == DefaultAction::Click) != modifiers.shift;
-            if should_click {
+            // Modifier policy on sub-cell selection:
+            //   Ctrl  → right-click (always overrides)
+            //   Shift → toggles the default action (click↔move-only)
+            //   none  → the configured default action
+            let button = self.button_for(modifiers);
+            if modifiers.ctrl {
                 self.click_at(button, target, now_ms, modifiers)?;
             } else {
-                self.mark_shift_used(modifiers);
-                self.execute_action(ActionIntent::Move { to: target })?;
-                self.after_move()?;
+                let default_is_click = self.config.default_action == DefaultAction::Click;
+                let should_click = default_is_click != modifiers.shift;
+                if should_click {
+                    self.click_at(button, target, now_ms, modifiers)?;
+                } else {
+                    self.mark_shift_used(modifiers);
+                    self.execute_action(ActionIntent::Move { to: target })?;
+                    self.after_move()?;
+                }
             }
             Ok(SessionStep::Clicked)
         }
@@ -2931,7 +2938,7 @@ mod tests {
     }
 
     #[test]
-    fn shift_used_for_right_click_does_not_switch_monitor() {
+    fn ctrl_used_for_right_click_does_not_switch_monitor() {
         let mut d = daemon_with(
             DaemonConfig {
                 multi_click_threshold_ms: 500,
@@ -2941,18 +2948,28 @@ mod tests {
         );
         d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
             .unwrap();
-        d.handle_key_event_at(
-            KeyEvent {
-                key: CellKey::ShiftLeft,
-                pressed: true,
-                modifiers: Modifiers {
-                    shift: true,
-                    ..Default::default()
-                },
+        d.handle_cell_key(CellKey::Char('a')).unwrap();
+        d.handle_cell_key(CellKey::Char('q')).unwrap();
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        d.handle_key_event_at(key_mods('d', ctrl), 200).unwrap();
+        assert_eq!(d.mouse.clicks, vec![MouseButton::Right]);
+        assert_eq!(d.active_monitor().unwrap().x, 0);
+    }
+
+    #[test]
+    fn shift_toggles_default_click_to_move_only() {
+        let mut d = daemon_with(
+            DaemonConfig {
+                multi_click_threshold_ms: 500,
+                ..Default::default()
             },
-            100,
-        )
-        .unwrap();
+            layout_dual(),
+        );
+        d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
+            .unwrap();
         d.handle_cell_key(CellKey::Char('a')).unwrap();
         d.handle_cell_key(CellKey::Char('q')).unwrap();
         let shift = Modifiers {
@@ -2960,17 +2977,7 @@ mod tests {
             ..Default::default()
         };
         d.handle_key_event_at(key_mods('d', shift), 200).unwrap();
-        assert_eq!(d.mouse.clicks, vec![MouseButton::Right]);
-        d.handle_key_event_at(
-            KeyEvent {
-                key: CellKey::ShiftLeft,
-                pressed: false,
-                modifiers: Modifiers::default(),
-            },
-            250,
-        )
-        .unwrap();
-        assert_eq!(d.active_monitor().unwrap().x, 0);
+        assert_eq!(d.mouse.clicks, Vec::<MouseButton>::new());
     }
 
     #[test]
