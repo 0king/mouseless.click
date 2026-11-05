@@ -5,7 +5,7 @@
 //! All checks are pure and allocation-bounded; no I/O.
 
 use crate::schema::{
-    Config, Engine, MonitorAssignment, COLUMN_KEY_POOL, CONFIG_VERSION, ROW_KEY_POOL,
+    Config, Engine, MonitorAssignment, CONFIG_VERSION, ROW_KEY_POOL,
 };
 use std::fmt;
 
@@ -85,13 +85,7 @@ pub fn validate(config: &Config) -> Result<(), ValidationError> {
         ));
     }
 
-    validate_keys(
-        &config.grid.columns,
-        COLUMN_KEY_POOL,
-        "grid.columns",
-        "column key",
-        &mut issues,
-    );
+    validate_column_keys(&config.grid.columns, "grid.columns", &mut issues);
     validate_keys(
         &config.grid.rows,
         ROW_KEY_POOL,
@@ -344,6 +338,52 @@ fn validate_keys(value: &str, pool: &str, field: &str, label: &str, issues: &mut
     }
 }
 
+/// Validate column keys: any unique ASCII keys, 5-100 columns, no reserved keys.
+fn validate_column_keys(value: &str, field: &str, issues: &mut Vec<Issue>) {
+    let mut seen = String::new();
+    for (index, c) in value.chars().enumerate() {
+        if !c.is_ascii() {
+            issues.push(Issue::new(
+                format!("{field}[{index}]"),
+                format!("column key {c:?} must be an ASCII character"),
+            ));
+        }
+        if c == ' ' {
+            issues.push(Issue::new(
+                format!("{field}[{index}]"),
+                format!("column key {c:?} is reserved (space is the action key)"),
+            ));
+        }
+        if seen.contains(c) {
+            issues.push(Issue::new(
+                format!("{field}[{index}]"),
+                format!("duplicate column key {c:?}"),
+            ));
+        }
+        seen.push(c);
+    }
+    // Check for "esc" as a full string (would be 3 columns: e, s, c - but reserved as exit key)
+    if value.eq_ignore_ascii_case("esc") {
+        issues.push(Issue::new(
+            field,
+            "column keys cannot be \"esc\" (reserved as exit key)",
+        ));
+    }
+    let count = value.chars().count();
+    if count < 5 || count > 100 {
+        issues.push(Issue::new(
+            field,
+            format!("must have 5-100 columns, got {count}"),
+        ));
+    }
+    if value.is_empty() {
+        issues.push(Issue::new(
+            field,
+            "at least one column key is required",
+        ));
+    }
+}
+
 fn check_speed(value: f64, field: &str, issues: &mut Vec<Issue>) {
     if !value.is_finite() || value <= 0.0 || value > 1000.0 {
         issues.push(Issue::new(
@@ -438,11 +478,27 @@ mod tests {
     #[test]
     fn key_pools_are_enforced() {
         let mut config = Config::default();
-        config.grid.columns = "aq".into(); // q is not a column key
+        // Rows still use the pool
         config.grid.rows = "qq".into(); // duplicate
         let found = issues(&config);
-        assert!(found.contains(&"grid.columns[1]".to_string()));
         assert!(found.contains(&"grid.rows[1]".to_string()));
+
+        // Columns: test new validation (any ASCII, 5-100, unique, no esc/space)
+        config.grid.columns = "aaaaa".into(); // duplicate
+        let found = issues(&config);
+        assert!(found.contains(&"grid.columns[1]".to_string()));
+
+        config.grid.columns = "a b".into(); // space is reserved
+        let found = issues(&config);
+        assert!(found.contains(&"grid.columns[1]".to_string()));
+
+        config.grid.columns = "esc".into(); // "esc" as full string is reserved
+        let found = issues(&config);
+        assert!(found.contains(&"grid.columns".to_string()));
+
+        config.grid.columns = "abcd".into(); // only 4 columns, need 5-100
+        let found = issues(&config);
+        assert!(found.contains(&"grid.columns".to_string()));
     }
 
     #[test]

@@ -6,8 +6,7 @@
 //! [`crate::pages`].
 
 use mouseless_config::{
-    parse_hex_color, render_include, AppConfig, CheckError, Config, KanataCheck, COLUMN_KEY_POOL,
-    ROW_KEY_POOL,
+    parse_hex_color, render_include, AppConfig, CheckError, Config, KanataCheck, ROW_KEY_POOL,
 };
 use mouseless_ipc::{request, ClientToDaemon, DaemonToClient};
 use mouseless_kbd::{query_current_layer, KanataTcpConfig};
@@ -134,9 +133,55 @@ pub fn pool_hint(text: &str, pool: &str) -> String {
     key_hint(text, pool, None)
 }
 
-/// Hint for `grid.columns`.
+/// Hint for `grid.columns` — 5-100 unique ASCII keys, no space; "esc" as full string reserved.
 pub fn columns_hint(text: &str) -> String {
-    pool_hint(text, COLUMN_KEY_POOL)
+    let chars: Vec<char> = text.chars().collect();
+    let mut seen: Vec<char> = Vec::new();
+    let mut duplicates: Vec<char> = Vec::new();
+    let mut invalid: Vec<char> = Vec::new();
+    let mut non_ascii: Vec<char> = Vec::new();
+    for ch in &chars {
+        if !ch.is_ascii() {
+            if !non_ascii.contains(ch) {
+                non_ascii.push(*ch);
+            }
+        } else if *ch == ' ' {
+            if !invalid.contains(ch) {
+                invalid.push(*ch);
+            }
+        } else if seen.contains(ch) {
+            if !duplicates.contains(ch) {
+                duplicates.push(*ch);
+            }
+        } else {
+            seen.push(*ch);
+        }
+    }
+
+    let mut parts = vec![format!(
+        "{} key{}",
+        chars.len(),
+        if chars.len() == 1 { "" } else { "s" }
+    )];
+    if chars.len() < 5 || chars.len() > 100 {
+        parts.push(format!("must be 5-100, got {}", chars.len()));
+    }
+    if text.eq_ignore_ascii_case("esc") {
+        parts.push("reserved: esc (exit key)".into());
+    }
+    if !non_ascii.is_empty() {
+        parts.push(format!("non-ASCII: {}", collect(&non_ascii)));
+    }
+    if !invalid.is_empty() {
+        parts.push(format!("reserved: {}", collect(&invalid)));
+    }
+    if !duplicates.is_empty() {
+        parts.push(format!("duplicates: {}", collect(&duplicates)));
+    }
+    if non_ascii.is_empty() && invalid.is_empty() && duplicates.is_empty() && !text.eq_ignore_ascii_case("esc") && chars.len() >= 5 && chars.len() <= 100 {
+        parts.push("valid".into());
+    }
+    parts.join(" · ")
 }
 
 /// Hint for `grid.rows`.
@@ -345,9 +390,10 @@ mod tests {
 
     #[test]
     fn key_hints_report_count_pool_and_duplicates() {
-        assert_eq!(columns_hint("asdf"), "4 keys · unique");
-        assert_eq!(columns_hint("asdz"), "4 keys · outside pool: z");
-        assert_eq!(columns_hint("asda"), "4 keys · duplicates: a");
+        assert_eq!(columns_hint("asdf"), "4 keys · must be 5-100, got 4");
+        assert_eq!(columns_hint("asdz"), "4 keys · must be 5-100, got 4");
+        assert_eq!(columns_hint("asda"), "4 keys · must be 5-100, got 4 · duplicates: a");
+        assert_eq!(columns_hint("asdfg"), "5 keys · valid");
         assert_eq!(subgrid_hint("qwert", 10, 3), "5 keys · needs 30 · unique");
         assert_eq!(subgrid_hint("qq", 1, 2), "2 keys · needs 2 · duplicates: q");
     }
