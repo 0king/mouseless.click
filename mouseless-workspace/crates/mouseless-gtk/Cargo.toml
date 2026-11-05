@@ -1,6 +1,6 @@
 [package]
 name = "mouseless-gtk"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "GTK4/Adwaita settings app over the GTK-free mouseless-config engine."
 license = "MIT"

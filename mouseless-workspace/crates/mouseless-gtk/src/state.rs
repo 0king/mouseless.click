@@ -14,7 +14,7 @@ use gtk::prelude::*;
 use libadwaita as adw;
 use mouseless_cli::SettingsPage;
 use mouseless_config::{validate, Config, ConfigError, ConfigStore, Preset};
-use mouseless_ipc::{request, ClientToDaemon, DaemonToClient, CLIENT_TIMEOUT};
+use mouseless_ipc::{request, ClientToDaemon, DaemonToClient};
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
@@ -489,7 +489,7 @@ impl AppState {
         let saved = request(
             model::socket_path(),
             &ClientToDaemon::GetConfig,
-            CLIENT_TIMEOUT,
+            model::client_timeout(),
         )
         .ok()
         .and_then(|reply| model::config_from_reply(reply).ok());
@@ -578,7 +578,7 @@ impl AppState {
                     .set_subtitle("unknown (daemon unreachable)");
                 widgets
                     .config_path
-                    .set_subtitle(&model::state_dir().join("config.yaml").display().to_string());
+                    .set_subtitle(&model::config_path().display().to_string());
             }
         }
         widgets.kanata.set_subtitle(&match &snapshot.kanata_layer {
@@ -745,7 +745,7 @@ fn attempt_save(socket: &std::path::Path, previous: &Config, candidate: &Config)
         &ClientToDaemon::Save {
             config: Box::new(candidate.clone()),
         },
-        CLIENT_TIMEOUT,
+        model::client_timeout(),
     ) {
         Ok(DaemonToClient::Ack { .. }) => SaveOutcome::Saved {
             config: Box::new(candidate.clone()),
@@ -774,7 +774,7 @@ fn attempt_restart(
         &ClientToDaemon::Update {
             config: Box::new(candidate.clone()),
         },
-        CLIENT_TIMEOUT,
+        model::client_timeout(),
     ) {
         Ok(DaemonToClient::Ack { message }) => RestartOutcome::Restarted {
             config: Box::new(candidate.clone()),
@@ -794,7 +794,7 @@ fn attempt_restart(
 
 fn load_config() -> Loaded {
     let socket = model::socket_path();
-    match request(&socket, &ClientToDaemon::GetConfig, CLIENT_TIMEOUT) {
+    match request(&socket, &ClientToDaemon::GetConfig, model::client_timeout()) {
         Ok(reply) => match model::config_from_reply(reply) {
             Ok(config) => Loaded {
                 config,
@@ -810,7 +810,7 @@ fn load_config() -> Loaded {
 }
 
 fn fallback_config(reason: Option<String>) -> Loaded {
-    let store = ConfigStore::for_daemon(model::state_dir());
+    let store = ConfigStore::new(model::config_path());
     let (config, error) = store.effective();
     let source = match &error {
         None => format!("last-good file ({})", store.config_path().display()),

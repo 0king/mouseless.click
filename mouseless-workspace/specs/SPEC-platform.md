@@ -35,14 +35,15 @@ verifiable by a scripted runbook.
 | `kanata/mouseless.kbd` | `/etc/kanata/mouseless.kbd` | `ml-tap` / `ml-free-tap` (`tap-hold-release 200 200` → `lyr-mouseless` / `lyr-free`), clean overlay layer (level-1 columns `a s d f g h j k l ;` + every level-2 key `qwertyuiop / asdfghjkl; / zxcvbnm,./` emitted plainly, `spc`, `esc`→base), and the custom free-mode layer (`i/k/j/l`, boosts, buttons, wheel). |
 | `kanata/UNICFG-EDITS.md` + `apply-phase11.sh` | runbook (script backs up both files, edits, `kanata --check`, restores on failure, restarts) | The 4 unicfg edits: defcfg output name + mouse exclude, `@ml-tap` and `@ml-free-tap` in `lyr-base`, `(include "mouseless.kbd")`. |
 | `systemd/kanata.service.d-override.conf` | `/etc/systemd/system/kanata.service.d/mouseless.conf` | TCP `-p 127.0.0.1:7070`, `--emergency-exit-code 1`, `Restart=on-failure` + `RestartForceExitStatus=SIGTERM` (audit W2). `SupplementaryGroups=input uinput` — additive/idempotent (a no-op when kanata-svc already has them, a fix when it does not); kanata never joins the human `mouseless` socket group. |
-| `systemd/mouselessd.service` | `/etc/systemd/system/mouselessd.service` | `After=kanata.service`, no `Requires=`; `User=mouselessd`, `Group=mouseless`, `SupplementaryGroups=input uinput`; `RuntimeDirectory=mouseless` (0770), `UMask=0007`; `Restart=on-failure`, `StartLimitIntervalSec=0`; sandboxing (`ProtectSystem=strict`, empty capability set). |
+| `../mouseless.toml` | `/etc/mouseless/mouseless.toml` | Application-level constants (paths, kanata endpoint, timeouts, device names, base layer, deep-link scheme, app id, appearance fallbacks). Read by all binaries via `--config`/`MOUSELESS_CONFIG`/default path. The installer writes `[devices]` names and `[kanata] address` into the defcfg/drop-in, then validates with `kanata --check`; re-run the installer after changing them. |
+| `systemd/mouselessd.service` | `/etc/systemd/system/mouselessd.service` | `After=kanata.service`, no `Requires=`; `ExecStart=/usr/local/bin/mouselessd` (endpoint comes from `mouseless.toml`, never the unit); `User=mouselessd`, `Group=mouseless`, `SupplementaryGroups=input uinput`; `RuntimeDirectory=mouseless` (0770), `UMask=0007`; `Restart=on-failure`, `StartLimitIntervalSec=0`; sandboxing (`ProtectSystem=strict`, empty capability set). |
 | `udev/99-mouseless.rules` | `/etc/udev/rules.d/99-mouseless.rules` | `/dev/uinput` (0660) for the existing `uinput` group (kanata + daemon) — never the human `mouseless` group. Pointer accuracy is closed-loop in the daemon, so no libinput accel override is shipped. |
 | `sysusers/mouseless.conf` | `/usr/lib/sysusers.d/mouseless.conf` | Creates the `mouseless` (overlay socket) group and system user `mouselessd` (nologin, primary group `mouseless`, supplementary `input` + `uinput`); `g uinput -` keeps kanata's existing group/GID. Idempotent; existing GIDs are preserved. |
-| `install-system.sh` | run in place as root | Installs binaries, unit, sysusers, udev, the `mouseless://` handler, docs, and applies the kanata include/drop-in. Registers the scheme for `$SUDO_USER` when possible. Backs up replaced files as `<path>.bak.YYYYmmdd-HHMMSS.<pid>`. Options: `--dry-run`, `--skip-kanata`, `--no-group-add`, `--no-start`. |
-| `install-extension.sh` | run in place as the desktop user | Packs `extension.js` + `ipc.js` + `render.js`, installs, removes the UUID from `org.gnome.shell disabled-extensions` (GNOME leaves it there after `install --force`, making `enable` a silent no-op), and enables `mouseless@sonuscape.example`. `--dry-run` supported. |
+| `install-system.sh` | run in place as root | Installs binaries, `mouseless.toml`, unit, sysusers, udev, the scheme handler, docs, and applies the kanata include/drop-in. Reads `[deep_link] scheme` and `[paths] socket` from the TOML; regenerates the `.desktop` handler when the scheme is not `mouseless`. Registers the scheme for `$SUDO_USER` when possible. Backs up replaced files as `<path>.bak.YYYYmmdd-HHMMSS.<pid>`. Options: `--dry-run`, `--skip-kanata`, `--no-group-add`, `--no-start`. |
+| `install-extension.sh` | run in place as the desktop user | Generates `config.js` from `mouseless.toml`, packs `extension.js` + `ipc.js` + `render.js` + `config.js`, installs, removes the UUID from `org.gnome.shell disabled-extensions` (GNOME leaves it there after `install --force`, making `enable` a silent no-op), and enables `mouseless@0king.dev`. `--dry-run` supported. |
 | `README.md` (this dir) | `/usr/local/share/doc/mouseless/README.md` | Install/verify/upgrade/uninstall runbook and troubleshooting. |
-| `scripts/check-platform.sh` | run in place | Asserts kanata timings/layers, unit/drop-in/udev/sysusers contents, desktop entry validity, cross-file device names and UUID, installer paths, POSIX shell syntax, and `systemd-analyze verify`. |
-| `desktop/mouseless-url-handler.desktop` | `/usr/share/applications/mouseless-url-handler.desktop` | `x-scheme-handler/mouseless` → `/usr/local/bin/mouseless %u`; the CLI accepts exact deep links, so overlay/free-mode/status links need no GUI. |
+| `scripts/check-platform.sh` | run in place | Asserts the TOML sections and cross-file sync (device names, socket, extension fallback colors, scheme), kanata timings/layers, unit/drop-in/udev/sysusers contents, desktop entry validity, UUID, installer paths, POSIX shell syntax, and `systemd-analyze verify`. |
+| `desktop/mouseless-url-handler.desktop` | `/usr/share/applications/mouseless-url-handler.desktop` | `x-scheme-handler/mouseless` → `/usr/local/bin/mouseless %u`; the installer rewrites the scheme from `mouseless.toml`; the CLI accepts exact deep links, so overlay/free-mode/status links need no GUI. |
 
 ### Kill-switch semantics (audit W2, cross-ref `SPEC-daemon.md`)
 
@@ -213,7 +214,7 @@ installed-file contracts. Phase 3 adds `platform/desktop/`.
 - [x] Live `/etc/kanata` apply + kanata restart on 2026-11-01: `kanata.service`
       active with `SupplementaryGroups=input uinput`, TCP listening on
       `127.0.0.1:7070`, `mouselessd.service` active (`uinput mouseless-mouse
-      ready`, layer `lyr-base`, overlay hello from extension 1.0.0).
+      ready`, layer `lyr-base`, overlay hello from extension 0.1.0).
 - [ ] Phase-2 smoke matrix (free mode, drag/drop, nudge, monitor switch,
       cursor hide). _Needs hands-on hotkey testing by the desktop user._
 - [x] Kanata drop-in with TCP + `SIGTERM` restart semantics (audit W2).
@@ -235,8 +236,11 @@ installed-file contracts. Phase 3 adds `platform/desktop/`.
       replaced files and supports `--skip-kanata`/`--no-group-add`/`--no-start`.
 - [x] Phase 1.3 extension install step added to the runbook
       (`gnome-extensions install` per user; Shell reload instructions).
-- [x] `--version`/`-V` on both binaries; usage errors exit `2`, operational
-      failures `1`.
+- [x] `--version`/`-V` on all three binaries; usage errors exit `2`,
+      operational failures `1`. `VERSION` is the single source of truth, the
+      Cargo workspace inherits it, and `scripts/check-version.sh` (wired into
+      `check-platform.sh`) keeps the extension metadata/Hello version in sync.
+      Releases are tagged `vX.Y.Z` and recorded in `CHANGELOG.md`.
 - [ ] Host install: run both installers, verify the service, socket, udev node,
       and extension on the primary target.
 - [x] `mouseless://` scheme handler installed by `install-system.sh`

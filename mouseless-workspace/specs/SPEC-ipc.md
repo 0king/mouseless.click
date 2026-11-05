@@ -44,6 +44,7 @@ frames never crash either side; the socket is only usable by authorized peers.
 |---|---|
 | `Show` | `{"type":"Show","model":GridModel}` |
 | `HighlightCell` | `{"type":"HighlightCell","index":0}` |
+| `HighlightColumn` | `{"type":"HighlightColumn","column":1,"cols":10}` — fade the labels of every other primary column; `{"column":null,"cols":10}` clears. Additive: peers that predate it ignore the frame and still draw the grid. |
 | `ShowSubgrid` | `{"type":"ShowSubgrid","parent":3,"model":GridModel}` |
 | `Hide` | `{"type":"Hide"}` |
 | `QueryCursor` | `{"type":"QueryCursor"}` — request a fresh cursor position before a click |
@@ -73,6 +74,10 @@ frames never crash either side; the socket is only usable by authorized peers.
   row key, e.g. `AQ`), one for a subgrid cell.
 - For `ShowSubgrid`, `model.cells` are sub-cells of `parent` and MAY carry
   different labels than level 1.
+- `HighlightColumn.column` is 0-based; the renderer derives a cell's column as
+  `cells[i].index % cols` (row-major order), so the daemon never sends bounds
+  twice. `Show`/`ShowSubgrid`/`Hide` reset the emphasis; a Shell restart
+  replays the grid frame followed by the pending `HighlightColumn`.
 - `appearance` carries the daemon-resolved `appearance:` values as RGB triples
   plus `grid_opacity` (`0.0..=1.0`). The extension only draws these values; it
   never reads config or invents colors. The field is additive: older payloads
@@ -83,7 +88,7 @@ frames never crash either side; the socket is only usable by authorized peers.
 
 | Message | Payload schema |
 |---|---|
-| `Hello` | `{"type":"Hello","extension_version":"1.0.0"}` — MUST be the first frame after connect |
+| `Hello` | `{"type":"Hello","extension_version":"0.1.0"}` — MUST be the first frame after connect; mirrors `VERSION` |
 | `Report` | `{"type":"Report","geometry":{"monitors":[{"x":0,"y":0,"w":1920,"h":1080,"scale":1.0,"primary":true,"connector":"eDP-1"}]},"cursor":{"x":960,"y":540}}` |
 | `CursorReply` | `{"type":"CursorReply","x":960,"y":540}` — response to `QueryCursor` |
 

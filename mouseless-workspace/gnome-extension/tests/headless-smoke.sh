@@ -13,7 +13,7 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-EXT_UUID=mouseless@sonuscape.example
+EXT_UUID=mouseless@0king.dev
 
 if [[ ${MOUSELESS_SMOKE_INNER:-} != 1 ]]; then
     MOUSELESS_SMOKE_INNER=1 exec dbus-run-session -- "$0" "$@"
@@ -47,7 +47,7 @@ mkdir -p "$XDG_DATA_HOME/gnome-shell/extensions/$EXT_UUID"
 (
     cd "$ROOT/gnome-extension"
     gnome-extensions pack . --force -o "$WORK" \
-        --extra-source=ipc.js --extra-source=render.js
+        --extra-source=ipc.js --extra-source=render.js --extra-source=config.js
 )
 unzip -q "$WORK/$EXT_UUID.shell-extension.zip" -d \
     "$XDG_DATA_HOME/gnome-shell/extensions/$EXT_UUID"
@@ -73,6 +73,7 @@ for needle in \
     'mock: got Hello' \
     'mock: got Report' \
     'mock: sent Show' \
+    'mock: sent HighlightColumn' \
     'mock: sent HighlightCell' \
     'mock: sent ShowSubgrid' \
     'mock: sent QueryCursor' \

@@ -37,8 +37,10 @@ SETTINGS_DESKTOP="$ROOT/platform/desktop/mouseless-settings.desktop"
 INSTALL_SYSTEM="$ROOT/platform/install-system.sh"
 INSTALL_EXT="$ROOT/platform/install-extension.sh"
 EXT_META="$ROOT/gnome-extension/metadata.json"
+EXT_CONFIG="$ROOT/gnome-extension/config.js"
 GRAB_RS="$ROOT/crates/mouseless-kbd/src/grab.rs"
 UINPUT_RS="$ROOT/crates/mouseless-mouse/src/impls/uinput.rs"
+TOML="$ROOT/mouseless.toml"
 
 fail=0
 ok() { printf 'ok   %s\n' "$1"; }
@@ -96,6 +98,42 @@ forbid_regex() {
     fi
 }
 
+# Extract one quoted string from mouseless.toml; the Rust loader is the
+# authority on validity, this only keeps platform files in sync.
+toml_value() {
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" \
+        "$TOML" | head -n 1
+}
+
+echo "== application config =="
+if [ -f "$TOML" ]; then
+    ok "mouseless.toml exists"
+else
+    bad "mouseless.toml exists"
+fi
+for section in paths kanata daemon devices layers deep_link ui appearance ipc; do
+    require_literal "$TOML" "[$section]" "mouseless.toml [$section]"
+done
+TOML_SCHEME="$(toml_value scheme)"
+TOML_SOCKET="$(toml_value socket)"
+TOML_KBD_NAME="$(toml_value kanata_output_name)"
+TOML_MOUSE_NAME="$(toml_value mouse_name)"
+TOML_INCLUDE="$(toml_value include_name)"
+TOML_ADDRESS="$(toml_value address)"
+TOML_GRID_COLOR="$(toml_value grid_color)"
+TOML_LABEL_COLOR="$(toml_value label_color)"
+TOML_HIGHLIGHT_COLOR="$(toml_value highlight_color)"
+if [ -n "$TOML_SCHEME" ] && [ -n "$TOML_SOCKET" ] && [ -n "$TOML_KBD_NAME" ] &&
+    [ -n "$TOML_MOUSE_NAME" ] && [ -n "$TOML_INCLUDE" ] &&
+    [ -n "$TOML_GRID_COLOR" ] && [ -n "$TOML_LABEL_COLOR" ] &&
+    [ -n "$TOML_HIGHLIGHT_COLOR" ] && [ -n "$TOML_ADDRESS" ]; then
+    ok "mouseless.toml has scheme/socket/device/colour values"
+else
+    bad "mouseless.toml has scheme/socket/device/include values"
+fi
+require_literal "$TOML" 'state_dir = "/var/lib/mouseless"' "state dir default"
+require_literal "$TOML" 'config_file = "config.yaml"' "settings document name"
+
 echo "== kanata include =="
 require_literal "$KBD" "ml-tap (tap-hold-release 200 200" "ml-tap 200/200"
 require_literal "$KBD" "ml-free-tap (tap-hold-release 200 200" "ml-free-tap 200/200"
@@ -117,6 +155,7 @@ require_literal "$UNIT" "RuntimeDirectoryMode=0770" "runtime directory mode"
 require_literal "$UNIT" "After=kanata.service" "ordered after kanata"
 forbid_regex "$UNIT" "^Requires=.*kanata" "no Requires= on kanata"
 require_literal "$UNIT" "ExecStart=/usr/local/bin/mouselessd" "installed daemon path"
+forbid_literal "$UNIT" "--kanata" "unit does not hardcode the kanata endpoint"
 require_literal "$UNIT" "ProtectSystem=strict" "read-only system sandbox"
 require_literal "$UNIT" "NoNewPrivileges=true" "no new privileges"
 require_literal "$UNIT" "WantedBy=multi-user.target" "install target"
@@ -181,7 +220,7 @@ fi
 
 echo "== desktop deep links =="
 require_literal "$DESKTOP" "Exec=/usr/local/bin/mouseless %u" "scheme handler passes one URL to the CLI"
-require_literal "$DESKTOP" "MimeType=x-scheme-handler/mouseless;" "registers the mouseless scheme"
+require_literal "$DESKTOP" "MimeType=x-scheme-handler/$TOML_SCHEME;" "registers the configured scheme"
 require_literal "$DESKTOP" "TryExec=/usr/local/bin/mouseless" "handler hidden when the CLI is absent"
 forbid_regex "$DESKTOP" "^Exec=.*(sh -c|bash -c)" "no shell wrapper in Exec"
 require_literal "$SETTINGS_DESKTOP" "Exec=/usr/local/bin/mouseless-settings %u" "settings launcher opens the app"
@@ -203,13 +242,26 @@ forbid_regex "$INSTALL_SYSTEM" "usermod -aG (input|uinput)" "never add a human t
 forbid_regex "$INSTALL_SYSTEM" "for _grp in mouseless input" "no combined mouseless+input group add"
 
 echo "== cross-file names =="
-require_literal "$GRAB_RS" 'pub const KANATA_OUTPUT_NAME: &str = "kanata-mouseless";' "KANATA_OUTPUT_NAME"
-require_literal "$UINPUT_RS" 'pub const UINPUT_DEVICE_NAME: &str = "mouseless-mouse";' "UINPUT_DEVICE_NAME"
-require_literal "$APPLY" 'linux-output-device-name "kanata-mouseless"' "apply sets kanata output"
-require_literal "$APPLY" 'linux-dev-names-exclude ("mouseless-mouse")' "apply excludes mouse device"
+require_literal "$GRAB_RS" "pub const KANATA_OUTPUT_NAME: &str = \"$TOML_KBD_NAME\";" "KANATA_OUTPUT_NAME matches mouseless.toml"
+require_literal "$UINPUT_RS" "pub const UINPUT_DEVICE_NAME: &str = \"$TOML_MOUSE_NAME\";" "UINPUT_DEVICE_NAME matches mouseless.toml"
+require_literal "$APPLY" 'MOUSELESS_KANATA_OUTPUT_NAME' "apply reads the configured kanata output name"
+require_literal "$APPLY" 'MOUSELESS_MOUSE_NAME' "apply reads the configured mouse name"
+require_literal "$APPLY" 'MOUSELESS_KANATA_ADDR' "apply reads the configured endpoint"
+require_literal "$APPLY" 'linux-output-device-name' "apply writes linux-output-device-name"
+require_literal "$APPLY" 'linux-dev-names-exclude' "apply writes linux-dev-names-exclude"
+require_literal "$INSTALL_SYSTEM" 'MOUSELESS_KANATA_OUTPUT_NAME' "installer passes the kanata output name"
+require_literal "$INSTALL_SYSTEM" 'MOUSELESS_MOUSE_NAME' "installer passes the mouse name"
+require_literal "$INSTALL_SYSTEM" 'MOUSELESS_KANATA_ADDR' "installer passes the endpoint"
+require_literal "$INSTALL_SYSTEM" 'install_kanata_dropin' "installer regenerates the kanata drop-in"
 require_literal "$APPLY" 'groupadd "$_grp"' "apply creates missing device groups"
-require_literal "$EXT_META" '"uuid": "mouseless@sonuscape.example"' "extension UUID"
-require_literal "$INSTALL_EXT" 'UUID="mouseless@sonuscape.example"' "installer UUID matches"
+require_literal "$EXT_META" '"uuid": "mouseless@0king.dev"' "extension UUID"
+require_literal "$EXT_CONFIG" "export const CONFIGURED_SOCKET_PATH = '$TOML_SOCKET';" "extension socket matches mouseless.toml"
+require_literal "$EXT_CONFIG" "grid_color: hex('$TOML_GRID_COLOR')" "extension grid colour matches mouseless.toml"
+require_literal "$EXT_CONFIG" "label_color: hex('$TOML_LABEL_COLOR')" "extension label colour matches mouseless.toml"
+require_literal "$EXT_CONFIG" "highlight_color: hex('$TOML_HIGHLIGHT_COLOR')" "extension highlight colour matches mouseless.toml"
+require_literal "$INSTALL_EXT" 'UUID="mouseless@0king.dev"' "installer UUID matches"
+require_literal "$INSTALL_EXT" '--extra-source=config.js' "installer packs generated config.js"
+require_literal "$INSTALL_EXT" 'CONFIGURED_SOCKET_PATH' "installer generates extension socket config"
 require_literal "$INSTALL_EXT" "--extra-source=ipc.js" "extension packs ipc.js"
 require_literal "$INSTALL_EXT" "--extra-source=render.js" "extension packs render.js"
 require_literal "$INSTALL_SYSTEM" "/usr/lib/sysusers.d/mouseless.conf" "installer sysusers path"
@@ -218,7 +270,8 @@ require_literal "$INSTALL_SYSTEM" "/usr/local/bin/mouselessd" "installer daemon 
 require_literal "$INSTALL_SYSTEM" "/usr/local/bin/mouseless-settings" "installer settings path"
 require_literal "$INSTALL_SYSTEM" "/usr/share/applications/mouseless-url-handler.desktop" "installer desktop path"
 require_literal "$INSTALL_SYSTEM" "/usr/share/applications/mouseless-settings.desktop" "installer settings desktop path"
-require_literal "$INSTALL_SYSTEM" "x-scheme-handler/mouseless" "installer registers the scheme"
+require_literal "$INSTALL_SYSTEM" "/etc/mouseless/mouseless.toml" "installer app config path"
+require_literal "$INSTALL_SYSTEM" 'x-scheme-handler/$SCHEME' "installer registers the configured scheme"
 
 echo "== scripts =="
 for _script in "$ROOT"/platform/*.sh "$ROOT"/platform/kanata/*.sh "$ROOT"/scripts/*.sh; do
@@ -259,6 +312,11 @@ if command -v systemd-analyze >/dev/null 2>&1; then
     rm -rf "$_tmp2"
 else
     echo "skip systemd-analyze verify (not installed)"
+fi
+
+echo "== version =="
+if ! "$ROOT/scripts/check-version.sh"; then
+    fail=1
 fi
 
 if [ "$fail" -ne 0 ]; then

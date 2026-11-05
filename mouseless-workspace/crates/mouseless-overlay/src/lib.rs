@@ -68,6 +68,11 @@ pub trait OverlayBackend {
     fn show(&mut self, model: &GridModel) -> Result<(), Self::Error>;
     /// Move the highlight (idempotent).
     fn highlight(&mut self, index: u32) -> Result<(), Self::Error>;
+    /// Fade every primary label except the selected column's.
+    ///
+    /// `column` is `None` to clear the emphasis (e.g. when the subgrid opens);
+    /// `cols` is the primary-grid column count. Idempotent.
+    fn highlight_column(&mut self, column: Option<u32>, cols: u32) -> Result<(), Self::Error>;
     /// Show the subgrid inside parent cell `parent` (idempotent).
     fn show_subgrid(&mut self, parent: u32, model: &GridModel) -> Result<(), Self::Error>;
     /// Hide the overlay (idempotent, best-effort).

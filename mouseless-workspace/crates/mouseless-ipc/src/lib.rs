@@ -223,6 +223,19 @@ pub enum DaemonToOverlay {
         /// Cell index in row-major order.
         index: u32,
     },
+    /// Emphasise one primary-grid column.
+    ///
+    /// The renderer keeps the selected column's labels at full opacity and
+    /// fades every other label (backgrounds are unchanged). `column` is a
+    /// 0-based column index or `None` to clear the emphasis; `cols` is the
+    /// primary grid's column count, letting the renderer derive a cell's
+    /// column from its row-major `index` without re-deriving geometry.
+    HighlightColumn {
+        /// Selected column, or `None` to clear the emphasis.
+        column: Option<u32>,
+        /// Primary-grid column count.
+        cols: u32,
+    },
     /// Show the subgrid inside a cell.
     ShowSubgrid {
         /// Parent cell index.
@@ -375,6 +388,14 @@ mod tests {
             DaemonToOverlay::Show { model: model() },
             DaemonToOverlay::Hide,
             DaemonToOverlay::HighlightCell { index: 3 },
+            DaemonToOverlay::HighlightColumn {
+                column: Some(1),
+                cols: 10,
+            },
+            DaemonToOverlay::HighlightColumn {
+                column: None,
+                cols: 10,
+            },
             DaemonToOverlay::ShowSubgrid {
                 parent: 1,
                 model: model(),

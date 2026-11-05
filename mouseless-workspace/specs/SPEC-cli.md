@@ -53,7 +53,9 @@ command**: the layer is the single source of truth (plan §1.3); the daemon
 reacts to `LayerChange`. A direct `Show` frame would desync kanata.
 
 Every verb with a deep link also accepts that exact URL as `argv[1]`
-(`mouseless://show-overlay`, trailing slash tolerated). This is what the
+(`mouseless://show-overlay`, trailing slash tolerated). The scheme is read from
+`[deep_link] scheme`; links in the configured scheme are accepted and generated
+(e.g. `ml://show-overlay` after changing the TOML). This is what the
 `.desktop` scheme handler invokes. Unknown links are usage errors (exit `2`)
 and cause no side effects; `reload` has no link because it is socket-only.
 Settings links are the only links the CLI forwards instead of handling itself;
@@ -68,9 +70,13 @@ Settings links are the only links the CLI forwards instead of handling itself;
   `mouseless: layer <name>`; `status` prints `kanata: <layer>` plus one
   `daemon:`/`overlay:`/`session:`/`free-mode:`/`config:` line when reachable.
 - Daemon unreachability is informational for `status` (kanata still prints) and
-  a failure (exit 1) for `reload`; `--socket`/`MOUSELESS_SOCKET` override the
-  path.
-- Timeouts: kanata queries ≤ 3 s; daemon socket ops ≤ 1 s.
+  a failure (exit 1) for `reload`.
+- Defaults for the endpoint, socket, deep-link scheme, settings binary, device
+  list path, and timeouts come from `mouseless.toml` (`--config` or
+  `MOUSELESS_CONFIG`). `--kanata`/`--socket` and `MOUSELESS_KANATA`/
+  `MOUSELESS_SOCKET`/`MOUSELESS_SETTINGS` still override the file.
+- Timeouts: kanata queries default to 3 s (`[kanata] query_timeout_ms`); daemon
+  socket ops default to 1 s (`[ipc] client_timeout_ms`).
 
 ### Input device listing
 

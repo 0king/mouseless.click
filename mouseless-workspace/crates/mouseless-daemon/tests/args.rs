@@ -30,3 +30,13 @@ fn unknown_arg_exits_2() {
         .expect("run mouselessd");
     assert_eq!(out.status.code(), Some(2));
 }
+
+#[test]
+fn missing_explicit_config_exits_2() {
+    let out = Command::new(bin())
+        .args(["--config", "/nonexistent/mouseless.toml"])
+        .output()
+        .expect("run mouselessd");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("app config"));
+}

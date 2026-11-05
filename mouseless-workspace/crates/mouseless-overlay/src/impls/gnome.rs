@@ -122,9 +122,15 @@ pub struct GnomeOverlay {
     visible: bool,
     last_model: Option<GridModel>,
     last_frame: Option<DaemonToOverlay>,
+    /// Column emphasis to replay after the grid frame on reconnect.
+    last_column: Option<u32>,
+    /// Primary-grid column count accompanying `last_column`.
+    last_column_count: u32,
     events: Vec<OverlayEvent>,
     next_conn_id: u64,
     next_request_id: u64,
+    /// Group allowed to connect (from `mouseless.toml`).
+    socket_group: String,
     /// Client request id → connection id, so replies survive index shifts.
     pending_requests: HashMap<u64, u64>,
 }
@@ -133,6 +139,11 @@ impl GnomeOverlay {
     /// Bind the overlay socket. Removes a stale socket file first (crash
     /// recovery); the systemd unit owns the directory.
     pub fn bind(socket_path: &str) -> Result<Self, OverlayError> {
+        Self::bind_with_group(socket_path, SOCKET_GROUP)
+    }
+
+    /// Bind with an explicit authorization group (from `mouseless.toml`).
+    pub fn bind_with_group(socket_path: &str, socket_group: &str) -> Result<Self, OverlayError> {
         if let Some(parent) = Path::new(socket_path).parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent)
@@ -145,7 +156,7 @@ impl GnomeOverlay {
         listener
             .set_nonblocking(true)
             .map_err(|e| OverlayError::Connection(format!("nonblocking: {e}")))?;
-        let allowed_gid = group_gid(SOCKET_GROUP).unwrap_or(u32::MAX);
+        let allowed_gid = group_gid(socket_group).unwrap_or(u32::MAX);
         Ok(Self {
             listener,
             clients: Vec::new(),
@@ -155,9 +166,12 @@ impl GnomeOverlay {
             visible: false,
             last_model: None,
             last_frame: None,
+            last_column: None,
+            last_column_count: 0,
             events: Vec::new(),
             next_conn_id: 1,
             next_request_id: 1,
+            socket_group: socket_group.to_string(),
             pending_requests: HashMap::new(),
         })
     }
@@ -200,8 +214,8 @@ impl GnomeOverlay {
                             let groups = peer_groups(cred.pid);
                             if !peer_allowed(cred, &groups, &self.policy) {
                                 eprintln!(
-                                    "mouselessd: overlay peer uid={} pid={} refused (not in {SOCKET_GROUP})",
-                                    cred.uid, cred.pid
+                                    "mouselessd: overlay peer uid={} pid={} refused (not in {})",
+                                    cred.uid, cred.pid, self.socket_group
                                 );
                                 continue;
                             }
@@ -398,6 +412,9 @@ impl GnomeOverlay {
     }
 
     /// Late-join replay: current frame while visible, Hide otherwise.
+    ///
+    /// A pending column emphasis is replayed right after the grid frame so a
+    /// Shell restart mid-selection restores the same dimming.
     fn replay(&mut self, idx: usize) {
         if self.clients.get(idx).and_then(|client| client.role) != Some(PeerRole::Overlay) {
             return;
@@ -407,13 +424,26 @@ impl GnomeOverlay {
         } else {
             Some(DaemonToOverlay::Hide)
         };
+        let column = if self.visible {
+            self.last_column
+                .map(|column| DaemonToOverlay::HighlightColumn {
+                    column: Some(column),
+                    cols: self.last_column_count,
+                })
+        } else {
+            None
+        };
         let (Some(client), Some(env)) = (
             self.clients.get_mut(idx),
             replay.as_ref().and_then(envelope),
         ) else {
             return;
         };
-        let _ = client.send(&env);
+        if client.send(&env) {
+            if let Some(column) = column.as_ref().and_then(envelope) {
+                let _ = client.send(&column);
+            }
+        }
     }
 
     fn broadcast(&mut self, msg: &DaemonToOverlay) -> Result<(), OverlayError> {
@@ -468,6 +498,7 @@ impl OverlayBackend for GnomeOverlay {
         self.last_frame = Some(DaemonToOverlay::Show {
             model: model.clone(),
         });
+        self.last_column = None;
         self.broadcast(&DaemonToOverlay::Show {
             model: model.clone(),
         })
@@ -480,17 +511,27 @@ impl OverlayBackend for GnomeOverlay {
         self.broadcast(&DaemonToOverlay::HighlightCell { index })
     }
 
+    fn highlight_column(&mut self, column: Option<u32>, cols: u32) -> Result<(), Self::Error> {
+        self.last_column = column;
+        self.last_column_count = cols;
+        self.broadcast(&DaemonToOverlay::HighlightColumn { column, cols })
+    }
+
     fn show_subgrid(&mut self, parent: u32, model: &GridModel) -> Result<(), Self::Error> {
         let msg = DaemonToOverlay::ShowSubgrid {
             parent,
             model: model.clone(),
         };
         self.last_frame = Some(msg.clone());
+        // The subgrid replaces the level-1 emphasis; "ShowSubgrid" resets it
+        // on the extension side, so the replay state must match.
+        self.last_column = None;
         self.broadcast(&msg)
     }
 
     fn hide(&mut self) -> Result<(), Self::Error> {
         self.visible = false;
+        self.last_column = None;
         self.broadcast(&DaemonToOverlay::Hide)
     }
 
@@ -641,8 +682,84 @@ mod tests {
             read_frame(&mut client),
             DaemonToOverlay::HighlightCell { index: 0 }
         );
+        overlay.highlight_column(Some(2), 10).unwrap();
+        assert_eq!(
+            read_frame(&mut client),
+            DaemonToOverlay::HighlightColumn {
+                column: Some(2),
+                cols: 10,
+            }
+        );
         overlay.hide().unwrap();
         assert_eq!(read_frame(&mut client), DaemonToOverlay::Hide);
+    }
+
+    /// Bug: a Shell restart while a column is pending must restore both the
+    /// grid and the column emphasis, not just the grid.
+    #[test]
+    fn reconnect_replays_pending_column_emphasis() {
+        let path = temp_socket("column-replay");
+        let path = path.to_str().unwrap();
+        let mut overlay = GnomeOverlay::bind(path).unwrap();
+
+        let mut first = UnixStream::connect(path).unwrap();
+        first.set_nonblocking(true).unwrap();
+        hello(&mut first);
+        std::thread::sleep(Duration::from_millis(50));
+        overlay.poll();
+        let _ = read_frame(&mut first); // initial Hide replay
+
+        let model = GridModel {
+            monitor: mouseless_core::Monitor {
+                x: 0,
+                y: 0,
+                w: 1920,
+                h: 1080,
+                scale: 1.0,
+            },
+            cells: vec![GridCell::new(
+                0,
+                "a",
+                mouseless_core::Rect {
+                    x: 0.0,
+                    y: 0.0,
+                    w: 480.0,
+                    h: 540.0,
+                },
+            )],
+            highlight: None,
+            appearance: Default::default(),
+        };
+        overlay.show(&model).unwrap();
+        overlay.highlight_column(Some(2), 10).unwrap();
+
+        // A fresh overlay peer (Shell restart) gets Show then the column.
+        let mut second = UnixStream::connect(path).unwrap();
+        second
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        hello(&mut second);
+        std::thread::sleep(Duration::from_millis(50));
+        overlay.poll();
+
+        let mut reader = std::io::BufReader::new(&mut second);
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let env = mouseless_ipc::decode(&line).unwrap();
+        let first_frame: DaemonToOverlay = serde_json::from_value(env.payload).unwrap();
+        assert_eq!(first_frame, DaemonToOverlay::Show { model });
+
+        line.clear();
+        reader.read_line(&mut line).unwrap();
+        let env = mouseless_ipc::decode(&line).unwrap();
+        let second_frame: DaemonToOverlay = serde_json::from_value(env.payload).unwrap();
+        assert_eq!(
+            second_frame,
+            DaemonToOverlay::HighlightColumn {
+                column: Some(2),
+                cols: 10,
+            }
+        );
     }
 
     #[test]

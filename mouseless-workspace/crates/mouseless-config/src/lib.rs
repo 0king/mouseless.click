@@ -9,6 +9,7 @@
 //! passes in. The GUI supplies the user config path; the daemon supplies its
 //! `StateDirectory` copy.
 
+pub mod appconfig;
 pub mod kanata;
 pub mod presets;
 pub mod schema;
@@ -16,6 +17,11 @@ pub mod store;
 mod util;
 pub mod validate;
 
+pub use appconfig::{
+    load_effective, AppConfig, AppConfigError, AppearanceDefaults, ConfigSource, DaemonSettings,
+    DeepLinkSettings, DevicesSettings, IpcSettings, KanataSettings, LayerSettings, LoadedAppConfig,
+    PathsConfig, UiSettings, APP_CONFIG_ENV, APP_CONFIG_PATH,
+};
 pub use kanata::{render_include, CheckError, KanataCheck, ProcessRunner, Runner};
 pub use presets::{
     apply_preset, builtin_preset, builtins, export_preset, import_preset, load_user_presets,

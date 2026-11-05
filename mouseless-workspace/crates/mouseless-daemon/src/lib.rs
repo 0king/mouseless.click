@@ -85,6 +85,77 @@ pub const MOVE_SETTLE_TIMEOUT: Duration = Duration::from_millis(20);
 /// Poll interval while waiting for a fresh cursor report.
 pub const MOVE_SETTLE_POLL: Duration = Duration::from_millis(2);
 
+/// Runtime tuning copied from `mouseless.toml` `[daemon]`.
+///
+/// The public constants above are the built-in defaults and stay the source
+/// for hermetic tests; production wiring replaces them with this struct so
+/// deployments can tune timeouts without recompiling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonTuning {
+    /// Cursor query budget before a click.
+    pub cursor_query_timeout_ms: u64,
+    /// Shift tap window for monitor switching.
+    pub monitor_switch_tap_ms: u64,
+    /// Fixed free-mode physics tick.
+    pub free_mode_tick_ms: u64,
+    /// Largest single REL step.
+    pub move_max_step_px: i32,
+    /// Divisor applied to the remaining error.
+    pub move_damping_divisor: i32,
+    /// Smallest REL step above tolerance.
+    pub move_min_step_px: i32,
+    /// Acceptable final cursor error.
+    pub move_tolerance_px: i32,
+    /// Maximum closed-loop iterations.
+    pub move_max_iterations: u32,
+    /// Consecutive no-progress queries before a stall.
+    pub move_max_stalled_steps: u32,
+    /// Stale-reply settle timeout.
+    pub move_settle_timeout_ms: u64,
+    /// Stale-reply poll interval.
+    pub move_settle_poll_ms: u64,
+}
+
+impl Default for DaemonTuning {
+    fn default() -> Self {
+        Self {
+            cursor_query_timeout_ms: CURSOR_QUERY_TIMEOUT.as_millis() as u64,
+            monitor_switch_tap_ms: MONITOR_SWITCH_TAP_MS,
+            free_mode_tick_ms: FREE_MODE_TICK.as_millis() as u64,
+            move_max_step_px: MAX_MOVE_STEP,
+            move_damping_divisor: MOVE_DAMPING_DIVISOR,
+            move_min_step_px: MOVE_MIN_STEP,
+            move_tolerance_px: MOVE_TOLERANCE_PX,
+            move_max_iterations: MAX_MOVE_ITERATIONS,
+            move_max_stalled_steps: MAX_STALLED_STEPS,
+            move_settle_timeout_ms: MOVE_SETTLE_TIMEOUT.as_millis() as u64,
+            move_settle_poll_ms: MOVE_SETTLE_POLL.as_millis() as u64,
+        }
+    }
+}
+
+impl DaemonTuning {
+    /// Cursor query budget before a click.
+    pub fn cursor_query_timeout(&self) -> Duration {
+        Duration::from_millis(self.cursor_query_timeout_ms)
+    }
+
+    /// Free-mode physics tick.
+    pub fn free_mode_tick(&self) -> Duration {
+        Duration::from_millis(self.free_mode_tick_ms)
+    }
+
+    /// Stale-reply settle timeout.
+    pub fn move_settle_timeout(&self) -> Duration {
+        Duration::from_millis(self.move_settle_timeout_ms)
+    }
+
+    /// Stale-reply poll interval.
+    pub fn move_settle_poll(&self) -> Duration {
+        Duration::from_millis(self.move_settle_poll_ms)
+    }
+}
+
 /// Daemon errors (all fallible ops return `Result` with context, plan §6).
 #[derive(Debug, Error)]
 pub enum DaemonError {
@@ -178,6 +249,14 @@ pub struct DaemonConfig {
     pub kanata_addr: String,
     /// Overlay socket path ([`mouseless_ipc::SOCKET_PATH`]).
     pub socket_path: String,
+    /// Neutral kanata layer restored on exit.
+    pub base_layer: String,
+    /// Kanata virtual output device name grabbed while the overlay is up.
+    pub grab_device_name: String,
+    /// Loop timeouts and closed-loop movement tuning.
+    pub tuning: DaemonTuning,
+    /// Log every closed-loop movement step.
+    pub debug_move: bool,
     /// Primary two-level grid: 10 columns × 30 rows by default, each cell
     /// labelled with its column key followed by its row key (e.g. `AQ`).
     pub grid: PrimaryGrid,
@@ -235,6 +314,10 @@ impl Default for DaemonConfig {
             overlay_backend: "gnome".into(),
             kanata_addr: "127.0.0.1:7070".into(),
             socket_path: mouseless_ipc::SOCKET_PATH.into(),
+            base_layer: BASE_LAYER.into(),
+            grab_device_name: mouseless_kbd::KANATA_OUTPUT_NAME.into(),
+            tuning: DaemonTuning::default(),
+            debug_move: false,
             grid: default_grid(),
             subgrid: default_subgrid(),
             monitor_assignment: MonitorAssignment::Auto,
@@ -263,6 +346,45 @@ impl Default for DaemonConfig {
 }
 
 impl DaemonConfig {
+    /// Apply application-level values from `mouseless.toml`.
+    ///
+    /// User settings (`config.yaml`) are applied afterwards and win for the
+    /// sections they define; the daemon calls this first so a missing settings
+    /// document still gets the configured appearance and paths.
+    pub fn apply_app_config(&mut self, app: &mouseless_config::AppConfig) {
+        self.kanata_addr = app.kanata.address.clone();
+        self.socket_path = app.paths.socket.clone();
+        self.base_layer = app.layers.base.clone();
+        self.grab_device_name = app.devices.kanata_output_name.clone();
+        self.debug_move = app.daemon.debug_move;
+        self.tuning = DaemonTuning {
+            cursor_query_timeout_ms: app.daemon.cursor_query_timeout_ms,
+            monitor_switch_tap_ms: app.daemon.monitor_switch_tap_ms,
+            free_mode_tick_ms: app.daemon.free_mode_tick_ms,
+            move_max_step_px: app.daemon.move_max_step_px,
+            move_damping_divisor: app.daemon.move_damping_divisor,
+            move_min_step_px: app.daemon.move_min_step_px,
+            move_tolerance_px: app.daemon.move_tolerance_px,
+            move_max_iterations: app.daemon.move_max_iterations,
+            move_max_stalled_steps: app.daemon.move_max_stalled_steps,
+            move_settle_timeout_ms: app.daemon.move_settle_timeout_ms,
+            move_settle_poll_ms: app.daemon.move_settle_poll_ms,
+        };
+        let fallback = GridAppearance::default();
+        self.appearance = GridAppearance {
+            grid_color: parse_hex_color(&app.appearance.grid_color).unwrap_or(fallback.grid_color),
+            grid_opacity: if app.appearance.grid_opacity.is_finite() {
+                app.appearance.grid_opacity.clamp(0.0, 1.0)
+            } else {
+                fallback.grid_opacity
+            },
+            label_color: parse_hex_color(&app.appearance.label_color)
+                .unwrap_or(fallback.label_color),
+            highlight_color: parse_hex_color(&app.appearance.highlight_color)
+                .unwrap_or(fallback.highlight_color),
+        };
+    }
+
     /// Copy the user-facing schema-v1 sections into the runtime config.
     ///
     /// Backend selection, socket path, and kanata address are daemon-owned and
@@ -428,7 +550,7 @@ pub struct Daemon<K, M, O, G = CellGrab> {
     config: DaemonConfig,
     machine: OverlayMachine,
     grab: Option<G>,
-    grab_factory: fn() -> Result<G, KbdError>,
+    grab_factory: fn(&str) -> Result<G, KbdError>,
     selected_cell: Option<u32>,
     /// Pending level-1 column while a two-key cell selection is in progress.
     pending_column: Option<u32>,
@@ -460,13 +582,13 @@ where
             mouse,
             overlay,
             DaemonConfig::default(),
-            CellGrab::acquire,
+            CellGrab::acquire_named,
         )
     }
 
     /// Wire backends with an explicit config (grid/monitor paths).
     pub fn with_config(kbd: K, mouse: M, overlay: O, config: DaemonConfig) -> Self {
-        Self::with_grab(kbd, mouse, overlay, config, CellGrab::acquire)
+        Self::with_grab(kbd, mouse, overlay, config, CellGrab::acquire_named)
     }
 }
 
@@ -479,14 +601,16 @@ where
 {
     /// Wire backends with an explicit config and grab factory.
     ///
-    /// Production passes [`mouseless_kbd::EvdevCellGrab::acquire`]; tests pass
-    /// a fake factory so no `/dev/input` access is needed.
+    /// Production passes [`mouseless_kbd::EvdevCellGrab::acquire_named`]; the
+    /// daemon calls it with [`DaemonConfig::grab_device_name`] (from
+    /// `mouseless.toml`). Tests pass a fake factory so no `/dev/input` access
+    /// is needed.
     pub fn with_grab(
         kbd: K,
         mouse: M,
         overlay: O,
         config: DaemonConfig,
-        grab_factory: fn() -> Result<G, KbdError>,
+        grab_factory: fn(&str) -> Result<G, KbdError>,
     ) -> Self {
         debug_assert!(config.grid.validate().is_ok(), "invalid primary grid");
         debug_assert!(config.subgrid.validate().is_ok(), "invalid subgrid");
@@ -571,7 +695,7 @@ where
         self.teardown(false);
         // Grab before showing: if the grab fails, the user sees no overlay
         // and typing continues on the base layer (plan §5 rule 5).
-        match (self.grab_factory)() {
+        match (self.grab_factory)(&self.config.grab_device_name) {
             Ok(grab) => self.grab = Some(grab),
             Err(KbdError::Busy) => return Err(DaemonError::Kbd(KbdError::Busy)),
             Err(e) => {
@@ -627,7 +751,7 @@ where
                 &self.config.custom_monitors,
             )
         });
-        match (self.grab_factory)() {
+        match (self.grab_factory)(&self.config.grab_device_name) {
             Ok(grab) => self.grab = Some(grab),
             Err(KbdError::Busy) => return Err(DaemonError::Kbd(KbdError::Busy)),
             Err(e) => {
@@ -683,7 +807,7 @@ where
         let _ = self.machine.hide();
         let _ = self.overlay.hide();
         if restore_base {
-            let _ = self.kbd.set_layer(BASE_LAYER);
+            let _ = self.kbd.set_layer(&self.config.base_layer);
         }
     }
 
@@ -792,6 +916,13 @@ where
             CellKey::ArrowRight => self.nudge(NudgeDirection::Right),
             CellKey::Space => self.handle_space(ev.modifiers, now_ms),
             CellKey::Char(c) => self.handle_char(c, ev.modifiers, now_ms),
+            // A key outside the 30-character cell vocabulary is an explicit
+            // "I meant to type, not click" gesture: dismiss the overlay so
+            // the grabbed key cannot be swallowed silently.
+            CellKey::Other => {
+                self.cancel_overlay();
+                Ok(SessionStep::Exit)
+            }
         }
     }
 
@@ -803,7 +934,7 @@ where
         if matches!(ev.key, CellKey::ShiftLeft | CellKey::ShiftRight) {
             if let Some(press) = self.shift_press.take() {
                 let duration = now_ms.saturating_sub(press.at_ms);
-                if !press.used && duration <= MONITOR_SWITCH_TAP_MS {
+                if !press.used && duration <= self.config.tuning.monitor_switch_tap_ms {
                     let direction = if ev.key == CellKey::ShiftLeft {
                         MonitorDirection::Left
                     } else {
@@ -850,6 +981,11 @@ where
                 None => {
                     if let Some(column) = self.config.grid.column_of(c) {
                         self.pending_column = Some(column);
+                        // Emphasise the chosen column: its labels stay at
+                        // full opacity while every other column's labels
+                        // fade. The backgrounds are unchanged.
+                        self.overlay
+                            .highlight_column(Some(column), self.config.grid.cols)?;
                     }
                 }
                 Some(column) => {
@@ -1001,7 +1137,7 @@ where
             }
             InitialActionLocation::SystemCursor => {
                 let cursor = self
-                    .refresh_cursor(CURSOR_QUERY_TIMEOUT)
+                    .refresh_cursor(self.config.tuning.cursor_query_timeout())
                     .ok_or(DaemonError::NoCursor)?;
                 Ok(Point {
                     x: cursor.x as f64,
@@ -1261,27 +1397,31 @@ where
     /// [`MOVE_TOLERANCE_PX`]. Failure is explicit ([`DaemonError::MoveStalled`])
     /// so callers never click at a guessed position.
     fn move_to(&mut self, to: Point) -> Result<(), DaemonError> {
-        let debug = std::env::var_os("MOUSELESS_DEBUG_MOVE").is_some();
+        let debug = self.config.debug_move || std::env::var_os("MOUSELESS_DEBUG_MOVE").is_some();
         let target = (to.x.round() as i32, to.y.round() as i32);
         let start = self
-            .refresh_cursor(CURSOR_QUERY_TIMEOUT)
+            .refresh_cursor(self.config.tuning.cursor_query_timeout())
             .ok_or(DaemonError::NoCursor)?;
         let mut cursor = start;
         let mut steps = 0u32;
         let mut stalled = 0u32;
         loop {
             let (dx, dy) = mouseless_mouse::compute_delta(target, (cursor.x, cursor.y));
-            if dx.saturating_abs() <= MOVE_TOLERANCE_PX && dy.saturating_abs() <= MOVE_TOLERANCE_PX
+            if dx.saturating_abs() <= self.config.tuning.move_tolerance_px
+                && dy.saturating_abs() <= self.config.tuning.move_tolerance_px
             {
                 break;
             }
-            if steps >= MAX_MOVE_ITERATIONS {
+            if steps >= self.config.tuning.move_max_iterations {
                 return Err(DaemonError::MoveStalled {
                     target,
                     cursor: (cursor.x, cursor.y),
                 });
             }
-            let step = (damped_step(dx), damped_step(dy));
+            let step = (
+                damped_step(dx, &self.config.tuning),
+                damped_step(dy, &self.config.tuning),
+            );
             let from = cursor;
             self.mouse.move_rel(step.0, step.1)?;
             steps += 1;
@@ -1296,7 +1436,7 @@ where
             }
             if next == cursor {
                 stalled += 1;
-                if stalled >= MAX_STALLED_STEPS {
+                if stalled >= self.config.tuning.move_max_stalled_steps {
                     return Err(DaemonError::MoveStalled {
                         target,
                         cursor: (next.x, next.y),
@@ -1329,7 +1469,7 @@ where
     /// multi-click/drag/continuous policies stay in one place.
     pub fn click_target(&mut self, button: MouseButton, target: Point) -> Result<(), DaemonError> {
         let cursor = self
-            .refresh_cursor(CURSOR_QUERY_TIMEOUT)
+            .refresh_cursor(self.config.tuning.cursor_query_timeout())
             .ok_or(DaemonError::NoCursor)?;
         self.click_relative(
             button,
@@ -1370,17 +1510,17 @@ where
     /// [`MOVE_SETTLE_TIMEOUT`] expires. This is only a guard; the closed loop
     /// itself is stabilized by [`MOVE_DAMPING_DIVISOR`].
     fn refresh_cursor_after_move(&mut self, previous: CursorPos) -> Option<CursorPos> {
-        let first = self.refresh_cursor(CURSOR_QUERY_TIMEOUT)?;
+        let first = self.refresh_cursor(self.config.tuning.cursor_query_timeout())?;
         if first != previous {
             return Some(first);
         }
-        let deadline = Instant::now() + MOVE_SETTLE_TIMEOUT;
+        let deadline = Instant::now() + self.config.tuning.move_settle_timeout();
         loop {
             if Instant::now() >= deadline {
                 return Some(first);
             }
-            std::thread::sleep(MOVE_SETTLE_POLL);
-            let next = self.refresh_cursor(CURSOR_QUERY_TIMEOUT)?;
+            std::thread::sleep(self.config.tuning.move_settle_poll());
+            let next = self.refresh_cursor(self.config.tuning.cursor_query_timeout())?;
             if next != previous {
                 return Some(next);
             }
@@ -1550,16 +1690,16 @@ where
 /// Halves the error (stable under the compositor's ~2× acceleration) and
 /// enforces a two-pixel floor so a sub-unity gain cannot swallow the last few
 /// pixels and masquerade as a stalled cursor.
-fn damped_step(delta: i32) -> i32 {
-    let half = delta / MOVE_DAMPING_DIVISOR;
+fn damped_step(delta: i32, tuning: &DaemonTuning) -> i32 {
+    let half = delta / tuning.move_damping_divisor;
     let step = if delta == 0 {
         0
-    } else if half.saturating_abs() < MOVE_MIN_STEP {
-        delta.signum() * MOVE_MIN_STEP
+    } else if half.saturating_abs() < tuning.move_min_step_px {
+        delta.signum() * tuning.move_min_step_px
     } else {
         half
     };
-    step.clamp(-MAX_MOVE_STEP, MAX_MOVE_STEP)
+    step.clamp(-tuning.move_max_step_px, tuning.move_max_step_px)
 }
 
 fn map_button(button: Button) -> MouseButton {
@@ -1798,7 +1938,7 @@ mod tests {
         }
     }
 
-    fn fake_grab() -> Result<FakeCellGrab, KbdError> {
+    fn fake_grab(_name: &str) -> Result<FakeCellGrab, KbdError> {
         Ok(FakeCellGrab::new())
     }
 
@@ -2102,6 +2242,41 @@ mod tests {
         assert_near(d.mouse.click_positions[0], (48, 18));
         assert_eq!(d.mouse.clicks, vec![MouseButton::Left]);
         assert!(!d.overlay_visible());
+        assert!(!d.grab_held());
+        assert_eq!(d.kbd.set_layer_calls, vec![BASE_LAYER.to_string()]);
+    }
+
+    /// Bug: after the first cell key the overlay must show which column was
+    /// chosen. The renderer dims every *other* column's labels; the daemon
+    /// drives that emphasis and the subgrid/open paths clear it.
+    #[test]
+    fn column_key_emphasises_its_column_until_the_subgrid_opens() {
+        let mut d = daemon();
+        d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
+            .unwrap();
+        d.handle_cell_key(CellKey::Char('a')).unwrap();
+        assert_eq!(d.overlay().highlighted_column, Some(0));
+        assert_eq!(d.overlay().highlighted_column_count, 10);
+        // With column 0 pending, the next cell key resolves as a row. 'f'
+        // opens the subgrid, which replaces (and clears) the level-1 emphasis.
+        d.handle_cell_key(CellKey::Char('f')).unwrap();
+        assert_eq!(d.phase(), Phase::Subgrid);
+        assert_eq!(d.overlay().highlighted_column, None);
+    }
+
+    /// Bug: a tap outside the cell vocabulary must dismiss the overlay, not
+    /// leave the grab swallowing every subsequent keystroke.
+    #[test]
+    fn other_key_dismisses_overlay_and_releases_grab() {
+        let mut d = daemon();
+        d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
+            .unwrap();
+        assert_eq!(
+            d.handle_cell_key(CellKey::Other).unwrap(),
+            SessionStep::Exit
+        );
+        assert!(!d.overlay_visible());
+        assert!(!d.overlay.visible);
         assert!(!d.grab_held());
         assert_eq!(d.kbd.set_layer_calls, vec![BASE_LAYER.to_string()]);
     }
@@ -2549,13 +2724,13 @@ mod tests {
 
     #[test]
     fn damped_step_halves_and_floors() {
-        assert_eq!(damped_step(80), 40);
-        assert_eq!(damped_step(-80), -40);
-        assert_eq!(damped_step(3), 2);
-        assert_eq!(damped_step(-3), -2);
-        assert_eq!(damped_step(1000), MAX_MOVE_STEP);
-        assert_eq!(damped_step(-1000), -MAX_MOVE_STEP);
-        assert_eq!(damped_step(0), 0);
+        assert_eq!(damped_step(80, &DaemonTuning::default()), 40);
+        assert_eq!(damped_step(-80, &DaemonTuning::default()), -40);
+        assert_eq!(damped_step(3, &DaemonTuning::default()), 2);
+        assert_eq!(damped_step(-3, &DaemonTuning::default()), -2);
+        assert_eq!(damped_step(1000, &DaemonTuning::default()), MAX_MOVE_STEP);
+        assert_eq!(damped_step(-1000, &DaemonTuning::default()), -MAX_MOVE_STEP);
+        assert_eq!(damped_step(0, &DaemonTuning::default()), 0);
     }
 
     #[test]
@@ -3037,6 +3212,34 @@ mod tests {
         d.on_layer_event(LayerEvent::LayerChanged("lyr-custom".into()))
             .unwrap();
         assert!(d.overlay_visible());
+    }
+
+    #[test]
+    fn apply_app_config_maps_paths_devices_tuning_and_appearance() {
+        let mut app = mouseless_config::AppConfig::default();
+        app.kanata.address = "127.0.0.1:7777".into();
+        app.paths.socket = "/tmp/mouseless-test.sock".into();
+        app.layers.base = "base-x".into();
+        app.devices.kanata_output_name = "kbd-x".into();
+        app.daemon.free_mode_tick_ms = 16;
+        app.daemon.move_tolerance_px = 5;
+        app.daemon.debug_move = true;
+        app.appearance.grid_color = "#112233".into();
+
+        let mut config = DaemonConfig::default();
+        config.apply_app_config(&app);
+        assert_eq!(config.kanata_addr, "127.0.0.1:7777");
+        assert_eq!(config.socket_path, "/tmp/mouseless-test.sock");
+        assert_eq!(config.base_layer, "base-x");
+        assert_eq!(config.grab_device_name, "kbd-x");
+        assert_eq!(config.tuning.free_mode_tick_ms, 16);
+        assert_eq!(config.tuning.move_tolerance_px, 5);
+        assert!(config.debug_move);
+        assert_eq!(config.appearance.grid_color, [0x11, 0x22, 0x33]);
+        assert_eq!(
+            config.appearance.label_color,
+            GridAppearance::default().label_color
+        );
     }
 
     #[test]

@@ -8,7 +8,12 @@
 //! 3. On acquire, snapshots `EVIOCGKEY` ([`evdev::Device::get_key_state`]); if
 //!    any key is already down it returns [`KbdError::Busy`] so the caller
 //!    retries instead of creating a stuck key (audit G6).
-//! 4. [`Drop`] drains pending events, then `ungrab`s (best-effort) before the
+//! 4. Sets `O_NONBLOCK` so the daemon session loop can poll keys, TCP layer
+//!    events, and its own timers in the same thread. A blocking fd would park
+//!    the loop until the next key event: the multi-click deadline would never
+//!    expire and Esc (which only switches layers in kanata, emitting no key)
+//!    would not be observed until the *next* key press.
+//! 5. [`Drop`] drains pending events, then `ungrab`s (best-effort) before the
 //!    fd closes. The kernel also guarantees grab release on fd close, even on
 //!    SIGKILL — defense in depth.
 
@@ -42,6 +47,12 @@ pub enum CellKey {
     ArrowLeft,
     /// Right arrow (subgrid nudge).
     ArrowRight,
+    /// Any other non-modifier key (digits, Enter, Tab, function keys, …).
+    ///
+    /// The overlay session treats this as an explicit "not a cell key"
+    /// gesture and dismisses itself. Modifiers (Ctrl/Alt/Meta) are filtered
+    /// out in [`translate_key`] and never produce this variant.
+    Other,
 }
 
 /// Modifier state at the time of a key event.
@@ -79,10 +90,27 @@ pub struct KeyEvent {
     pub modifiers: Modifiers,
 }
 
-/// Translate a kernel key code to a [`CellKey`]. `None` = not an overlay key
-/// (modifiers, function keys, … — consumed silently while grabbed).
+/// Translate a kernel key code to a [`CellKey`].
+///
+/// `None` is reserved for pure modifiers (Ctrl/Alt/Meta) and keys the grab
+/// never sees. Every other key becomes `Some(_)`: keys outside the 30-cell
+/// character set map to [`CellKey::Other`] so the overlay can dismiss on a
+/// stray tap instead of silently swallowing it.
 pub fn translate_key(code: evdev::KeyCode) -> Option<CellKey> {
     use evdev::KeyCode;
+    // Modifier-only presses are state, not a key choice; they must not
+    // dismiss the overlay (Alt/Shift are used by the drag/right-click paths).
+    if matches!(
+        code,
+        KeyCode::KEY_LEFTCTRL
+            | KeyCode::KEY_RIGHTCTRL
+            | KeyCode::KEY_LEFTALT
+            | KeyCode::KEY_RIGHTALT
+            | KeyCode::KEY_LEFTMETA
+            | KeyCode::KEY_RIGHTMETA
+    ) {
+        return None;
+    }
     Some(match code {
         // Overlay level-2 rows: the complete QWERTY letter block, so every
         // cell label is typeable while the overlay grab is held.
@@ -124,7 +152,7 @@ pub fn translate_key(code: evdev::KeyCode) -> Option<CellKey> {
         KeyCode::KEY_DOWN => CellKey::ArrowDown,
         KeyCode::KEY_LEFT => CellKey::ArrowLeft,
         KeyCode::KEY_RIGHT => CellKey::ArrowRight,
-        _ => return None,
+        _ => CellKey::Other,
     })
 }
 
@@ -166,6 +194,14 @@ impl EvdevCellGrab {
         let path = find_output_device(name)?;
         let device = evdev::Device::open(&path)
             .map_err(|e| KbdError::Io(format!("open {}: {e}", path.display())))?;
+        // The daemon runs a single-threaded session loop: grabbed keys, the
+        // kanata TCP socket, and the 8 ms action tick all share one thread.
+        // A blocking fd would park that loop until the next key and starve
+        // the tick (overlay never auto-hides) and LayerChange (Esc only
+        // switches layers, so it emits no key at all).
+        device
+            .set_nonblocking(true)
+            .map_err(|e| KbdError::Io(format!("nonblocking {}: {e}", path.display())))?;
         let mut grab = Self {
             device: Some(device),
             pending: std::collections::VecDeque::new(),
@@ -203,9 +239,13 @@ impl EvdevCellGrab {
             .device
             .as_mut()
             .ok_or_else(|| KbdError::Unavailable("grab released".into()))?;
-        let events = device
-            .fetch_events()
-            .map_err(|e| KbdError::Io(format!("fetch: {e}")))?;
+        // Nonblocking fd: no pending event is a normal empty poll, not an
+        // error. The daemon relies on `Ok(None)` to reach its tick/TCP poll.
+        let events = match device.fetch_events() {
+            Ok(events) => events,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return Ok(None),
+            Err(e) => return Err(KbdError::Io(format!("fetch: {e}"))),
+        };
         for ev in events {
             if let evdev::EventSummary::Key(_, code, value) = ev.destructure() {
                 match value {
@@ -324,7 +364,6 @@ mod tests {
         assert_eq!(translate_key(KeyCode::KEY_SPACE), Some(CellKey::Space));
         assert_eq!(translate_key(KeyCode::KEY_ESC), Some(CellKey::Escape));
         assert_eq!(translate_key(KeyCode::KEY_Q), Some(CellKey::Char('q')));
-        assert_eq!(translate_key(KeyCode::KEY_1), None); // not an overlay key
         assert_eq!(
             translate_key(KeyCode::KEY_LEFTSHIFT),
             Some(CellKey::ShiftLeft)
@@ -335,6 +374,40 @@ mod tests {
         );
         assert_eq!(translate_key(KeyCode::KEY_UP), Some(CellKey::ArrowUp));
         assert_eq!(translate_key(KeyCode::KEY_SLASH), Some(CellKey::Char('/')));
+    }
+
+    /// Bug regression: a tap outside the 30-character cell vocabulary must
+    /// reach the daemon so the overlay can dismiss. Modifier-only presses are
+    /// still swallowed (Shift/Alt are action modifiers).
+    #[test]
+    fn keys_outside_the_character_set_are_other() {
+        use evdev::KeyCode;
+        for code in [
+            KeyCode::KEY_1,
+            KeyCode::KEY_0,
+            KeyCode::KEY_ENTER,
+            KeyCode::KEY_TAB,
+            KeyCode::KEY_BACKSPACE,
+            KeyCode::KEY_GRAVE,
+            KeyCode::KEY_LEFTBRACE,
+            KeyCode::KEY_APOSTROPHE,
+            KeyCode::KEY_F1,
+            KeyCode::KEY_F12,
+            KeyCode::KEY_CAPSLOCK,
+            KeyCode::KEY_DELETE,
+        ] {
+            assert_eq!(translate_key(code), Some(CellKey::Other), "{code:?}");
+        }
+        for code in [
+            KeyCode::KEY_LEFTCTRL,
+            KeyCode::KEY_RIGHTCTRL,
+            KeyCode::KEY_LEFTALT,
+            KeyCode::KEY_RIGHTALT,
+            KeyCode::KEY_LEFTMETA,
+            KeyCode::KEY_RIGHTMETA,
+        ] {
+            assert_eq!(translate_key(code), None, "{code:?}");
+        }
     }
 
     #[test]

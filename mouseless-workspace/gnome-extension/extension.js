@@ -25,7 +25,7 @@ import {
 } from './ipc.js';
 import {OverlayActor} from './render.js';
 
-const EXTENSION_VERSION = '1.0.0';
+const EXTENSION_VERSION = '0.1.0';
 
 export default class MouselessOverlayExtension {
     constructor() {
@@ -138,6 +138,13 @@ export default class MouselessOverlayExtension {
         case 'HighlightCell':
             if (Number.isInteger(message.index))
                 this._overlay.highlight(message.index);
+            break;
+        case 'HighlightColumn':
+            // `column: null` clears; a valid emphasis needs both ids.
+            if (message.column === null ||
+                (Number.isInteger(message.column) &&
+                 Number.isInteger(message.cols) && message.cols > 0))
+                this._overlay.highlightColumn(message.column, message.cols);
             break;
         case 'Hide':
             this._overlay.hide();

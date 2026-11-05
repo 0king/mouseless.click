@@ -431,6 +431,24 @@ fn status_page(state: &Rc<AppState>) -> adw::PreferencesPage {
     source.add(&warning);
     page.add(&source);
 
+    let application = group("Application", "Version of this settings front end.");
+    let app_version = row(
+        "Mouseless",
+        &format!("version {}", env!("CARGO_PKG_VERSION")),
+    );
+    application.add(&app_version);
+    let about = gtk::Button::with_label("About Mouseless");
+    about.add_css_class("pill");
+    about.set_halign(gtk::Align::Start);
+    let weak = Rc::downgrade(state);
+    about.connect_clicked(move |_| {
+        if let Some(state) = weak.upgrade() {
+            show_about(&state.window);
+        }
+    });
+    application.add(&about);
+    page.add(&application);
+
     let actions = group("Actions", "");
     let refresh = gtk::Button::with_label("Refresh status");
     refresh.add_css_class("pill");
@@ -505,6 +523,21 @@ pub fn preset_row(state: &Rc<AppState>, preset: &Preset, builtin: bool) -> adw::
     buttons.append(&export);
     row.add_suffix(&buttons);
     row
+}
+
+/// Standard Adwaita About dialog with the project version.
+fn show_about(parent: &impl IsA<gtk::Widget>) {
+    let dialog = adw::AboutDialog::builder()
+        .application_name("Mouseless")
+        .application_icon("input-mouse-symbolic")
+        .version(env!("CARGO_PKG_VERSION"))
+        .developer_name("0king")
+        .developers(vec!["0king"])
+        .website("https://mouseless.click")
+        .copyright("© 2026 0king")
+        .license_type(gtk::License::MitX11)
+        .build();
+    dialog.present(Some(parent));
 }
 
 fn behavior_summary(behavior: &BehaviorConfig) -> String {

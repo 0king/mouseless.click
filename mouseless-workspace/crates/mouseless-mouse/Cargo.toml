@@ -1,6 +1,6 @@
 [package]
 name = "mouseless-mouse"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "MouseBackend trait (move_rel/click/scroll). Concrete integrations live in impls/."
 license = "MIT"

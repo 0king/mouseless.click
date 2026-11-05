@@ -33,7 +33,7 @@ RuntimeDirectoryMode=0770
 StateDirectory=mouseless
 StateDirectoryMode=0750
 UMask=0007
-ExecStart=/usr/local/bin/mouselessd --kanata 127.0.0.1:7070
+ExecStart=/usr/local/bin/mouselessd
 Restart=on-failure
 RestartSec=1s
 # No $HOME or display is needed; keep the system read-only and drop privileges.

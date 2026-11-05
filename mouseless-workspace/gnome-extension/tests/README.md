@@ -15,7 +15,8 @@ unzipping (some distros' `gnome-extensions install` refuses directories), and
 asserts the mock saw:
 
 - `Hello` first, then `Report`
-- `Show`, `HighlightCell`, `ShowSubgrid`, `QueryCursor` → `CursorReply`, `Hide`
+- `Show`, `HighlightColumn`, `HighlightCell`, `ShowSubgrid`,
+  `QueryCursor` → `CursorReply`, `Hide`
 - a second client connection after the mock closes the first socket (EOF-hide +
   500 ms reconnect)
 - no `JS ERROR` in the Shell log

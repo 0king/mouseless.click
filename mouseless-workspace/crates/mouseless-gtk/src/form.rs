@@ -180,6 +180,8 @@ pub struct Form {
 impl Form {
     /// Build the widgets from a config document.
     pub fn new(config: &Config) -> Self {
+        let appearance = &crate::model::app_config().appearance;
+        let opacity_percent = (appearance.grid_opacity * 100.0).clamp(0.0, 100.0);
         let form = Self {
             columns: HintEntry::new("Level-1 keys (columns)", "asdfghjkl;"),
             rows: HintEntry::new("Level-2 keys (rows)", "qwertyuiopasdfghjkl;zxcvbnm,./"),
@@ -192,17 +194,27 @@ impl Form {
             monitor_assignment: combo_row("Monitor assignment", &MONITOR_LABELS, 0),
             custom_monitors: HintEntry::new("Custom connectors", "DP-1, HDMI-1"),
 
-            grid_color: color_button("#d4de04"),
+            grid_color: color_button(&appearance.grid_color),
             grid_opacity: gtk::Scale::new(
                 gtk::Orientation::Horizontal,
-                Some(&gtk::Adjustment::new(20.0, 0.0, 100.0, 1.0, 10.0, 0.0)),
+                Some(&gtk::Adjustment::new(
+                    opacity_percent,
+                    0.0,
+                    100.0,
+                    1.0,
+                    10.0,
+                    0.0,
+                )),
             ),
             grid_opacity_row: adw::ActionRow::builder()
                 .title("Grid opacity")
-                .subtitle("20% opacity (80% transparent)")
+                .subtitle(format!(
+                    "{opacity_percent:.0}% opacity ({:.0}% transparent)",
+                    100.0 - opacity_percent
+                ))
                 .build(),
-            label_color: color_button("#ebe9e8"),
-            highlight_color: color_button("#ffb22c"),
+            label_color: color_button(&appearance.label_color),
+            highlight_color: color_button(&appearance.highlight_color),
             hide_cursor: switch_row(
                 "Hide the cursor after a click",
                 "Move the pointer to a screen corner after each click",

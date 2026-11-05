@@ -23,6 +23,10 @@ pub struct FakeOverlay {
     pub visible: bool,
     /// Last shown model.
     pub last_model: Option<GridModel>,
+    /// Last column emphasis (the `column` half of `HighlightColumn`).
+    pub highlighted_column: Option<u32>,
+    /// Column count sent with the last `HighlightColumn` frame.
+    pub highlighted_column_count: u32,
     /// Whether a client is connected (defaults to true for tests).
     pub connected: bool,
     /// When set, `show` fails to exercise daemon rollback paths.
@@ -41,6 +45,8 @@ impl Default for FakeOverlay {
         Self {
             visible: false,
             last_model: None,
+            highlighted_column: None,
+            highlighted_column_count: 0,
             connected: true,
             fail_show: false,
             cursor: Rc::new(RefCell::new(None)),
@@ -102,6 +108,7 @@ impl OverlayBackend for FakeOverlay {
         }
         self.visible = true;
         self.last_model = Some(model.clone());
+        self.highlighted_column = None;
         Ok(())
     }
 
@@ -112,13 +119,22 @@ impl OverlayBackend for FakeOverlay {
         Ok(())
     }
 
+    fn highlight_column(&mut self, column: Option<u32>, cols: u32) -> Result<(), Self::Error> {
+        self.highlighted_column = column;
+        self.highlighted_column_count = cols;
+        Ok(())
+    }
+
     fn show_subgrid(&mut self, _parent: u32, _model: &GridModel) -> Result<(), Self::Error> {
         // Fake keeps the level-1 model; tests assert daemon geometry directly.
+        // The extension resets column emphasis when the subgrid opens.
+        self.highlighted_column = None;
         Ok(())
     }
 
     fn hide(&mut self) -> Result<(), Self::Error> {
         self.visible = false;
+        self.highlighted_column = None;
         Ok(())
     }
 

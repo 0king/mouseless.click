@@ -1,7 +1,8 @@
 // Mock mouselessd for the headless Shell smoke test (SPEC-overlay #8).
 //
 // Speaks the same NDJSON v1 contract as the daemon and drives every frame the
-// extension must render: Show, HighlightCell, ShowSubgrid, QueryCursor, Hide.
+// extension must render: Show, HighlightColumn, HighlightCell, ShowSubgrid,
+// QueryCursor, Hide.
 // After Hide it closes the socket so the extension exercises EOF-hide and a
 // 500 ms reconnect; the second Hello proves the reconnect and replay path.
 //
@@ -119,6 +120,13 @@ service.connect('incoming', (service_, connection) => {
                     model: {monitor, cells, highlight: null, appearance},
                 });
                 if (id === 1) {
+                    // Column emphasis while a cell selection is pending: the
+                    // renderer dims every label outside column 1.
+                    later(300, () => send({
+                        type: 'HighlightColumn',
+                        column: 1,
+                        cols: 10,
+                    }));
                     later(400, () => send({type: 'HighlightCell', index: 137}));
                     later(800, () => send({
                         type: 'ShowSubgrid',

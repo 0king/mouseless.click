@@ -73,6 +73,10 @@ Reference behavior: [mouseless.click docs](file:///.misc/extracted_docs.txt).
   mismatches, uinput errors.
 - Validate-then-apply + automatic rollback for `config.yaml` AND the kanata
   include. A bad config must never brick input; surface failures in the GUI.
+- Application constants live in `mouseless.toml` (loaded by the daemon, CLI, and
+  settings app; generated into the extension's `config.js` at install). Never
+  add a new hardcoded path/endpoint/color/scheme in code: add a TOML key with a
+  built-in default and thread it through.
 
 ## SKILL-06 — Kill switch
 

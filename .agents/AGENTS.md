@@ -93,7 +93,10 @@ kanata owns interception. The old "Slint UI" agent is replaced by the GTK agent.
     deep links (`mouseless://` via `.desktop` + `x-scheme-handler`), status
     integration. Document the `libgtk-4-dev libadwaita-1-dev` build prerequisite.
   - **Config lifecycle:** validate-then-apply + rollback for `config.yaml` and the
-    kanata include; kanata `Reload*` over TCP; surfaced errors on failure.
+    kanata include; `mouseless.toml` owns application constants (paths, endpoint,
+    timeouts, device names, scheme, appearance fallbacks) and is installed by
+    `platform/install-system.sh`; kanata `Reload*` over TCP; surfaced errors on
+    failure.
   - **IPC & CLI:** versioned JSON protocol (`schema_version`, negotiate/refuse);
     CLI (`show/hide/toggle`, layer commands, `--list-input-devices`); deep-link
     parity with CLI.

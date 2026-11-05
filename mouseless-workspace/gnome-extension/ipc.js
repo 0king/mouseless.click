@@ -9,13 +9,15 @@
 import Gio from 'gi://Gio';
 import GLib from 'gi://GLib';
 
+import { CONFIGURED_SOCKET_PATH } from './config.js';
+
 export const SCHEMA_VERSION = 1;
 export const KIND_DAEMON = 'daemon';
 export const KIND_OVERLAY = 'overlay';
 // Dev override mirrors `mouselessd --socket` / `MOUSELESS_SOCKET` so the
 // nested-shell smoke test can use a private socket (SPEC-overlay commands).
 export const SOCKET_PATH = GLib.getenv('MOUSELESS_SOCKET') ??
-    '/run/mouseless/mouselessd.sock';
+    CONFIGURED_SOCKET_PATH;
 
 const MAX_LINE_BYTES = 1024 * 1024;
 const RECONNECT_MIN_MS = 500;

@@ -135,6 +135,38 @@ reports, then falls back to the primary when none is present. The extension
 reports connector names via `Report`; a compositor that cannot provide them
 therefore degrades `custom` to the primary instead of failing the session.
 
+### Application config (`mouseless.toml`) — added 2026-11-04
+
+`config.yaml` remains the user-editable document. A separate TOML file holds
+application-level constants that are not user settings:
+
+- Path: `/etc/mouseless/mouseless.toml` (0644), installed by
+  `platform/install-system.sh`. `mouselessd`, `mouseless`, and
+  `mouseless-settings` accept `--config PATH` and honor `MOUSELESS_CONFIG`.
+  Precedence: `--config` → `MOUSELESS_CONFIG` → installed path → built-in
+  defaults. A missing installed file falls back to defaults; any file that
+  exists but is invalid, and any file named explicitly through
+  `--config`/`MOUSELESS_CONFIG` that is missing or invalid, is reported and the
+  binary exits `2` rather than silently applying a different document.
+- Sections: `[paths]` (state dir, `config.yaml` name, socket, kanata main
+  config, `/dev/uinput`, input listing), `[kanata]` (address,
+  connect/query timeouts, include name), `[daemon]` (loop timeouts and
+  closed-loop movement tuning, debug flags), `[devices]` (kanata output/mouse
+  names and vendor id), `[layers]` (base layer), `[deep_link]`
+  (scheme, settings binary), `[ui]` (GTK app id), `[appearance]` (fallbacks),
+  `[ipc]` (client timeout).
+- Validation (`mouseless-config::appconfig`): non-empty paths/names, relative
+  `config_file` without `..`, `HOST:PORT` with a non-zero port, positive
+  timeouts/limits, `#rrggbb` colors, opacity in `0.0..=1.0`, a valid URI
+  scheme, and `deny_unknown_fields` for typo detection.
+- `[appearance]` is a fallback only: an existing `config.yaml` appearance
+  section wins. It seeds the overlay when no settings document exists and the
+  GTK form/preview initial values.
+- The GNOME extension cannot parse TOML; `install-extension.sh` generates
+  `config.js` (socket path + appearance fallback) from this file before packing.
+- The file is read once at process start; edits apply after a restart. The
+  daemon remains the only writer of `config.yaml`.
+
 ### Presets (schema v1)
 
 Built-ins are read-only; user presets are files under

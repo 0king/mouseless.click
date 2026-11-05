@@ -131,6 +131,12 @@ impl CellGrab {
         Ok(Self { held: true })
     }
 
+    /// Acquire by device name; the scaffold ignores the name so tests and
+    /// non-evdev wiring can share the production grab factory signature.
+    pub fn acquire_named(_name: &str) -> Result<Self, KbdError> {
+        Self::acquire()
+    }
+
     /// Whether the grab is currently held.
     pub fn held(&self) -> bool {
         self.held

@@ -8,7 +8,7 @@ config value, never a core refactor.
 |---|---|---|
 | `mouseless-core` | Pure grid math (cell→pixel, layouts, scale-aware) including the two-level `PrimaryGrid` (10 column keys × 30 row keys → two-character cell labels). Zero I/O. | — |
 | `mouseless-state` | State machine (`Normal→Overlay→Subgrid→Click`), action intents (multi-click/drag/nudge), `FreeModeSession` physics; `Clock` trait (real/fake). I/O-free. | — |
-| `mouseless-config` | GTK-free config engine: schema v1, semantic validation, presets, atomic store with last-good rollback, kanata include render/check. No I/O outside caller-supplied paths. | — |
+| `mouseless-config` | GTK-free config engine: schema v1, semantic validation, presets, atomic store with last-good rollback, kanata include render/check, and the `mouseless.toml` application-config loader. No I/O outside caller-supplied paths (the loader path is supplied by each binary). | — |
 | `mouseless-ipc` | Versioned JSON protocol (`schema_version`; negotiate/refuse), newline-delimited envelopes, one-shot `Reload`/`Update`/`Status`/`GetConfig` client frames + replies. | — |
 | `mouseless-kbd` | `KeyboardBackend` (layer events, `set_layer`, resync, reload) + `CellGrab` RAII contract. | `impls/kanata.rs` (TCP); future `keyd`, `evdev_raw` |
 | `mouseless-mouse` | `MouseBackend` (`move_rel`/`click`/`button_down`/`button_up`/`scroll`) + `compute_delta` (saturating). | `impls/uinput.rs` (identity); future `libei` |
@@ -34,7 +34,10 @@ mouseless-settings → mouselessd (GetConfig/Save/Update over the same socket;
 ```
 
 No `cmd` anywhere (audit W1). `EvdevCellGrab` owns a fresh fd per overlay/free
-session with `EVIOCGKEY` + drain (audits G6/G7). Pointer movement is closed-loop:
+session with `EVIOCGKEY` + drain (audits G6/G7) and is non-blocking, so one
+thread can interleave key reads, kanata TCP layer events, and the action tick
+(a blocking read is what made Esc need two taps and postponed auto-hide).
+Pointer movement is closed-loop:
 the daemon emits bounded REL steps (≤64 px) carrying half of the remaining error
 (the compositor's acceleration gain is up to ~2×), waits for the compositor
 report to change after each step, and re-queries the cursor until it settles
@@ -45,12 +48,27 @@ deliberate response to the compositor's ~2× acceleration gain; see
 latency budget. Socket auth via
 `SO_PEERCRED` (audit G3); the daemon listens and the GNOME extension connects,
 sends `Hello`/`Report`, and receives
-`Show`/`HighlightCell`/`ShowSubgrid`/`Hide` plus state replay on reconnect.
-The default primary model is 300 cells labelled with two characters (column
-key + row key, e.g. `AQ`); selecting one by its two keys opens a 10×3 subgrid
-inside it. The daemon resolves the user's appearance config (defaults:
+`Show`/`HighlightCell`/`HighlightColumn`/`ShowSubgrid`/`Hide` plus state replay
+on reconnect. `HighlightColumn` fades every label outside the pending column
+(the first cell key), using the same alpha-110 label treatment as the muted
+subgrid context; `Show`/`ShowSubgrid`/`Hide` clear it. The default primary model
+is 300 cells labelled with two characters (column key + row key, e.g. `AQ`);
+selecting one by its two keys opens a 10×3 subgrid inside it. The daemon resolves the user's appearance config (defaults:
 `#d4de04` at 80% transparency, 20% opacity, `#ebe9e8` labels) and sends it with
 every model; the extension scales the font to each cell's stage-unit size.
+
+## Application config (`mouseless.toml`)
+
+Binary-level constants are loaded once at startup by `mouselessd`, `mouseless`,
+and `mouseless-settings` (precedence: `--config`, `MOUSELESS_CONFIG`,
+`/etc/mouseless/mouseless.toml`, built-in defaults). The file covers paths,
+the kanata endpoint, loop timeouts, device identity, the base layer, the
+deep-link scheme, the GTK app id, and appearance fallbacks. `config.yaml`
+(users' grid/behavior/free-mode/appearance) stays the daemon-owned settings
+document and wins over the TOML appearance fallback. The GNOME extension cannot
+parse TOML; `platform/install-extension.sh` generates its `config.js` (socket
+path plus legacy-payload color fallback) from the same file. The file is read
+once per process; edits require a restart.
 
 Phase 2 free mode uses a dedicated `lyr-free` kanata layer (`@ml-free-tap` on
 ControlLeft); the daemon holds the same temporary grab and runs an 8 ms physics

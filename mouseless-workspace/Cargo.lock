@@ -576,6 +576,7 @@ dependencies = [
 name = "mouseless-cli"
 version = "0.1.0"
 dependencies = [
+ "mouseless-config",
  "mouseless-ipc",
  "mouseless-kbd",
  "serde_json",
@@ -589,6 +590,7 @@ dependencies = [
  "serde",
  "serde_yaml_ng",
  "thiserror",
+ "toml",
 ]
 
 [[package]]

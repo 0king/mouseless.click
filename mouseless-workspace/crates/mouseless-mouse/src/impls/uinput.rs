@@ -28,11 +28,16 @@ pub struct UinputMouse {
 impl UinputMouse {
     /// Create the kernel device. Fails without `/dev/uinput` access.
     pub fn create() -> Result<Self, MouseError> {
+        Self::create_named(UINPUT_DEVICE_NAME, VENDOR_ID_SONUSCAPE)
+    }
+
+    /// Create the kernel device with identity from `mouseless.toml`.
+    pub fn create_named(name: &str, vendor: u16) -> Result<Self, MouseError> {
         let mut dev = uinput::default()
             .map_err(|e| MouseError::Io(format!("open /dev/uinput: {e}")))?
-            .name(UINPUT_DEVICE_NAME)
+            .name(name)
             .map_err(|e| MouseError::Io(e.to_string()))?
-            .vendor(VENDOR_ID_SONUSCAPE)
+            .vendor(vendor)
             .event(uinput::event::Relative::Position(Position::X))
             .map_err(|e| MouseError::Io(e.to_string()))?
             .event(uinput::event::Relative::Position(Position::Y))

@@ -12,6 +12,7 @@
 #   /usr/lib/sysusers.d/mouseless.conf  (mouselessd user, mouseless group;
 #                                        daemon joins input + uinput)
 #   /etc/udev/rules.d/99-mouseless.rules
+#   /etc/mouseless/mouseless.toml
 #   /usr/share/applications/mouseless-url-handler.desktop
 #   /usr/share/applications/mouseless-settings.desktop
 #   /usr/local/share/doc/mouseless/README.md
@@ -85,6 +86,15 @@ need_file "$REPO_DIR/platform/sysusers/mouseless.conf"
 need_file "$REPO_DIR/platform/desktop/mouseless-url-handler.desktop"
 need_file "$REPO_DIR/platform/desktop/mouseless-settings.desktop"
 need_file "$REPO_DIR/platform/README.md"
+need_file "$REPO_DIR/mouseless.toml"
+
+# The daemon validates the TOML while loading it; use --version as a cheap
+# parse/validation gate before changing any system file.
+if ! "$REPO_DIR/target/release/mouselessd" --config "$REPO_DIR/mouseless.toml" --version >/dev/null 2>&1; then
+    echo "mouseless.toml failed validation; run:" >&2
+    echo "  $REPO_DIR/target/release/mouselessd --config $REPO_DIR/mouseless.toml --version" >&2
+    exit 1
+fi
 
 for tool in systemctl systemd-sysusers udevadm; do
     if ! command -v "$tool" >/dev/null 2>&1; then
@@ -93,15 +103,38 @@ for tool in systemctl systemd-sysusers udevadm; do
     fi
 done
 
+# Application config values that platform files must agree with. Keep the
+# extraction tolerant of comments and section order; the Rust loader is the
+# authority and rejects malformed values on startup.
+toml_value() {
+    sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" \
+        "$REPO_DIR/mouseless.toml" | head -n 1
+}
+SCHEME="$(toml_value scheme)"
+SOCKET_PATH="$(toml_value socket)"
+INCLUDE_NAME="$(toml_value include_name)"
+KANATA_ADDR="$(toml_value address)"
+KANATA_OUTPUT_NAME="$(toml_value kanata_output_name)"
+MOUSE_NAME="$(toml_value mouse_name)"
+if [ -z "$SCHEME" ] || [ -z "$SOCKET_PATH" ] || [ -z "$INCLUDE_NAME" ] ||
+    [ -z "$KANATA_ADDR" ] || [ -z "$KANATA_OUTPUT_NAME" ] || [ -z "$MOUSE_NAME" ]; then
+    echo "mouseless.toml is missing scheme/socket/include/endpoint/device values" >&2
+    exit 1
+fi
+if [ "$INCLUDE_NAME" != "mouseless.kbd" ]; then
+    echo "warning: kanata.include_name=$INCLUDE_NAME, but the installer installs mouseless.kbd" >&2
+    echo "         update platform/kanata and unicfg.kbd together, or keep include_name=mouseless.kbd" >&2
+fi
+
 # Refuse to start a second daemon on the same socket. A dev daemon often runs
 # as a transient *user* unit (e.g. `systemd-run --user --unit=mouselessd-dev`),
 # which the system manager cannot see; binding would unlink its socket and
 # leave two processes competing for kanata and the evdev grab.
 if [ "$DRY_RUN" -eq 0 ] && [ "$NO_START" -eq 0 ] &&
     command -v ss >/dev/null 2>&1 &&
-    ss -xl 2>/dev/null | grep -Fq " /run/mouseless/mouselessd.sock " &&
+    ss -xl 2>/dev/null | grep -Fq " $SOCKET_PATH " &&
     ! systemctl is-active --quiet mouselessd.service; then
-    echo "another daemon is already listening on /run/mouseless/mouselessd.sock" >&2
+    echo "another daemon is already listening on $SOCKET_PATH" >&2
     echo "stop it first, for example: systemctl --user stop mouselessd-dev.service" >&2
     exit 1
 fi
@@ -139,6 +172,16 @@ install_file() {
     fi
 }
 
+# The kanata drop-in carries the TCP endpoint and is regenerated from the TOML
+# so a changed endpoint cannot leave the daemon and kanata on different ports.
+install_kanata_dropin() {
+    _src="$REPO_DIR/platform/systemd/kanata.service.d-override.conf"
+    _tmp="$(mktemp "${TMPDIR:-/tmp}/mouseless-kanata-dropin.XXXXXX")"
+    sed "s|127.0.0.1:7070|$KANATA_ADDR|g" "$_src" >"$_tmp"
+    install_file "$_tmp" /etc/systemd/system/kanata.service.d/mouseless.conf 0644
+    rm -f "$_tmp"
+}
+
 if [ "$DRY_RUN" -eq 1 ]; then
     echo "mouseless: system install (dry run) — no changes will be made"
 else
@@ -159,14 +202,23 @@ install_file "$REPO_DIR/platform/udev/99-mouseless.rules" \
 run udevadm control --reload-rules
 run udevadm trigger --sysname-match=uinput
 
-# 3. Binaries, unit, and the mouseless:// scheme handler.
+# 3. Binaries, application config, unit, and the scheme handler.
 install_file "$REPO_DIR/target/release/mouselessd" /usr/local/bin/mouselessd 0755
 install_file "$REPO_DIR/target/release/mouseless" /usr/local/bin/mouseless 0755
 install_file "$REPO_DIR/target/release/mouseless-settings" \
     /usr/local/bin/mouseless-settings 0755
+install_file "$REPO_DIR/mouseless.toml" /etc/mouseless/mouseless.toml 0644
 install_file "$REPO_DIR/platform/systemd/mouselessd.service" \
     /etc/systemd/system/mouselessd.service 0644
-install_file "$REPO_DIR/platform/desktop/mouseless-url-handler.desktop" \
+_desktop_src="$REPO_DIR/platform/desktop/mouseless-url-handler.desktop"
+if [ "$SCHEME" != "mouseless" ]; then
+    _desktop_tmp="$(mktemp "${TMPDIR:-/tmp}/mouseless-url-handler.XXXXXX")"
+    trap 'rm -f "$_desktop_tmp"' EXIT HUP INT TERM
+    sed "s|mouseless://|$SCHEME://|g; s|x-scheme-handler/mouseless|x-scheme-handler/$SCHEME|g" \
+        "$_desktop_src" >"$_desktop_tmp"
+    _desktop_src="$_desktop_tmp"
+fi
+install_file "$_desktop_src" \
     /usr/share/applications/mouseless-url-handler.desktop 0644
 install_file "$REPO_DIR/platform/desktop/mouseless-settings.desktop" \
     /usr/share/applications/mouseless-settings.desktop 0644
@@ -178,38 +230,42 @@ install_file "$REPO_DIR/platform/README.md" \
 run systemctl daemon-reload
 
 # Register the handler for the invoking desktop user. The .desktop file routes
-# every mouseless:// verb to the CLI, so overlay verbs keep working without the
-# GTK app; `mouseless://settings/...` is forwarded to `mouseless-settings`.
+# every scheme verb to the CLI, so overlay verbs keep working without the GTK
+# app; `<scheme>://settings/...` is forwarded to `mouseless-settings`.
 _scheme_user="${SUDO_USER:-}"
 if [ -n "$_scheme_user" ] && [ "$_scheme_user" != root ] &&
     command -v xdg-mime >/dev/null 2>&1; then
     if [ "$DRY_RUN" -eq 1 ]; then
-        printf '  + sudo -u %s xdg-mime default mouseless-url-handler.desktop x-scheme-handler/mouseless\n' "$_scheme_user"
+        printf '  + sudo -u %s xdg-mime default mouseless-url-handler.desktop x-scheme-handler/%s\n' "$_scheme_user" "$SCHEME"
     elif command -v sudo >/dev/null 2>&1; then
         sudo -u "$_scheme_user" xdg-mime default \
-            mouseless-url-handler.desktop x-scheme-handler/mouseless ||
-            echo "warning: could not register mouseless:// for $_scheme_user; run: xdg-mime default mouseless-url-handler.desktop x-scheme-handler/mouseless" >&2
+            mouseless-url-handler.desktop x-scheme-handler/$SCHEME ||
+            echo "warning: could not register $SCHEME:// for $_scheme_user; run: xdg-mime default mouseless-url-handler.desktop x-scheme-handler/$SCHEME" >&2
     elif command -v runuser >/dev/null 2>&1; then
         runuser -u "$_scheme_user" -- xdg-mime default \
-            mouseless-url-handler.desktop x-scheme-handler/mouseless ||
-            echo "warning: could not register mouseless:// for $_scheme_user" >&2
+            mouseless-url-handler.desktop x-scheme-handler/$SCHEME ||
+            echo "warning: could not register $SCHEME:// for $_scheme_user" >&2
     fi
 else
-    echo "mouseless:// handler installed; register it per user with:" >&2
-    echo "  xdg-mime default mouseless-url-handler.desktop x-scheme-handler/mouseless" >&2
+    echo "$SCHEME:// handler installed; register it per user with:" >&2
+    echo "  xdg-mime default mouseless-url-handler.desktop x-scheme-handler/$SCHEME" >&2
 fi
 
 # 4. Kanata include + drop-in. apply-phase11.sh also edits unicfg.kbd
 #    (backup + `kanata --check` + restart); --skip-kanata leaves that alone.
+#    Endpoint/device names are exported so the script writes the same values
+#    into the drop-in and unicfg.kbd.
 if [ "$SKIP_KANATA" -eq 0 ]; then
+    export MOUSELESS_KANATA_ADDR="$KANATA_ADDR"
+    export MOUSELESS_KANATA_OUTPUT_NAME="$KANATA_OUTPUT_NAME"
+    export MOUSELESS_MOUSE_NAME="$MOUSE_NAME"
     if [ -f /etc/kanata/unicfg.kbd ] && command -v kanata >/dev/null 2>&1; then
         run sh "$REPO_DIR/platform/kanata/apply-phase11.sh"
     else
         echo "kanata config not found or kanata not in PATH; installing include/drop-in only" >&2
         install_file "$REPO_DIR/platform/kanata/mouseless.kbd" \
             /etc/kanata/mouseless.kbd 0644
-        install_file "$REPO_DIR/platform/systemd/kanata.service.d-override.conf" \
-            /etc/systemd/system/kanata.service.d/mouseless.conf 0644
+        install_kanata_dropin
         run systemctl daemon-reload
         echo "apply platform/kanata/UNICFG-EDITS.md manually, then restart kanata" >&2
     fi
@@ -268,14 +324,14 @@ else
     echo "not starting mouselessd (--no-start)"
 fi
 
-cat <<'EOF'
+cat <<EOF
 
 System install complete. Verify:
   systemctl status mouselessd.service
   journalctl -u mouselessd.service -b
   /usr/local/bin/mouseless status
   /usr/local/bin/mouseless --list-input-devices
-  xdg-mime query default x-scheme-handler/mouseless
+  xdg-mime query default x-scheme-handler/$SCHEME
   /usr/local/bin/mouseless settings    # opens the GTK settings app
 
 Install the GNOME extension as your desktop user:

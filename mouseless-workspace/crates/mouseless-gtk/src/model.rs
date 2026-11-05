@@ -6,41 +6,63 @@
 //! [`crate::pages`].
 
 use mouseless_config::{
-    parse_hex_color, render_include, CheckError, Config, KanataCheck, COLUMN_KEY_POOL, ROW_KEY_POOL,
+    parse_hex_color, render_include, AppConfig, CheckError, Config, KanataCheck, COLUMN_KEY_POOL,
+    ROW_KEY_POOL,
 };
-use mouseless_ipc::{request, ClientToDaemon, DaemonToClient, CLIENT_TIMEOUT, SOCKET_PATH};
+use mouseless_ipc::{request, ClientToDaemon, DaemonToClient};
 use mouseless_kbd::{query_current_layer, KanataTcpConfig};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
-/// Default daemon state directory (`StateDirectory=mouseless`).
-pub const DEFAULT_STATE_DIR: &str = "/var/lib/mouseless";
-/// Kanata main config that includes the generated fragment.
-pub const KANATA_MAIN_CONFIG: &str = "/etc/kanata/unicfg.kbd";
+/// Process-wide application config installed by `main` after loading
+/// `mouseless.toml`. A missing file leaves the built-in defaults.
+static APP_CONFIG: OnceLock<AppConfig> = OnceLock::new();
+
+/// Install the loaded application config (first call wins).
+pub fn install_app_config(config: AppConfig) {
+    let _ = APP_CONFIG.set(config);
+}
+
+/// The effective application config (`mouseless.toml` or built-in defaults).
+pub fn app_config() -> &'static AppConfig {
+    APP_CONFIG.get_or_init(AppConfig::default)
+}
 
 /// Daemon socket path (`MOUSELESS_SOCKET` overrides it for development).
 pub fn socket_path() -> PathBuf {
     std::env::var_os("MOUSELESS_SOCKET")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(SOCKET_PATH))
+        .unwrap_or_else(|| PathBuf::from(&app_config().paths.socket))
 }
 
 /// Daemon state directory (`MOUSELESS_STATE_DIR` overrides it for development).
 pub fn state_dir() -> PathBuf {
     std::env::var_os("MOUSELESS_STATE_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(DEFAULT_STATE_DIR))
+        .unwrap_or_else(|| PathBuf::from(&app_config().paths.state_dir))
+}
+
+/// Daemon-owned last-applied settings document.
+pub fn config_path() -> PathBuf {
+    state_dir().join(&app_config().paths.config_file)
+}
+
+/// One-shot daemon client timeout.
+pub fn client_timeout() -> Duration {
+    app_config().ipc.client_timeout()
 }
 
 /// Kanata TCP endpoint (`MOUSELESS_KANATA` overrides it, as in the CLI).
 pub fn kanata_config() -> KanataTcpConfig {
-    let addr = std::env::var("MOUSELESS_KANATA").unwrap_or_else(|_| "127.0.0.1:7070".to_string());
+    let app = app_config();
+    let addr = std::env::var("MOUSELESS_KANATA").unwrap_or_else(|_| app.kanata.address.clone());
     let (host, port) = addr.rsplit_once(':').unwrap_or(("127.0.0.1", "7070"));
     KanataTcpConfig {
         host: host.to_string(),
         port: port.parse().unwrap_or(7070),
-        timeout: Duration::from_secs(2),
+        timeout: app.kanata.connect_timeout(),
     }
 }
 
@@ -190,7 +212,8 @@ pub fn check_kanata_candidate(
     if !needs_kanata_check(previous, candidate) {
         return Ok(Vec::new());
     }
-    let main = Path::new(KANATA_MAIN_CONFIG);
+    let app = app_config();
+    let main = Path::new(&app.paths.kanata_main_config);
     if !main.is_file() {
         return Ok(vec![format!(
             "skipped kanata check: {} not found",
@@ -202,7 +225,7 @@ pub fn check_kanata_candidate(
             "skipped kanata check: kanata binary not found".to_string()
         ]);
     }
-    let checker = KanataCheck::new("kanata", main);
+    let checker = KanataCheck::new("kanata", main).with_include_name(&app.kanata.include_name);
     match checker.check(&render_include(candidate)) {
         Ok(()) => Ok(Vec::new()),
         Err(error @ CheckError::Rejected { .. }) => Err(error.to_string()),
@@ -239,7 +262,8 @@ pub struct StatusSnapshot {
 
 /// Query daemon + kanata + uinput state (blocking; call off the UI thread).
 pub fn gather_status(socket: PathBuf) -> StatusSnapshot {
-    let daemon = match request(&socket, &ClientToDaemon::Status, CLIENT_TIMEOUT) {
+    let app = app_config();
+    let daemon = match request(&socket, &ClientToDaemon::Status, client_timeout()) {
         Ok(DaemonToClient::Status {
             daemon_version,
             overlay_connected,
@@ -261,7 +285,7 @@ pub fn gather_status(socket: PathBuf) -> StatusSnapshot {
     StatusSnapshot {
         daemon,
         kanata_layer,
-        uinput_present: Path::new("/dev/uinput").exists(),
+        uinput_present: Path::new(&app.paths.uinput).exists(),
     }
 }
 
@@ -278,6 +302,15 @@ pub fn config_from_reply(reply: DaemonToClient) -> Result<Config, String> {
 mod tests {
     use super::*;
     use mouseless_config::DefaultAction;
+
+    #[test]
+    fn application_config_drives_default_paths() {
+        let app = app_config();
+        assert_eq!(state_dir(), PathBuf::from(&app.paths.state_dir));
+        assert_eq!(config_path(), state_dir().join(&app.paths.config_file));
+        assert_eq!(client_timeout(), app.ipc.client_timeout());
+        assert_eq!(kanata_config().timeout, app.kanata.connect_timeout());
+    }
 
     #[test]
     fn monitor_lists_round_trip() {

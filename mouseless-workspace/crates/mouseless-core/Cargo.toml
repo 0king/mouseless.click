@@ -1,6 +1,6 @@
 [package]
 name = "mouseless-core"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "Pure grid math for Mouseless Linux: cell geometry, layouts, scale-aware mapping. Zero I/O."
 license = "MIT"

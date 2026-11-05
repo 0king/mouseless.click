@@ -492,19 +492,19 @@ fn default_wheel_step_large() -> i32 {
 }
 
 fn default_grid_color() -> String {
-    "#d4de04".into()
+    crate::appconfig::DEFAULT_GRID_COLOR.into()
 }
 
 fn default_grid_opacity() -> f64 {
-    0.2
+    crate::appconfig::DEFAULT_GRID_OPACITY
 }
 
 fn default_label_color() -> String {
-    "#ebe9e8".into()
+    crate::appconfig::DEFAULT_LABEL_COLOR.into()
 }
 
 fn default_highlight_color() -> String {
-    "#ffb22c".into()
+    crate::appconfig::DEFAULT_HIGHLIGHT_COLOR.into()
 }
 
 fn default_overlay_layer() -> String {

@@ -127,6 +127,7 @@ mouselessd → uinput mouse "mouseless-mouse" (REL deltas + BTN_*/WHEEL;
              kanata ignores it via linux-dev-names-exclude)
 mouselessd ↔ kanata TCP 127.0.0.1:port (subscribe LayerChange, send ChangeLayer)
 mouselessd ↔ GNOME extension, Unix-socket JSON (show/hide, geometry + cursor pos)
+startup: binaries read /etc/mouseless/mouseless.toml (paths/endpoints/timeouts/devices/URI)
 GTK4 settings → writes config.yaml + kanata include → triggers kanata Reload
 ```
 
@@ -198,6 +199,9 @@ Trait-boundary rules (enforced in review + CI):
   keybinding reference, presets (Standard, Quick-Select+Free-Mode), deep links
   (`mouseless://toggle-overlay` etc. via `.desktop` + `x-scheme-handler`), writes
   `config.yaml` + kanata include then triggers kanata `Reload` + daemon reload.
+  Application-level constants (paths, kanata endpoint, timeouts, device names,
+  base layer, deep-link scheme, GTK app id, appearance fallbacks) live in
+  `mouseless.toml`, not in code.
 - **Contracts:**
   - kanata → daemon: TCP `LayerChange` subscription; daemon → kanata: `ChangeLayer`,
     `RequestCurrentLayerName/Info` (resync), `Reload*` (config apply).

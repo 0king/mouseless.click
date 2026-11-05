@@ -1,6 +1,6 @@
 [package]
 name = "mouseless-ipc"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "Versioned JSON IPC protocol (schema_version; negotiate/refuse) between mouselessd and the overlay."
 license = "MIT"

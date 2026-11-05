@@ -1,6 +1,6 @@
 [package]
 name = "mouseless-daemon"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "mouselessd: thin orchestration over trait backends. No backend logic lives here."
 license = "MIT"

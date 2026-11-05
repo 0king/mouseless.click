@@ -16,8 +16,9 @@ udev rule, `sysusers`, installers, and the platform checks. Architecture:
 | `desktop/mouseless-settings.desktop` | `/usr/share/applications/mouseless-settings.desktop` | Application-menu entry → `mouseless-settings %u`. |
 | `sysusers/mouseless.conf` | `/usr/lib/sysusers.d/mouseless.conf` | Creates `mouselessd`, the `mouseless` socket group, and joins the existing `uinput`/`input` device groups. |
 | `udev/99-mouseless.rules` | `/etc/udev/rules.d/99-mouseless.rules` | `/dev/uinput` for the `uinput` device group (kanata + daemon). No libinput acceleration override. |
-| `install-system.sh` | run in place | Installs the system files above + binaries. |
-| `install-extension.sh` | run in place | Packs/installs/enables the GNOME extension for the current user. Removes the UUID from `org.gnome.shell disabled-extensions` after `install --force`, because GNOME leaves it there and `gnome-extensions enable` is then a silent no-op. |
+| `../mouseless.toml` | `/etc/mouseless/mouseless.toml` | Application config: paths, kanata endpoint, timeouts, device names, base layer, deep-link scheme, app id, appearance fallbacks. Read by all binaries. Re-run the installer after changing `[kanata] address` or `[devices]` names: it regenerates the kanata drop-in and defcfg names. |
+| `install-system.sh` | run in place | Installs the system files above + binaries + `mouseless.toml`, and regenerates the scheme handler when `[deep_link] scheme` is not `mouseless`. |
+| `install-extension.sh` | run in place | Generates `config.js` from `mouseless.toml` (socket + appearance fallback), packs/installs/enables the GNOME extension for the current user. Removes the UUID from `org.gnome.shell disabled-extensions` after `install --force`, because GNOME leaves it there and `gnome-extensions enable` is then a silent no-op. |
 | `../scripts/check-platform.sh` | run in place | Asserts names, unit, udev, sysusers, scripts, and unit syntax. |
 
 ## Install
@@ -37,11 +38,13 @@ The system installer:
 
 1. installs `sysusers` and runs `systemd-sysusers` (idempotent);
 2. installs the udev rule and triggers `/dev/uinput`;
-3. installs `mouselessd`/`mouseless`/`mouseless-settings` to `/usr/local/bin`;
+3. installs `mouselessd`/`mouseless`/`mouseless-settings` to `/usr/local/bin`
+   and `mouseless.toml` to `/etc/mouseless/mouseless.toml`;
 4. installs the unit, both desktop entries, and runs `systemctl daemon-reload`;
 5. applies the kanata include/drop-in via `apply-phase11.sh` (creates any
-   missing `input`/`uinput` group, backs up + edits `unicfg.kbd`, runs
-   `kanata --check`, restarts kanata);
+   missing `input`/`uinput` group, backs up + edits `unicfg.kbd` with the
+   configured device names and TCP endpoint, runs `kanata --check`, restarts
+   kanata);
 6. adds `$SUDO_USER` to `mouseless` when needed (never to `input`/`uinput`;
    see the privilege model below) and registers the scheme handler with
    `xdg-mime` for that user;
@@ -89,9 +92,9 @@ check/fix it manually:
 # remove just the mouseless entry, then enable it:
 gsettings set org.gnome.shell disabled-extensions \
   "$(gsettings get org.gnome.shell disabled-extensions \
-     | sed "s/'mouseless@sonuscape.example', //; s/, 'mouseless@sonuscape.example'//")"
-gnome-extensions enable mouseless@sonuscape.example
-gnome-extensions info mouseless@sonuscape.example   # Enabled: Yes / ACTIVE
+     | sed "s/'mouseless@0king.dev', //; s/, 'mouseless@0king.dev'//")"
+gnome-extensions enable mouseless@0king.dev
+gnome-extensions info mouseless@0king.dev   # Enabled: Yes / ACTIVE
 ```
 
 If `info` still says INACTIVE, log out and back in; the running Shell caches
@@ -109,12 +112,15 @@ journalctl -u mouselessd.service -b
 /usr/local/bin/mouseless status
 /usr/local/bin/mouseless reload
 /usr/local/bin/mouseless --list-input-devices
+/usr/local/bin/mouseless --config /etc/mouseless/mouseless.toml status
 xdg-mime query default x-scheme-handler/mouseless
-gnome-extensions info mouseless@sonuscape.example
+gnome-extensions info mouseless@0king.dev
 ```
 
 Expected:
 
+- `/etc/mouseless/mouseless.toml` exists (0644) and parses; restart
+  `mouselessd` after editing it;
 - `/run/mouseless/mouselessd.sock` exists, owned `mouselessd:mouseless`,
   mode `0770`;
 - `id mouselessd` includes `mouseless`, `uinput`, and `input`, while
@@ -213,8 +219,8 @@ still contains `(include "mouseless.kbd")`; remove the include first or kanata
 will fail validation. The extension is removed per user:
 
 ```sh
-gnome-extensions disable mouseless@sonuscape.example
-gnome-extensions uninstall mouseless@sonuscape.example
+gnome-extensions disable mouseless@0king.dev
+gnome-extensions uninstall mouseless@0king.dev
 ```
 
 ## Troubleshooting

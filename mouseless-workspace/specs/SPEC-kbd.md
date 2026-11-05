@@ -64,16 +64,23 @@ Layer names that matter: `lyr-mouseless` = show; anything else = hide.
    now would eat its key-up and leave the compositor stuck. Strategy: retry until
    clean (≤ 2 s in the daemon), never synthesize key-ups — rationale: kanata owns
    the physical path and will emit the real release.
-3. **Drain on release.** `Drop` drains pending events, then `ungrab()`s
+3. **Non-blocking fd for the owning session loop.** `acquire()` sets
+   `O_NONBLOCK`; an empty poll returns `Ok(None)` (never `KbdError::Io`). The
+   daemon's single thread interleaves evdev reads, kanata TCP layer events, and
+   the 8 ms action tick. A blocking fd parks that loop until the next key, so
+   the multi-click deadline never expires and an Esc layer switch (which emits
+   no key event) is only observed after the *next* key press — the live "two
+   Esc taps" and "overlay never auto-hides after a click" regressions.
+4. **Drain on release.** `Drop` drains pending events, then `ungrab()`s
    best-effort, then closes the fd. No partial press/release pair survives.
-4. **Drop always runs** — normal exit, error, panic unwind, and kill-switch
+5. **Drop always runs** — normal exit, error, panic unwind, and kill-switch
    co-exit. Kernel also releases on fd close, even on SIGKILL.
-5. **Device discovery by stable name** `kanata-mouseless` (must match
+6. **Device discovery by stable name** `kanata-mouseless` (must match
    `platform/kanata/mouseless.kbd` `linux-output-device-name`). Never any
    `/dev/input/eventN` hardcode. Enumeration happens per acquire, which also
    covers hotplug/kanata-restart (an inotify watcher is only needed if a
    long-lived listener path is ever added — none exists).
-6. **`EBUSY` is retried, never fatal** (plan §5 rule 5): daemon policy =
+7. **`EBUSY` is retried, never fatal** (plan §5 rule 5): daemon policy =
    40 × 50 ms attempts, then degrade to base layer with "typing unaffected".
 
 ### Key translation (pin)
@@ -87,8 +94,12 @@ a s d f g h j k l ;
 z x c v b n m , . /
 ```
 
-`space → Space`, `esc → Escape`. Every other key while grabbed is consumed
-silently (returns `None`, batch keeps draining). Codes:
+`space → Space`, `esc → Escape`, arrows → nudge, left/right Shift →
+`ShiftLeft`/`ShiftRight`. Every other non-modifier key maps to
+`CellKey::Other`; the overlay session treats it as an explicit "typing, not
+clicking" gesture and dismisses itself (otherwise the grab would swallow the
+key silently). Pure Ctrl/Alt/Meta presses map to `None` so action modifiers do
+not cancel the session. Codes:
 `KEY_Q/W/E/R/T/Y/U/I/O/P/A/S/D/F/G/H/J/K/L/SEMICOLON/Z/X/C/V/B/N/M/COMMA/DOT/SLASH/SPACE/ESC`;
 the home-row subset doubles as free-mode keys (`i k j l s d f a r e q w m , . /`).
 

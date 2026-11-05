@@ -51,8 +51,9 @@ trait OverlayBackend {
 the extension is the **client** (`SPEC-ipc.md` lifecycle). `impls/gnome.rs`
 binds, authenticates peers, parses `Hello`/`Report`/`CursorReply`, broadcasts
 frames, and replays state on reconnect. `impls/fake.rs` mirrors visibility,
-cursor, and layout for tests. `GNOME_SHELL_VERSIONS`, `SOCKET_PATH`, and
-`SOCKET_GROUP` are pinned constants. The daemon must not acquire a cell grab
+cursor, and layout for tests. `GNOME_SHELL_VERSIONS` and `SOCKET_GROUP` are
+pinned constants; the client socket path and fallback colors come from the
+generated `config.js` (defaults mirror `mouseless.toml`). The daemon must not acquire a cell grab
 unless `is_connected()` and `last_layout()` are both available.
 
 ### Extension behavior (normative)
@@ -72,6 +73,11 @@ unless `is_connected()` and `last_layout()` are both available.
    (see OQ-1 for the mixed-scale limitation).
 3. **Idempotent messages.** `Show` while shown replaces the model; `Hide` while
    hidden is a no-op; `HighlightCell` for an unknown index is ignored.
+   `HighlightColumn` keeps the selected column's labels at full opacity and
+   drops every other **label** to the muted alpha (backgrounds unchanged);
+   `column: null` clears it. `Show`, `ShowSubgrid`, and `Hide` reset the
+   emphasis, and the renderer maps a cell to its column with
+   `index % cols` from the frame (no geometry re-derivation).
 4. **Hello-first.** On connect: send `Hello{extension_version}` immediately,
    then `Report`; the daemon drops a peer that does not send `Hello` within 2 s
    and replies with a state replay (`Show`/`ShowSubgrid` or `Hide`).
@@ -111,7 +117,10 @@ unless `is_connected()` and `last_layout()` are both available.
     composited to a darker fill and the parent's two-character label cannot
     bleed through them; non-selected level-1 cells behind an open subgrid drop
     to 20/51 of the configured grid alpha and their labels to alpha 110, so the
-    subgrid stands out. Highlight text uses the configured label color. Font
+    subgrid stands out. The same alpha-110 label fade marks the pending column
+    while the first of the two cell keys is held: that column stays fully
+    opaque and all others fade, so the selection is visible before the subgrid
+    opens. Highlight text uses the configured label color. Font
     size is computed per cell from its stage-unit height/width and label length
     (clamped 7–20 px), because the default 10×30 primary grid has ~192×36 px
     cells while a 10×3 sub-cell inside one is ~19×12 px at 1080p. The renderer
@@ -126,7 +135,9 @@ unless `is_connected()` and `last_layout()` are both available.
 
 ### GNOME compatibility
 
-`metadata.json`: `"shell-version": ["45","46","47","48","49","50"]`, ESM module
+`metadata.json`: `"uuid": "mouseless@0king.dev"`,
+`"shell-version": ["45","46","47","48","49","50"]`, and `version-name` mirrors
+`VERSION` (checked by `scripts/check-version.sh`). ESM module
 syntax (`export default class … { enable() … disable() … }`). Primary test
 target: GNOME 50+ / Ubuntu 26.04.
 
@@ -155,11 +166,11 @@ node --check gnome-extension/ipc.js
 node --check gnome-extension/render.js
 # dev pack must include the split modules:
 gnome-extensions pack gnome-extension --force -o /tmp \
-  --extra-source=ipc.js --extra-source=render.js
-gnome-extensions install --force /tmp/mouseless@sonuscape.example.shell-extension.zip
+  --extra-source=ipc.js --extra-source=render.js --extra-source=config.js
+gnome-extensions install --force /tmp/mouseless@0king.dev.shell-extension.zip
 # reload after code change (Wayland): disable/enable, or log out/in
-gnome-extensions disable mouseless@sonuscape.example
-gnome-extensions enable  mouseless@sonuscape.example
+gnome-extensions disable mouseless@0king.dev
+gnome-extensions enable  mouseless@0king.dev
 # dev socket override (both sides; no system paths touched):
 MOUSELESS_SOCKET=/tmp/mouseless.sock cargo run -p mouseless-daemon
 # checked-in headless smoke (private D-Bus; no real session touched):
@@ -167,7 +178,7 @@ gnome-extension/tests/headless-smoke.sh
 ```
 
 The headless harness uses `XDG_DATA_HOME` plus `MOUSELESS_SOCKET`, unpacks the
-zip into `$XDG_DATA_HOME/gnome-shell/extensions/mouseless@sonuscape.example/`,
+zip into `$XDG_DATA_HOME/gnome-shell/extensions/mouseless@0king.dev/`,
 and enables it against `gnome-shell --headless --no-x11 --virtual-monitor 1920x1080`.
 `gnome-extensions install` may refuse to copy a directory on some distros; the
 unzip fallback is equivalent for testing. See
@@ -183,10 +194,10 @@ unzip fallback is equivalent for testing. See
   dispatch, `Hello`/`Report`/`CursorReply`.
 - `gnome-extension/ipc.js` — NDJSON client, reconnect/backoff, model validation.
 - `gnome-extension/render.js` — Clutter actor + physical→stage conversion.
-- `gnome-extension/metadata.json` — uuid + shell-version.
+- `gnome-extension/metadata.json` — uuid, shell-version, and version-name.
 
 The extension was split once `extension.js` approached the ~400-line threshold;
-the pack command must list `--extra-source=ipc.js --extra-source=render.js`.
+the pack command must list `--extra-source=ipc.js --extra-source=render.js --extra-source=config.js`.
 
 ## Code style
 
@@ -200,11 +211,12 @@ the pack command must list `--extra-source=ipc.js --extra-source=render.js`.
 ## Testing strategy
 
 - Rust: idempotent show/hide with `FakeOverlay`; daemon-side `GnomeOverlay`
-  tests cover Hello replay, `Report`/`HighlightCell`/`Hide`, malformed frames,
-  and the 2 s Hello timeout. *(exists)*
+  tests cover Hello replay, `Report`/`HighlightCell`/`HighlightColumn`/`Hide`,
+  column-emphasis replay after reconnect, malformed frames, and the 2 s Hello
+  timeout. *(exists)*
 - #8 (extension side): `node --check` syntax gate for the three JS files plus
   the checked-in `gnome-extension/tests/headless-smoke.sh`: a GJS mock daemon
-  sends `Show`, `HighlightCell`, `ShowSubgrid`, `QueryCursor`, `Hide`, then
+  sends `Show`, `HighlightColumn`, `HighlightCell`, `ShowSubgrid`, `QueryCursor`, `Hide`, then
   closes the socket; the Shell stays up, hides on EOF, and reconnects (the mock
   observes client 2). No uncaught `JS ERROR` is allowed.
 - Manual visual smoke (passed 2026-10-29 on GNOME Shell 50.1): tap Shift →

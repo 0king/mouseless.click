@@ -76,7 +76,7 @@ impl SettingsPage {
         }
     }
 
-    /// Canonical deep link for this page.
+    /// Canonical deep link for this page (default `mouseless` scheme).
     pub fn deep_link(self) -> &'static str {
         match self {
             SettingsPage::Grid => "mouseless://settings",
@@ -89,9 +89,33 @@ impl SettingsPage {
         }
     }
 
+    /// Path component shared by every scheme.
+    pub fn path(self) -> &'static str {
+        match self {
+            SettingsPage::Grid => "settings",
+            SettingsPage::Appearance => "settings/appearance",
+            SettingsPage::Behavior => "settings/behavior",
+            SettingsPage::FreeMode => "settings/free-mode",
+            SettingsPage::Keybindings => "settings/keybindings",
+            SettingsPage::Presets => "settings/presets",
+            SettingsPage::Status => "settings/status",
+        }
+    }
+
+    /// Canonical deep link using a configured URL scheme.
+    pub fn deep_link_with_scheme(self, scheme: &str) -> String {
+        format!("{scheme}://{}", self.path())
+    }
+
     /// Parse a settings deep link (or a bare page name).
     pub fn parse(value: &str) -> Option<Self> {
-        let path = value.strip_prefix("mouseless://").unwrap_or(value);
+        Self::parse_with_scheme(value, "mouseless")
+    }
+
+    /// Parse a settings deep link using a configured URL scheme.
+    pub fn parse_with_scheme(value: &str, scheme: &str) -> Option<Self> {
+        let prefix = format!("{scheme}://");
+        let path = value.strip_prefix(&prefix).unwrap_or(value);
         let path = path.strip_suffix('/').unwrap_or(path);
         match path {
             "settings" | "settings/grid" | "grid" => Some(SettingsPage::Grid),
@@ -102,6 +126,31 @@ impl SettingsPage {
             "settings/presets" | "presets" => Some(SettingsPage::Presets),
             "settings/status" | "status" => Some(SettingsPage::Status),
             _ => None,
+        }
+    }
+}
+
+/// Kanata layer names used by CLI verb mapping.
+///
+/// `base` comes from `mouseless.toml`; the overlay/free-mode names come from
+/// the user settings (`config.yaml`) and keep their pinned defaults here for
+/// verbs that run without a config document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LayerNames<'a> {
+    /// Neutral layer restored on hide/exit.
+    pub base: &'a str,
+    /// Overlay layer.
+    pub overlay: &'a str,
+    /// Custom free-mode layer.
+    pub free_mode: &'a str,
+}
+
+impl Default for LayerNames<'static> {
+    fn default() -> Self {
+        Self {
+            base: BASE_LAYER,
+            overlay: OVERLAY_LAYER,
+            free_mode: FREE_MODE_LAYER,
         }
     }
 }
@@ -136,11 +185,17 @@ impl Verb {
     /// one `.desktop` scheme handler can forward URLs straight to the CLI
     /// (SPEC-cli parity).
     pub fn parse(arg: &str) -> Result<Self, CliError> {
-        if arg.starts_with("mouseless://") {
-            return Self::from_deep_link(arg).ok_or(CliError::Usage);
+        Self::parse_with_scheme(arg, "mouseless")
+    }
+
+    /// Parse `argv[1]` using a configured URL scheme.
+    pub fn parse_with_scheme(arg: &str, scheme: &str) -> Result<Self, CliError> {
+        let prefix = format!("{scheme}://");
+        if arg.starts_with(&prefix) {
+            return Self::from_deep_link_with_scheme(arg, scheme).ok_or(CliError::Usage);
         }
         if arg == "settings" || arg.starts_with("settings/") {
-            return SettingsPage::parse(arg)
+            return SettingsPage::parse_with_scheme(arg, scheme)
                 .map(Verb::Settings)
                 .ok_or(CliError::Usage);
         }
@@ -163,10 +218,16 @@ impl Verb {
     /// Only the exact links produced by [`Self::deep_link`] are accepted (a
     /// trailing slash is tolerated); anything else returns `None`.
     pub fn from_deep_link(link: &str) -> Option<Self> {
-        let path = link.strip_prefix("mouseless://")?;
+        Self::from_deep_link_with_scheme(link, "mouseless")
+    }
+
+    /// Parse a deep link using a configured URL scheme.
+    pub fn from_deep_link_with_scheme(link: &str, scheme: &str) -> Option<Self> {
+        let prefix = format!("{scheme}://");
+        let path = link.strip_prefix(&prefix)?;
         let path = path.strip_suffix('/').unwrap_or(path);
         if path == "settings" || path.starts_with("settings/") {
-            return SettingsPage::parse(link).map(Verb::Settings);
+            return SettingsPage::parse_with_scheme(link, scheme).map(Verb::Settings);
         }
         match path {
             "show-overlay" => Some(Verb::Show),
@@ -198,16 +259,32 @@ impl Verb {
         }
     }
 
+    /// Deep-link URL using a configured URL scheme.
+    pub fn deep_link_with_scheme(&self, scheme: &str) -> Option<String> {
+        match self {
+            Verb::Reload => None,
+            Verb::Settings(page) => Some(page.deep_link_with_scheme(scheme)),
+            other => other
+                .deep_link()
+                .map(|link| format!("{scheme}://{}", link.trim_start_matches("mouseless://"))),
+        }
+    }
+
     /// Kanata layer this verb switches to, when the target is unconditional.
     ///
     /// `toggle` needs the current layer first and therefore returns `None`;
     /// see [`toggle_target`]. Layer switches (never direct daemon frames) keep
     /// kanata as the single source of truth (SPEC-cli).
     pub fn layer_change(&self) -> Option<&'static str> {
+        self.layer_change_with(&LayerNames::default())
+    }
+
+    /// Kanata layer for this verb using configured layer names.
+    pub fn layer_change_with<'a>(&self, layers: &LayerNames<'a>) -> Option<&'a str> {
         match self {
-            Verb::Show => Some(OVERLAY_LAYER),
-            Verb::Hide | Verb::ExitFreeMode => Some(BASE_LAYER),
-            Verb::EnterFreeMode => Some(FREE_MODE_LAYER),
+            Verb::Show => Some(layers.overlay),
+            Verb::Hide | Verb::ExitFreeMode => Some(layers.base),
+            Verb::EnterFreeMode => Some(layers.free_mode),
             Verb::Toggle
             | Verb::Status
             | Verb::Reload
@@ -222,10 +299,15 @@ impl Verb {
 /// Free mode is not the overlay, so toggling from `lyr-free` shows the grid
 /// (ending free mode through the normal layer transition).
 pub fn toggle_target(current_layer: &str) -> &'static str {
-    if current_layer == OVERLAY_LAYER {
-        BASE_LAYER
+    toggle_target_with(current_layer, &LayerNames::default())
+}
+
+/// Target layer for `toggle` using configured layer names.
+pub fn toggle_target_with<'a>(current_layer: &str, layers: &LayerNames<'a>) -> &'a str {
+    if current_layer == layers.overlay {
+        layers.base
     } else {
-        OVERLAY_LAYER
+        layers.overlay
     }
 }
 
@@ -319,6 +401,48 @@ mod tests {
             Verb::Settings(SettingsPage::Appearance).layer_change(),
             None
         );
+    }
+
+    #[test]
+    fn deep_links_accept_a_configured_scheme() {
+        assert_eq!(
+            Verb::parse_with_scheme("ml://toggle-overlay", "ml"),
+            Ok(Verb::Toggle)
+        );
+        assert_eq!(
+            Verb::parse_with_scheme("mouseless://toggle-overlay", "ml"),
+            Err(CliError::Usage)
+        );
+        assert_eq!(
+            SettingsPage::parse_with_scheme("ml://settings/appearance", "ml"),
+            Some(SettingsPage::Appearance)
+        );
+        assert_eq!(
+            Verb::deep_link_with_scheme(&Verb::Settings(SettingsPage::FreeMode), "ml"),
+            Some("ml://settings/free-mode".into())
+        );
+        assert_eq!(
+            Verb::deep_link_with_scheme(&Verb::Show, "ml"),
+            Some("ml://show-overlay".into())
+        );
+        assert_eq!(Verb::deep_link_with_scheme(&Verb::Reload, "ml"), None);
+    }
+
+    #[test]
+    fn layer_names_can_come_from_application_config() {
+        let layers = LayerNames {
+            base: "base-x",
+            overlay: "overlay-x",
+            free_mode: "free-x",
+        };
+        assert_eq!(Verb::Hide.layer_change_with(&layers), Some("base-x"));
+        assert_eq!(Verb::Show.layer_change_with(&layers), Some("overlay-x"));
+        assert_eq!(
+            Verb::EnterFreeMode.layer_change_with(&layers),
+            Some("free-x")
+        );
+        assert_eq!(toggle_target_with("overlay-x", &layers), "base-x");
+        assert_eq!(toggle_target_with("free-x", &layers), "overlay-x");
     }
 
     #[test]

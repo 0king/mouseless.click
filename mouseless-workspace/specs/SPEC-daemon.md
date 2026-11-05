@@ -77,7 +77,7 @@ idle loop:
   lyr-free      -> start_free_with_retry    (EBUSY ≤ ~2 s) -> free loop
   otherwise     -> daemon.on_layer_event (base restore; lyr-mouse teardown only)
 
-overlay loop (2 ms TCP read):
+overlay loop (2 ms TCP read, non-blocking evdev reads):
   overlay disconnect -> end
   layer != lyr-mouseless -> return that layer to the idle loop
   drain grabbed press/release events; handle_key_event
@@ -92,6 +92,12 @@ free loop (2 ms TCP read):
   Esc/auto-off/uinput failure -> end_free_mode (release held buttons, base)
 ```
 
+The grab must be **non-blocking** (`EvdevCellGrab` sets `O_NONBLOCK`): the loop
+above shares one thread, so a blocking key read would starve both the 8 ms tick
+(overlay never dismissing after a click / multi-click window never expiring)
+and the TCP layer poll (Esc is a kanata layer switch and emits no key, so it
+would only be seen when the next key wakes the loop — the live two-Esc bug).
+
 ### Action semantics (Phase 2)
 
 - `ActionIntent` is the only state→backend boundary: `Move`, `Click {button,
@@ -100,8 +106,15 @@ free loop (2 ms TCP read):
   native down/up pair per click and lets the compositor coalesce. The
   overlay/grab stays alive for `multi_click_threshold_ms`; continuous mode
   resets to level 1 instead of ending.
+- Two-key selection: the first key selects a column, sends `HighlightColumn`
+  (the renderer fades every other column's labels), and leaves the primary
+  grid up; the second key selects the row and opens the subgrid. `ShowSubgrid`
+  clears the emphasis.
+- Dismissal: Esc ends the session (drag released at the current cursor);
+  `CellKey::Other` — any non-modifier key outside the 30-cell vocabulary —
+  also ends the session immediately so the grab never silently eats a typo.
 - Drag: Alt on the final key begins/continues a drag; the final key without Alt
-  moves and drops. Esc releases at the current cursor.
+  moves and drops.
 - Nudge: optional `hold_subgrid_for_nudge`; step = sub-cell size /
   `nudges_per_cell`; release clicks at the nudged target.
 - Shift tap ≤ `MONITOR_SWITCH_TAP_MS` switches monitors by x order unless Shift

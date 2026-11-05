@@ -23,12 +23,13 @@ struct PreviewModel {
 
 impl Default for PreviewModel {
     fn default() -> Self {
+        let appearance = &crate::model::app_config().appearance;
         Self {
-            grid: [0.83, 0.87, 0.02],
-            opacity: 0.2,
-            label: [0.92, 0.91, 0.91],
-            highlight: [1.0, 0.70, 0.17],
-            keys: "qwertyuiopasdfghjkl;zxcvbnm,./".chars().collect(),
+            grid: crate::model::rgb_channels(&appearance.grid_color),
+            opacity: appearance.grid_opacity.clamp(0.0, 1.0),
+            label: crate::model::rgb_channels(&appearance.label_color),
+            highlight: crate::model::rgb_channels(&appearance.highlight_color),
+            keys: mouseless_config::SUBGRID_KEY_POOL.chars().collect(),
             columns: 10,
             rows: 3,
         }

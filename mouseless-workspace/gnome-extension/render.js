@@ -12,16 +12,14 @@ import Cogl from 'gi://Cogl';
 
 import * as Main from 'resource:///org/gnome/shell/ui/main.js';
 
+import { CONFIGURED_APPEARANCE } from './config.js';
+
 // Display defaults and layout constants. Colors and opacity come from the
-// model; these defaults cover older/malformed payloads.
+// model; these defaults cover older/malformed payloads and are generated from
+// mouseless.toml by the extension installer.
 // The primary overlay tiles the active monitor completely, so there is no
 // separate dim layer; the translucent fill is the overlay's only tint.
-const DEFAULT_APPEARANCE = {
-    grid_color: [0xd4, 0xde, 0x04],
-    grid_opacity: 0.2, // 80% transparent
-    label_color: [0xeb, 0xe9, 0xe8],
-    highlight_color: [255, 178, 44],
-};
+const DEFAULT_APPEARANCE = CONFIGURED_APPEARANCE;
 // Muted context behind an open subgrid keeps the same hue at 20/51 of the
 // configured grid alpha; labels drop to alpha 110 (pinned contrast).
 const MUTED_GRID_FACTOR = 20 / 51;
@@ -142,6 +140,8 @@ export class OverlayActor {
         this._model = null;
         this._subgrid = null;
         this._highlight = null;
+        // Pending column emphasis from `HighlightColumn`: `{column, cols}`.
+        this._highlightColumn = null;
         this._style = styleFor(null);
         this._layer = null;
         this._activeCells = new Map();
@@ -164,6 +164,9 @@ export class OverlayActor {
         this._model = model;
         this._subgrid = null;
         this._highlight = Number.isInteger(model.highlight) ? model.highlight : null;
+        // A fresh model starts a fresh selection; the daemon re-sends any
+        // pending column emphasis after Show.
+        this._highlightColumn = null;
         this._style = styleFor(model);
         this._rebuild();
         this._root.show();
@@ -172,6 +175,8 @@ export class OverlayActor {
     showSubgrid(parent, model) {
         this._subgrid = {parent, model};
         this._highlight = Number.isInteger(model.highlight) ? model.highlight : null;
+        // The open subgrid replaces the level-1 column emphasis.
+        this._highlightColumn = null;
         this._style = styleFor(model);
         this._rebuild();
         this._root.show();
@@ -185,10 +190,31 @@ export class OverlayActor {
         this._applyHighlight();
     }
 
+    /**
+     * Emphasise one primary-grid column.
+     *
+     * Labels in every other column drop to the muted alpha; the selected
+     * column keeps the configured label colour at full opacity. `column` is
+     * `null` to clear. `cols` maps a row-major cell `index` back to its
+     * column (`index % cols`), so the renderer never re-derives geometry.
+     */
+    highlightColumn(column, cols) {
+        if (column === null) {
+            this._highlightColumn = null;
+        } else if (Number.isInteger(column) && column >= 0 &&
+                   Number.isInteger(cols) && cols > 0) {
+            this._highlightColumn = {column, cols};
+        } else {
+            return; // Malformed emphasis: keep the last valid state.
+        }
+        this._applyHighlight();
+    }
+
     hide() {
         this._model = null;
         this._subgrid = null;
         this._highlight = null;
+        this._highlightColumn = null;
         this._clear();
         this._root.hide();
     }
@@ -273,12 +299,18 @@ export class OverlayActor {
     }
 
     _applyHighlight() {
+        const column = this._highlightColumn;
         for (const [index, entry] of this._activeCells) {
             const highlighted = index === this._highlight;
+            // A pending column key dims every label outside that column; the
+            // backgrounds stay untouched so the grid does not flicker.
+            const dimmed = column !== null && index % column.cols !== column.column;
             entry.actor.set_background_color(
                 rgba(highlighted ? this._style.highlight : entry.background));
-            entry.label?.set_color(
-                rgba(highlighted ? this._style.labelHighlight : entry.labelColor));
+            entry.label?.set_color(rgba(
+                highlighted ? this._style.labelHighlight
+                    : dimmed ? this._style.labelMuted
+                        : entry.labelColor));
         }
     }
 

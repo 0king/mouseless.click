@@ -14,13 +14,66 @@ truth: `../.agents/plan.md`; roles: `../.agents/AGENTS.md`; operating rules:
   (typed GTK4/Adwaita, no `.blp`)
 - `specs/` — module specs; index: `specs/SPEC-MAP.md` (acceptance criteria + open questions)
 
+## Application config (`mouseless.toml`)
+
+Application-level constants live in [`mouseless.toml`](mouseless.toml), installed
+as `/etc/mouseless/mouseless.toml`:
+
+- paths: state dir, `config.yaml` name, overlay socket, kanata main config,
+  `/dev/uinput`, and `/proc/bus/input/devices`;
+- the kanata TCP endpoint, connect/query timeouts, and reconnect backoff;
+- daemon loop timeouts and closed-loop movement tuning;
+- virtual device names and the uinput vendor id;
+- the base layer, `mouseless://` scheme, settings binary, and GTK app id;
+- appearance fallbacks (`grid_color`, `grid_opacity`, `label_color`,
+  `highlight_color`) used when `config.yaml` has no appearance section;
+- the IPC client timeout.
+
+Lookup order is `--config PATH` → `MOUSELESS_CONFIG` →
+`/etc/mouseless/mouseless.toml` → built-in defaults. `mouselessd`,
+`mouseless`, and `mouseless-settings` all accept `--config`. A missing
+installed file falls back to defaults; a file named explicitly through
+`--config`/`MOUSELESS_CONFIG` is required and errors are reported. The file is
+read once at startup — restart the process after editing. The user-editable
+settings document remains `/var/lib/mouseless/config.yaml` (edited by the
+settings app), not this file.
+
+Changing `[devices]` names or `[kanata] address` requires re-running
+`platform/install-system.sh`: it regenerates the kanata drop-in and writes the
+names into `unicfg.kbd` before validating. Changing `[deep_link] scheme` also
+requires that installer run so the desktop handler and `xdg-mime` registration
+are regenerated. The extension installer generates
+`gnome-extension/config.js` from the same TOML so the Shell client uses the
+configured socket and fallback colors.
+
+## Versioning
+
+The project version is tracked with [Semantic Versioning](https://semver.org/).
+[`VERSION`](VERSION) is the single source of truth; `CHANGELOG.md` records
+user-visible changes, and git releases are tagged `vX.Y.Z`.
+
+- The Cargo workspace inherits `VERSION` through `[workspace.package]`; every
+  crate uses `version.workspace = true`, so the CLI, daemon, and settings
+  binaries report the same `--version`.
+- The GNOME extension carries the same version in `metadata.json`
+  (`version-name`; the integer `version` is the extension-release counter) and
+  in the `extension_version` field of its `Hello` frame.
+- `./scripts/check-version.sh` verifies all of those agree and is also part of
+  `./scripts/check-platform.sh`.
+
+To cut a release, update `VERSION`, the `[workspace.package]` version, the
+extension metadata/Hello version, add the `CHANGELOG.md` entry, run the checks,
+commit, then `git tag vX.Y.Z`. The settings app shows the version on its Status
+page and in the About dialog; `mouselessd --version` and `mouseless --version`
+print theirs.
+
 ## Build
 
 ```sh
 cargo test --workspace        # fake-backend regression tests (plan §8)
 cargo clippy --workspace --all-targets -- -D warnings
 cargo build --release --workspace
-./scripts/check-platform.sh   # unit/udev/kanata/name-sync checks
+./scripts/check-platform.sh   # unit/udev/kanata/name/version checks
 ```
 
 ## Install
@@ -33,9 +86,11 @@ sudo ./platform/install-system.sh   # binaries, unit, sysusers, udev, kanata
 ./platform/install-extension.sh     # per desktop user
 ```
 
-The system installer creates the `mouselessd` user, enables
-`mouselessd.service`, and backs up replaced files. The extension installer
-packs `ipc.js`/`render.js`, installs, and enables the extension. On Wayland,
+The system installer creates the `mouselessd` user, installs
+`/etc/mouseless/mouseless.toml`, enables `mouselessd.service`, and backs up
+replaced files. The extension installer
+generates `config.js` from `mouseless.toml`, packs
+`ipc.js`/`render.js`/`config.js`, installs, and enables the extension. On Wayland,
 log out and back in after installing so GNOME Shell loads it. Use
 `sudo ./platform/install-system.sh --dry-run` to preview changes.
 
@@ -47,8 +102,8 @@ command must include the extras:
 
 ```sh
 gnome-extensions pack gnome-extension --force -o /tmp \
-  --extra-source=ipc.js --extra-source=render.js
-gnome-extensions install --force /tmp/mouseless@sonuscape.example.shell-extension.zip
+  --extra-source=ipc.js --extra-source=render.js --extra-source=config.js
+gnome-extensions install --force /tmp/mouseless@0king.dev.shell-extension.zip
 ```
 
 If `gnome-extensions enable` returns success but `info` still shows
@@ -85,11 +140,14 @@ Tap `ShiftLeft` to show the overlay. The primary grid is 10 columns × 30 rows:
   ```
 
 Every cell is labelled with both keys in that order — the top-left cell is
-`AQ`, the cell one column right is `SQ`, and the cell below it is `AW`. Type the
-two characters to select a cell; its 10×3 subgrid (keyboard-row layout
-`qwertyuiop` / `asdfghjkl;` / `zxcvbnm,./`) opens inside the cell. Type one
-subgrid character to click its center. `Space` clicks the selected cell center,
-and `Esc` exits.
+`AQ`, the cell one column right is `SQ`, and the cell below it is `AW`. Typing
+the column key highlights that column: its labels stay fully opaque while every
+other column fades. Type the row key to open the cell's 10×3 subgrid
+(keyboard-row layout `qwertyuiop` / `asdfghjkl;` / `zxcvbnm,./`), then one
+subgrid character to click its center. `Space` clicks the selected cell center.
+`Esc` exits, and any non-modifier key outside this 30-key vocabulary also
+dismisses the overlay instead of being silently swallowed by the temporary
+grab.
 
 The kanata overlay layer must emit the full 30-key block plainly; re-apply
 `platform/kanata/mouseless.kbd` with the system installer (or copy it to
@@ -98,7 +156,7 @@ The kanata overlay layer must emit the full 30-key block plainly; re-apply
 ## CLI
 
 `mouseless` switches layers through kanata TCP (`--kanata HOST:PORT` or
-`MOUSELESS_KANATA`, default `127.0.0.1:7070`):
+`MOUSELESS_KANATA`; the default comes from `mouseless.toml`):
 
 ```sh
 cargo run -p mouseless-cli -- show|hide|toggle
@@ -107,6 +165,7 @@ cargo run -p mouseless-cli -- status
 cargo run -p mouseless-cli -- reload
 cargo run -p mouseless-cli -- settings [grid|appearance|behavior|free-mode|keybindings|presets|status]
 cargo run -p mouseless-cli -- --list-input-devices
+cargo run -p mouseless-cli -- --config ./mouseless.toml status
 cargo run -p mouseless-cli -- --version
 ```
 
@@ -134,7 +193,8 @@ which persists and applies the current values. Auto-save is debounced and
 flushed when the window closes. The daemon stays the only writer of
 `/var/lib/mouseless/config.yaml`. When the daemon is unreachable the app opens
 the last persisted copy and reports that edits cannot be saved on the Status
-page.
+page. The Status page shows the settings front-end version and opens the About
+dialog.
 
 ```sh
 sudo apt install libgtk-4-dev libadwaita-1-dev

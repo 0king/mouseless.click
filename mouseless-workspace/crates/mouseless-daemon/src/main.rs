@@ -18,28 +18,19 @@
 //! mode is relative and keeps working without the extension, but a missing
 //! uinput device ends the session.
 
-use mouseless_config::{Config, ConfigError, ConfigStore};
-use mouseless_daemon::{Daemon, DaemonConfig, DaemonError, SessionStep, FREE_MODE_TICK};
+use mouseless_config::{load_effective, AppConfig, Config, ConfigError, ConfigStore};
+use mouseless_daemon::{Daemon, DaemonConfig, DaemonError, SessionStep};
 use mouseless_ipc::{ClientToDaemon, CursorPos, DaemonToClient};
 use mouseless_kbd::{
     EvdevCellGrab, KanataSubscriber, KanataTcpConfig, KbdError, KeyboardBackend, LayerEvent,
 };
 use mouseless_mouse::impls::UinputMouse;
 use mouseless_mouse::{MouseBackend, MouseButton, MouseError};
-use mouseless_overlay::impls::GnomeOverlay;
+use mouseless_overlay::impls::{GnomeOverlay, SOCKET_GROUP};
 use mouseless_overlay::{GridModel, MonitorLayout, OverlayBackend, OverlayError, OverlayEvent};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
-
-/// Idle TCP read timeout: long enough not to spin, short enough to poll the
-/// overlay socket for cursor reports/hello traffic (plan §5).
-const IDLE_READ_TIMEOUT: Duration = Duration::from_millis(500);
-/// Session TCP read timeout: grabbed keys must be polled every few ms.
-const SESSION_READ_TIMEOUT: Duration = Duration::from_millis(2);
-/// Grab retry budget for `EBUSY` (plan §5 rule 5): 40 × 50 ms ≈ 2 s.
-const GRAB_RETRY_ATTEMPTS: u32 = 40;
-const GRAB_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 /// Production mouse: real uinput, or a loud no-op when `/dev/uinput` is denied.
 enum ProdMouse {
@@ -48,10 +39,10 @@ enum ProdMouse {
 }
 
 impl ProdMouse {
-    fn create() -> Self {
-        match UinputMouse::create() {
+    fn create(name: &str, vendor: u16) -> Self {
+        match UinputMouse::create_named(name, vendor) {
             Ok(m) => {
-                println!("mouselessd: uinput mouseless-mouse ready");
+                println!("mouselessd: uinput {name} ready");
                 Self::Uinput(m)
             }
             Err(e) => {
@@ -110,8 +101,8 @@ enum ProdOverlay {
 }
 
 impl ProdOverlay {
-    fn bind(path: &str) -> Self {
-        match GnomeOverlay::bind(path) {
+    fn bind(path: &str, group: &str) -> Self {
+        match GnomeOverlay::bind_with_group(path, group) {
             Ok(o) => {
                 println!("mouselessd: overlay socket {path}");
                 Self::Gnome(Box::new(o))
@@ -137,6 +128,13 @@ impl OverlayBackend for ProdOverlay {
     fn highlight(&mut self, index: u32) -> Result<(), Self::Error> {
         match self {
             Self::Gnome(o) => o.highlight(index),
+            Self::Disabled => Ok(()),
+        }
+    }
+
+    fn highlight_column(&mut self, column: Option<u32>, cols: u32) -> Result<(), Self::Error> {
+        match self {
+            Self::Gnome(o) => o.highlight_column(column, cols),
             Self::Disabled => Ok(()),
         }
     }
@@ -213,37 +211,67 @@ enum SessionEnd {
     Layer(String),
 }
 
-/// systemd sets `STATE_DIRECTORY`; `/var/lib/mouseless` is the unit default.
-fn default_state_dir() -> PathBuf {
-    std::env::var_os("STATE_DIRECTORY")
-        .and_then(|value| std::env::split_paths(&value).next())
-        .unwrap_or_else(|| PathBuf::from("/var/lib/mouseless"))
+/// `--config PATH` / `--config=PATH` is resolved before the main pass.
+fn config_path_arg() -> Option<PathBuf> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if let Some(path) = arg.strip_prefix("--config=") {
+            return Some(PathBuf::from(path));
+        }
+        if arg == "--config" {
+            return args.next().map(PathBuf::from);
+        }
+    }
+    None
 }
 
-fn parse_args() -> (DaemonConfig, PathBuf) {
+/// systemd sets `STATE_DIRECTORY`; `mouseless.toml` is the installed fallback.
+fn default_state_dir(app: &AppConfig) -> PathBuf {
+    std::env::var_os("STATE_DIRECTORY")
+        .and_then(|value| std::env::split_paths(&value).next())
+        .unwrap_or_else(|| PathBuf::from(&app.paths.state_dir))
+}
+
+fn parse_args(app: &AppConfig) -> (DaemonConfig, PathBuf) {
     let mut cfg = DaemonConfig::default();
-    let mut state_dir = default_state_dir();
+    cfg.apply_app_config(app);
+    let mut state_dir = default_state_dir(app);
+    let mut state_flag: Option<PathBuf> = None;
+    let mut kanata_flag: Option<String> = None;
+    let mut socket_flag: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
+            "--config" => {
+                // Already applied by `config_path_arg`; consume its value.
+                let _ = args.next();
+            }
+            _ if a.starts_with("--config=") => {}
             "--kanata" => {
                 if let Some(v) = args.next() {
-                    cfg.kanata_addr = v;
+                    kanata_flag = Some(v);
                 }
             }
             "--socket" => {
                 if let Some(v) = args.next() {
-                    cfg.socket_path = v;
+                    socket_flag = Some(v);
                 }
             }
             "--state-dir" => {
                 if let Some(v) = args.next() {
-                    state_dir = PathBuf::from(v);
+                    state_flag = Some(PathBuf::from(v));
                 }
             }
             "--help" | "-h" => {
                 println!(
-                    "usage: mouselessd [--kanata HOST:PORT] [--socket PATH] [--state-dir DIR] [--version]"
+                    "usage: mouselessd [--config PATH] [--kanata HOST:PORT] [--socket PATH] [--state-dir DIR] [--version]"
+                );
+                println!(
+                    "defaults: config {} | kanata {} | socket {} | state {}",
+                    mouseless_config::APP_CONFIG_PATH,
+                    app.kanata.address,
+                    app.paths.socket,
+                    app.paths.state_dir
                 );
                 std::process::exit(0);
             }
@@ -257,19 +285,39 @@ fn parse_args() -> (DaemonConfig, PathBuf) {
             }
         }
     }
-    // Dev overrides without touching the systemd unit contract:
+    // Dev overrides without touching the systemd unit contract. CLI flags
+    // have the final word over environment variables and the TOML file.
     if let Ok(sock) = std::env::var("MOUSELESS_SOCKET") {
         cfg.socket_path = sock;
     }
     if let Ok(dir) = std::env::var("MOUSELESS_STATE_DIR") {
         state_dir = PathBuf::from(dir);
     }
+    if let Some(addr) = kanata_flag {
+        cfg.kanata_addr = addr;
+    }
+    if let Some(sock) = socket_flag {
+        cfg.socket_path = sock;
+    }
+    if let Some(dir) = state_flag {
+        state_dir = dir;
+    }
     (cfg, state_dir)
 }
 
 fn main() -> ExitCode {
-    let (mut cfg, state_dir) = parse_args();
-    let store = ConfigStore::for_daemon(&state_dir);
+    let explicit = config_path_arg();
+    let loaded = load_effective(explicit.as_deref());
+    let app = match loaded.error {
+        Some(error) => {
+            eprintln!("mouselessd: {}: {error}", loaded.source.label());
+            return ExitCode::from(2);
+        }
+        None => loaded.config,
+    };
+
+    let (mut cfg, state_dir) = parse_args(&app);
+    let store = ConfigStore::new(app.state_config_path(&state_dir));
     // Load the daemon-owned last-applied config. Corruption falls back to
     // last-good, then schema defaults, and is logged rather than fatal: the
     // daemon must stay available to receive a corrected `Save`/`Update`.
@@ -277,35 +325,44 @@ fn main() -> ExitCode {
     match &config_error {
         Some(ConfigError::NotFound { .. }) => {
             println!(
-                "mouselessd: no persisted config at {}; using defaults",
+                "mouselessd: no persisted config at {}; using mouseless.toml defaults",
                 store.config_path().display()
             );
         }
         Some(error) => eprintln!("mouselessd: config fallback ({error}); using last-good"),
         None => println!("mouselessd: config {}", store.config_path().display()),
     }
-    cfg.apply_config(&stored);
+    // A missing settings document keeps the TOML appearance/paths; an existing
+    // (or last-good) document wins for every section it defines.
+    if !matches!(config_error, Some(ConfigError::NotFound { .. })) {
+        cfg.apply_config(&stored);
+    }
     let start_overlay_layer = cfg.overlay_layer.clone();
     let start_free_layer = cfg.free_mode_layer.clone();
 
     let (host, port) = cfg
         .kanata_addr
         .rsplit_once(':')
-        .unwrap_or(("127.0.0.1", "7070"));
+        .and_then(|(host, port)| {
+            port.parse::<u16>()
+                .ok()
+                .map(|port| (host.to_string(), port))
+        })
+        .unwrap_or_else(|| app.kanata.endpoint());
     let tcp_cfg = KanataTcpConfig {
-        host: host.to_string(),
-        port: port.parse().unwrap_or(7070),
-        timeout: Duration::from_secs(2),
+        host,
+        port,
+        timeout: app.kanata.connect_timeout(),
     };
 
-    let overlay = ProdOverlay::bind(&cfg.socket_path);
-    let mouse = ProdMouse::create();
+    let overlay = ProdOverlay::bind(&cfg.socket_path, SOCKET_GROUP);
+    let mouse = ProdMouse::create(&app.devices.mouse_name, app.devices.vendor_id);
     let mut daemon = Daemon::with_grab(
         KanataSubscriber::new(tcp_cfg),
         mouse,
         overlay,
         cfg,
-        EvdevCellGrab::acquire,
+        EvdevCellGrab::acquire_named,
     );
 
     // Resync on (re)connect (plan §5): never assume the starting layer.
@@ -314,7 +371,7 @@ fn main() -> ExitCode {
             Ok(name) => break name,
             Err(e) => {
                 eprintln!("mouselessd: kanata TCP unavailable ({e}); retrying…");
-                std::thread::sleep(Duration::from_secs(1));
+                std::thread::sleep(app.kanata.reconnect_backoff());
             }
         }
     };
@@ -330,10 +387,13 @@ fn main() -> ExitCode {
 
     loop {
         // Overlay reports must be current before a layer-event show.
-        if let Err(e) = daemon.keyboard_mut().set_read_timeout(IDLE_READ_TIMEOUT) {
+        if let Err(e) = daemon
+            .keyboard_mut()
+            .set_read_timeout(app.daemon.idle_read_timeout())
+        {
             eprintln!("mouselessd: idle read timeout: {e}");
         }
-        if drain_overlay_events(&mut daemon, &store) {
+        if drain_overlay_events(&mut daemon, &store, &app) {
             eprintln!("mouselessd: overlay disconnected; releasing grab, typing unaffected");
             daemon.on_overlay_lost();
         }
@@ -352,16 +412,16 @@ fn main() -> ExitCode {
                         return ExitCode::from(1);
                     }
                     eprintln!("mouselessd: tcp ({msg}); backing off…");
-                    std::thread::sleep(Duration::from_secs(1));
+                    std::thread::sleep(app.kanata.reconnect_backoff());
                     continue;
                 }
             },
         };
 
         if name == daemon.overlay_layer() {
-            let _ = drain_overlay_events(&mut daemon, &store);
-            match start_overlay_with_retry(&mut daemon) {
-                Ok(()) => match run_overlay_session(&mut daemon, &store) {
+            let _ = drain_overlay_events(&mut daemon, &store, &app);
+            match start_overlay_with_retry(&mut daemon, &app) {
+                Ok(()) => match run_overlay_session(&mut daemon, &store, &app) {
                     SessionEnd::Done => {}
                     SessionEnd::KanataGone => {
                         let _ = daemon.on_kanata_lost();
@@ -377,10 +437,10 @@ fn main() -> ExitCode {
                 }
             }
         } else if name == daemon.free_mode_layer() {
-            match start_free_with_retry(&mut daemon) {
+            match start_free_with_retry(&mut daemon, &app) {
                 Ok(()) => {
                     if daemon.free_mode_active() {
-                        match run_free_session(&mut daemon, &store) {
+                        match run_free_session(&mut daemon, &store, &app) {
                             SessionEnd::Done => {}
                             SessionEnd::KanataGone => {
                                 let _ = daemon.on_kanata_lost();
@@ -406,24 +466,28 @@ fn main() -> ExitCode {
     }
 }
 
-/// Start the overlay, retrying `EBUSY` for up to ~2 s (plan §5 rule 5).
-fn start_overlay_with_retry(daemon: &mut ProdDaemon) -> Result<(), DaemonError> {
-    for _ in 0..GRAB_RETRY_ATTEMPTS {
+/// Start the overlay, retrying `EBUSY` within the configured budget.
+fn start_overlay_with_retry(daemon: &mut ProdDaemon, app: &AppConfig) -> Result<(), DaemonError> {
+    for _ in 0..app.daemon.grab_retry_attempts {
         match daemon.start_overlay() {
             Ok(()) => return Ok(()),
-            Err(DaemonError::Kbd(KbdError::Busy)) => std::thread::sleep(GRAB_RETRY_DELAY),
+            Err(DaemonError::Kbd(KbdError::Busy)) => {
+                std::thread::sleep(app.daemon.grab_retry_delay())
+            }
             Err(e) => return Err(e),
         }
     }
     Err(DaemonError::Kbd(KbdError::Busy))
 }
 
-/// Start custom free mode, retrying `EBUSY` for up to ~2 s.
-fn start_free_with_retry(daemon: &mut ProdDaemon) -> Result<(), DaemonError> {
-    for _ in 0..GRAB_RETRY_ATTEMPTS {
+/// Start custom free mode, retrying `EBUSY` within the configured budget.
+fn start_free_with_retry(daemon: &mut ProdDaemon, app: &AppConfig) -> Result<(), DaemonError> {
+    for _ in 0..app.daemon.grab_retry_attempts {
         match daemon.start_free_mode() {
             Ok(()) => return Ok(()),
-            Err(DaemonError::Kbd(KbdError::Busy)) => std::thread::sleep(GRAB_RETRY_DELAY),
+            Err(DaemonError::Kbd(KbdError::Busy)) => {
+                std::thread::sleep(app.daemon.grab_retry_delay())
+            }
             Err(e) => return Err(e),
         }
     }
@@ -435,14 +499,21 @@ fn start_free_with_retry(daemon: &mut ProdDaemon) -> Result<(), DaemonError> {
 ///
 /// The grab is held ONLY here (plan §5 rule 1). Esc/click/layer-exit all end
 /// the session; `end_overlay` releases the grab and restores the base layer.
-fn run_overlay_session(daemon: &mut ProdDaemon, store: &ConfigStore) -> SessionEnd {
-    if let Err(e) = daemon.keyboard_mut().set_read_timeout(SESSION_READ_TIMEOUT) {
+fn run_overlay_session(
+    daemon: &mut ProdDaemon,
+    store: &ConfigStore,
+    app: &AppConfig,
+) -> SessionEnd {
+    if let Err(e) = daemon
+        .keyboard_mut()
+        .set_read_timeout(app.daemon.session_read_timeout())
+    {
         eprintln!("mouselessd: session read timeout: {e}");
     }
 
     let mut next_tick = Instant::now();
     loop {
-        if drain_overlay_events(daemon, store) {
+        if drain_overlay_events(daemon, store, app) {
             eprintln!("mouselessd: overlay disconnected mid-session; ending");
             break;
         }
@@ -504,7 +575,7 @@ fn run_overlay_session(daemon: &mut ProdDaemon, store: &ConfigStore) -> SessionE
                 eprintln!("mouselessd: overlay tick failed ({e}); ending session");
                 break;
             }
-            next_tick = now + FREE_MODE_TICK;
+            next_tick = now + app.daemon.free_mode_tick();
             if !daemon.session_active() {
                 break;
             }
@@ -522,14 +593,17 @@ fn run_overlay_session(daemon: &mut ProdDaemon, store: &ConfigStore) -> SessionE
 /// Free mode is relative, so an overlay disconnect only hides the overlay and
 /// leaves the session running. Esc, auto-off, uinput failure, or a layer change
 /// end it; held buttons are always released by `end_free_mode`/teardown.
-fn run_free_session(daemon: &mut ProdDaemon, store: &ConfigStore) -> SessionEnd {
-    if let Err(e) = daemon.keyboard_mut().set_read_timeout(SESSION_READ_TIMEOUT) {
+fn run_free_session(daemon: &mut ProdDaemon, store: &ConfigStore, app: &AppConfig) -> SessionEnd {
+    if let Err(e) = daemon
+        .keyboard_mut()
+        .set_read_timeout(app.daemon.session_read_timeout())
+    {
         eprintln!("mouselessd: free-mode read timeout: {e}");
     }
 
     let mut next_tick = Instant::now();
     loop {
-        if drain_overlay_events(daemon, store) {
+        if drain_overlay_events(daemon, store, app) {
             // Relative motion keeps working; only the overlay is gone.
             eprintln!("mouselessd: overlay disconnected; free mode continues");
             daemon.on_overlay_lost();
@@ -585,7 +659,7 @@ fn run_free_session(daemon: &mut ProdDaemon, store: &ConfigStore) -> SessionEnd 
                 eprintln!("mouselessd: free-mode tick failed ({e}); ending session");
                 break;
             }
-            next_tick = now + FREE_MODE_TICK;
+            next_tick = now + app.daemon.free_mode_tick();
             if !daemon.free_mode_active() {
                 break;
             }
@@ -604,10 +678,10 @@ fn run_free_session(daemon: &mut ProdDaemon, store: &ConfigStore) -> SessionEnd 
 
 /// Drain overlay events, applying any CLI/GUI `Reload`/`Save`/`Update`
 /// requests. Returns whether a helloed overlay disconnected.
-fn drain_overlay_events(daemon: &mut ProdDaemon, store: &ConfigStore) -> bool {
+fn drain_overlay_events(daemon: &mut ProdDaemon, store: &ConfigStore, app: &AppConfig) -> bool {
     let mut lost = false;
     for ev in daemon.poll_overlay_events() {
-        log_overlay_event(&ev);
+        log_overlay_event(&ev, app.daemon.debug_layout);
         match ev {
             OverlayEvent::Disconnected => lost = true,
             OverlayEvent::ClientCommand {
@@ -734,8 +808,8 @@ fn is_kanata_gone(msg: &str) -> bool {
 ///
 /// Off by default. Useful when diagnosing multi-monitor offsets: the report
 /// carries the extension's physical-pixel layout and cursor position.
-fn log_overlay_event(ev: &OverlayEvent) {
-    if std::env::var_os("MOUSELESS_DEBUG_LAYOUT").is_none() {
+fn log_overlay_event(ev: &OverlayEvent, enabled: bool) {
+    if !enabled && std::env::var_os("MOUSELESS_DEBUG_LAYOUT").is_none() {
         return;
     }
     match ev {
@@ -828,7 +902,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("daemon.sock");
         let path_str = path.to_str().unwrap().to_string();
-        let mut overlay = ProdOverlay::bind(&path_str);
+        let mut overlay = ProdOverlay::bind(&path_str, "mouseless");
 
         let mut client = UnixStream::connect(&path).unwrap();
         client
