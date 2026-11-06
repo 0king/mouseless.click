@@ -1,6 +1,6 @@
 #!/bin/sh
 # Mouseless Phase 1.1 + Phase 2: apply kanata config + service drop-in.
-# Run from mouseless-workspace/ as: sudo ./platform/kanata/apply-phase11.sh
+# Run from repo root as: sudo ./platform/kanata/apply-kanata-config.sh
 # Backs up unicfg.kbd and the existing include, applies the 4 UNICFG-EDITS.md
 # changes (output name, @ml-tap, @ml-free-tap, include), validates with
 # `kanata --check` (restores both files and aborts on failure), then restarts

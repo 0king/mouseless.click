@@ -140,7 +140,6 @@ live in `impls/` behind Cargo feature flags. Platform specifics (device paths, g
 names, unit files, extension API versions) live in `platform/`, never hardcoded.
 
 ```
-mouseless-workspace/
 ├── Cargo.toml
 ├── crates/
 │   ├── mouseless-core/        # PURE grid math, zero I/O (cell→pixel, layouts)
@@ -368,7 +367,7 @@ Trait-boundary rules (enforced in review + CI):
   kanata feels unaffected because it is steered as a relative nudge, not an
   absolute target. Do not disable the user's global acceleration to work
   around this._
-  _See `mouseless-workspace/specs/SPEC-daemon.md` §Movement control loop._
+  _See `specs/SPEC-daemon.md` §Movement control loop._
 
 ### Grid layout (pre-Phase 3, 2026-11-03)
 - [x] Two-level primary grid: 10 columns (`asdfghjkl;`) × 30 rows

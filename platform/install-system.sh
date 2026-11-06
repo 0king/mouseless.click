@@ -1,7 +1,7 @@
 #!/bin/sh
 # Mouseless system installer: binaries, systemd unit, sysusers, udev, kanata.
 #
-# Run from mouseless-workspace/ after building:
+# Run from repo root after building:
 #   cargo build --release --workspace
 #   sudo ./platform/install-system.sh
 #
@@ -16,7 +16,7 @@
 #   /usr/share/applications/mouseless-url-handler.desktop
 #   /usr/share/applications/mouseless-settings.desktop
 #   /usr/local/share/doc/mouseless/README.md
-#   /etc/kanata/mouseless.kbd + kanata drop-in (via apply-phase11.sh)
+#   /etc/kanata/mouseless.kbd + kanata drop-in (via apply-kanata-config.sh)
 #
 # Existing files are backed up as <path>.bak.YYYYmmdd-HHMMSS.<pid>.
 # The kanata step edits /etc/kanata/unicfg.kbd, validates it with
@@ -251,7 +251,7 @@ else
     echo "  xdg-mime default mouseless-url-handler.desktop x-scheme-handler/$SCHEME" >&2
 fi
 
-# 4. Kanata include + drop-in. apply-phase11.sh also edits unicfg.kbd
+# 4. Kanata include + drop-in. apply-kanata-config.sh also edits unicfg.kbd
 #    (backup + `kanata --check` + restart); --skip-kanata leaves that alone.
 #    Endpoint/device names are exported so the script writes the same values
 #    into the drop-in and unicfg.kbd.
@@ -260,7 +260,7 @@ if [ "$SKIP_KANATA" -eq 0 ]; then
     export MOUSELESS_KANATA_OUTPUT_NAME="$KANATA_OUTPUT_NAME"
     export MOUSELESS_MOUSE_NAME="$MOUSE_NAME"
     if [ -f /etc/kanata/unicfg.kbd ] && command -v kanata >/dev/null 2>&1; then
-        run sh "$REPO_DIR/platform/kanata/apply-phase11.sh"
+        run sh "$REPO_DIR/platform/kanata/apply-kanata-config.sh"
     else
         echo "kanata config not found or kanata not in PATH; installing include/drop-in only" >&2
         install_file "$REPO_DIR/platform/kanata/mouseless.kbd" \

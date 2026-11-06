@@ -19,7 +19,7 @@ verifiable by a scripted runbook.
 
 ## Scope
 
-- In: kanata `/etc/kanata/mouseless.kbd` + `UNICFG-EDITS.md` + `apply-phase11.sh`;
+- In: kanata `/etc/kanata/mouseless.kbd` + `UNICFG-EDITS.md` + `apply-kanata-config.sh`;
   `kanata.service.d` override; `mouselessd.service`; `99-mouseless.rules`;
   `sysusers.d` for `mouselessd`/`mouseless`; system + extension installers;
   runbook (`platform/README.md`); platform check script; distro matrix notes;
@@ -33,7 +33,7 @@ verifiable by a scripted runbook.
 | File | Install path | Purpose |
 |---|---|---|
 | `kanata/mouseless.kbd` | `/etc/kanata/mouseless.kbd` | `ml-tap` / `ml-free-tap` (`tap-hold-release 200 200` → `lyr-mouseless` / `lyr-free`), clean overlay layer (level-1 columns `a s d f g h j k l ;` + every level-2 key `qwertyuiop / asdfghjkl; / zxcvbnm,./` emitted plainly, `spc`, `esc`→base), and the custom free-mode layer (`i/k/j/l`, boosts, buttons, wheel). |
-| `kanata/UNICFG-EDITS.md` + `apply-phase11.sh` | runbook (script backs up both files, edits, `kanata --check`, restores on failure, restarts) | The 4 unicfg edits: defcfg output name + mouse exclude, `@ml-tap` and `@ml-free-tap` in `lyr-base`, `(include "mouseless.kbd")`. |
+| `kanata/UNICFG-EDITS.md` + `apply-kanata-config.sh` | runbook (script backs up both files, edits, `kanata --check`, restores on failure, restarts) | The 4 unicfg edits: defcfg output name + mouse exclude, `@ml-tap` and `@ml-free-tap` in `lyr-base`, `(include "mouseless.kbd")`. |
 | `systemd/kanata.service.d-override.conf` | `/etc/systemd/system/kanata.service.d/mouseless.conf` | TCP `-p 127.0.0.1:7070`, `--emergency-exit-code 1`, `Restart=on-failure` + `RestartForceExitStatus=SIGTERM` (audit W2). `SupplementaryGroups=input uinput` — additive/idempotent (a no-op when kanata-svc already has them, a fix when it does not); kanata never joins the human `mouseless` socket group. |
 | `../mouseless.toml` | `/etc/mouseless/mouseless.toml` | Application-level constants (paths, kanata endpoint, timeouts, device names, base layer, deep-link scheme, app id, appearance fallbacks). Read by all binaries via `--config`/`MOUSELESS_CONFIG`/default path. The installer writes `[devices]` names and `[kanata] address` into the defcfg/drop-in, then validates with `kanata --check`; re-run the installer after changing them. |
 | `systemd/mouselessd.service` | `/etc/systemd/system/mouselessd.service` | `After=kanata.service`, no `Requires=`; `ExecStart=/usr/local/bin/mouselessd` (endpoint comes from `mouseless.toml`, never the unit); `User=mouselessd`, `Group=mouseless`, `SupplementaryGroups=input uinput`; `RuntimeDirectory=mouseless` (0770), `UMask=0007`; `Restart=on-failure`, `StartLimitIntervalSec=0`; sandboxing (`ProtectSystem=strict`, empty capability set). |
@@ -126,7 +126,7 @@ be added with the GTK app; until then they are rejected.
 
 POSIX shell for scripts (`set -eu`, backup-before-edit, validate-before-restart);
 systemd unit/drop-in syntax; udev rules; desktop entry spec. No Python beyond
-the embedded edit script in `apply-phase11.sh` (already present, keep stdlib-only).
+the embedded edit script in `apply-kanata-config.sh` (already present, keep stdlib-only).
 
 ## Commands
 
@@ -142,7 +142,7 @@ sudo ./platform/install-system.sh
 ./platform/install-extension.sh
 
 # apply kanata config + drop-in alone (backs up + validates; aborts on failure)
-sudo ./platform/kanata/apply-phase11.sh
+sudo ./platform/kanata/apply-kanata-config.sh
 
 # verify:
 kanata --check --cfg /etc/kanata/unicfg.kbd
@@ -176,7 +176,7 @@ installed-file contracts. Phase 3 adds `platform/desktop/`.
 - #1: `scripts/check-platform.sh` greps the include for
   `tap-hold-release 200 200` on both `ml-tap` and `ml-free-tap`, plain cell keys
   in `lyr-mouseless`, the `lyr-free` movement/button/wheel keys, and absence of
-  `cmd`; it greps `apply-phase11.sh` for `linux-output-device-name` and
+  `cmd`; it greps `apply-kanata-config.sh` for `linux-output-device-name` and
   `linux-dev-names-exclude`. Blocking; runs without root.
 - #5: pointer accuracy is covered by the daemon's closed-loop movement
   regressions; the platform script only asserts the `uinput` group rule.

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Mouseless platform checks (plan §8 #1/#5/#6; SPEC-platform).
 #
-# Run from mouseless-workspace/:
+# Run from repo root:
 #   ./scripts/check-platform.sh
 #
 # Asserts the installable files agree with the Rust constants and the
@@ -27,7 +27,7 @@ set -eu
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 KBD="$ROOT/platform/kanata/mouseless.kbd"
-APPLY="$ROOT/platform/kanata/apply-phase11.sh"
+APPLY="$ROOT/platform/kanata/apply-kanata-config.sh"
 UNIT="$ROOT/platform/systemd/mouselessd.service"
 DROPIN="$ROOT/platform/systemd/kanata.service.d-override.conf"
 UDEV="$ROOT/platform/udev/99-mouseless.rules"

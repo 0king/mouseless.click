@@ -9,7 +9,7 @@ udev rule, `sysusers`, installers, and the platform checks. Architecture:
 | Source | Installed as | Purpose |
 |---|---|---|
 | `kanata/mouseless.kbd` | `/etc/kanata/mouseless.kbd` | Overlay + custom free-mode layers. Sourced by `unicfg.kbd`. |
-| `kanata/apply-phase11.sh` | run in place | Backs up + edits `unicfg.kbd`, validates with `kanata --check`, installs the drop-in, restarts kanata. |
+| `kanata/apply-kanata-config.sh` | run in place | Backs up + edits `unicfg.kbd`, validates with `kanata --check`, installs the drop-in, restarts kanata. |
 | `systemd/kanata.service.d-override.conf` | `/etc/systemd/system/kanata.service.d/mouseless.conf` | Localhost TCP, SIGTERM restart, `SupplementaryGroups=input uinput` (idempotent; no-op when kanata already has them). |
 | `systemd/mouselessd.service` | `/etc/systemd/system/mouselessd.service` | Daemon unit; `mouselessd:mouseless`, `SupplementaryGroups=input uinput`, `RuntimeDirectory=mouseless`, `StateDirectory=mouseless` (0750) for the last-applied config. |
 | `desktop/mouseless-url-handler.desktop` | `/usr/share/applications/mouseless-url-handler.desktop` | `mouseless://` scheme handler → `mouseless %u` (overlay, free-mode, status, device list, settings). |
@@ -27,7 +27,6 @@ Prerequisites: kanata at `/usr/local/bin/kanata`, GNOME Shell 45–50,
 systemd, `gnome-extensions`, and a Rust toolchain for the build.
 
 ```sh
-cd mouseless-workspace
 cargo build --release --workspace
 ./scripts/check-platform.sh
 sudo ./platform/install-system.sh
@@ -41,7 +40,7 @@ The system installer:
 3. installs `mouselessd`/`mouseless`/`mouseless-settings` to `/usr/local/bin`
    and `mouseless.toml` to `/etc/mouseless/mouseless.toml`;
 4. installs the unit, both desktop entries, and runs `systemctl daemon-reload`;
-5. applies the kanata include/drop-in via `apply-phase11.sh` (creates any
+5.    applies the kanata include/drop-in via `apply-kanata-config.sh` (creates any
    missing `input`/`uinput` group, backs up + edits `unicfg.kbd` with the
    configured device names and TCP endpoint, runs `kanata --check`, restarts
    kanata);
@@ -69,7 +68,7 @@ joins them rather than creating a parallel group. The kanata drop-in lists both
 in `SupplementaryGroups=`, which systemd treats as additive — a no-op when
 kanata-svc already has them, and a fix when it does not. Because systemd refuses
 to start a unit whose `SupplementaryGroups=` names a missing group, both
-`install-system.sh` (sysusers) and `apply-phase11.sh` create them first if the
+`install-system.sh` (sysusers) and `apply-kanata-config.sh` create them first if the
 host lacks them. The daemon and kanata
 are the only processes that can observe or inject input. The desktop user needs
 `mouseless` solely to talk to the overlay socket. Do not add a human account to

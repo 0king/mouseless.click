@@ -29,7 +29,7 @@ config_file = "config.yaml"
 socket = "/run/mouseless/mouselessd.sock"
 # Kanata main config checked by the settings app before applying an include.
 # The installer/apply script still edit this path; change it only together
-# with platform/kanata/apply-phase11.sh.
+# with platform/kanata/apply-kanata-config.sh.
 kanata_main_config = "/etc/kanata/unicfg.kbd"
 # uinput device used for synthetic mouse events.
 uinput = "/dev/uinput"

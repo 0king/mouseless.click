@@ -1,7 +1,7 @@
 #!/bin/sh
 # Mouseless GNOME extension installer (per desktop user).
 #
-# Run from mouseless-workspace/ as your desktop user:
+# Run from repo root as your desktop user:
 #   ./platform/install-extension.sh
 #
 # Packs the draw-only extension (extension.js + ipc.js + render.js + a
