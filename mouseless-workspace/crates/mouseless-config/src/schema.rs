@@ -84,7 +84,9 @@ impl Config {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GridConfig {
-    /// Level-1 (column) keys, left-to-right. Subset of [`COLUMN_KEY_POOL`].
+    /// Level-1 (column) keys, left-to-right. Any 5-100 unique ASCII keys;
+    /// space and the full string `esc` are reserved. [`COLUMN_KEY_POOL`] is
+    /// only the default value.
     #[serde(default = "default_columns")]
     pub columns: String,
     /// Level-2 (row) keys, top-to-bottom. Subset of [`ROW_KEY_POOL`].

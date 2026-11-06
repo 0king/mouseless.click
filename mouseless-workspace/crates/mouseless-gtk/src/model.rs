@@ -158,13 +158,18 @@ pub fn columns_hint(text: &str) -> String {
         }
     }
 
-    let mut parts = vec![format!(
-        "{} key{}",
-        chars.len(),
-        if chars.len() == 1 { "" } else { "s" }
-    )];
-    if chars.len() < 5 || chars.len() > 100 {
-        parts.push(format!("must be 5-100, got {}", chars.len()));
+    let mut parts = vec![
+        format!(
+            "{} key{}",
+            chars.len(),
+            if chars.len() == 1 { "" } else { "s" }
+        ),
+        "range 5-100".into(),
+    ];
+    if chars.len() < 5 {
+        parts.push("too few".into());
+    } else if chars.len() > 100 {
+        parts.push("too many".into());
     }
     if text.eq_ignore_ascii_case("esc") {
         parts.push("reserved: esc (exit key)".into());
@@ -178,7 +183,13 @@ pub fn columns_hint(text: &str) -> String {
     if !duplicates.is_empty() {
         parts.push(format!("duplicates: {}", collect(&duplicates)));
     }
-    if non_ascii.is_empty() && invalid.is_empty() && duplicates.is_empty() && !text.eq_ignore_ascii_case("esc") && chars.len() >= 5 && chars.len() <= 100 {
+    if non_ascii.is_empty()
+        && invalid.is_empty()
+        && duplicates.is_empty()
+        && !text.eq_ignore_ascii_case("esc")
+        && chars.len() >= 5
+        && chars.len() <= 100
+    {
         parts.push("valid".into());
     }
     parts.join(" · ")
@@ -390,10 +401,18 @@ mod tests {
 
     #[test]
     fn key_hints_report_count_pool_and_duplicates() {
-        assert_eq!(columns_hint("asdf"), "4 keys · must be 5-100, got 4");
-        assert_eq!(columns_hint("asdz"), "4 keys · must be 5-100, got 4");
-        assert_eq!(columns_hint("asda"), "4 keys · must be 5-100, got 4 · duplicates: a");
-        assert_eq!(columns_hint("asdfg"), "5 keys · valid");
+        assert_eq!(columns_hint("asdf"), "4 keys · range 5-100 · too few");
+        assert_eq!(columns_hint("asdz"), "4 keys · range 5-100 · too few");
+        assert_eq!(
+            columns_hint("asda"),
+            "4 keys · range 5-100 · too few · duplicates: a"
+        );
+        assert_eq!(columns_hint("asdfg"), "5 keys · range 5-100 · valid");
+        assert_eq!(columns_hint(""), "0 keys · range 5-100 · too few");
+        assert_eq!(
+            columns_hint("esc"),
+            "3 keys · range 5-100 · too few · reserved: esc (exit key)"
+        );
         assert_eq!(subgrid_hint("qwert", 10, 3), "5 keys · needs 30 · unique");
         assert_eq!(subgrid_hint("qq", 1, 2), "2 keys · needs 2 · duplicates: q");
     }

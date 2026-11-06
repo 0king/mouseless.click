@@ -170,11 +170,17 @@ impl AppState {
         state.refresh_presets();
 
         let weak = Rc::downgrade(&state);
-        state.window.connect_close_request(move |_| {
-            if let Some(state) = weak.upgrade() {
-                state.flush_autosave();
+        state.window.connect_close_request(move |window| {
+            let Some(state) = weak.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            match state.flush_autosave() {
+                None => glib::Propagation::Proceed,
+                Some(reason) => {
+                    state.confirm_unsaved_close(window, &reason);
+                    glib::Propagation::Stop
+                }
             }
-            glib::Propagation::Proceed
         });
 
         let weak = Rc::downgrade(&state);
@@ -258,24 +264,73 @@ impl AppState {
     /// Persist the latest draft synchronously when the window closes, so the
     /// debounce cannot drop the last edit. This still runs while another save
     /// is in flight; both requests carry full documents, and the newest one is
-    /// sent last. Invalid drafts are left unsaved rather than blocking the
-    /// close.
-    fn flush_autosave(&self) {
+    /// sent last.
+    ///
+    /// Returns `None` when there was nothing to save or the draft was
+    /// persisted, or a human-readable reason the draft is still unsaved.
+    /// Callers use the reason to keep the window open instead of silently
+    /// discarding invalid or unsaved edits.
+    fn flush_autosave(&self) -> Option<String> {
         self.cancel_autosave();
         if !self.dirty.get() {
-            return;
+            return None;
         }
         let candidate = self.form.to_config(&self.loaded.borrow());
-        if validate(&candidate).is_err() {
-            return;
+        let (reason, footer) = match validate(&candidate) {
+            Ok(()) => {
+                let previous = self.loaded.borrow().clone();
+                match attempt_save(&model::socket_path(), &previous, &candidate) {
+                    SaveOutcome::Saved { config } => {
+                        *self.loaded.borrow_mut() = *config;
+                        self.dirty.set(false);
+                        (None, None)
+                    }
+                    SaveOutcome::CheckRejected(message) => (
+                        Some(format!("kanata rejected the generated include: {message}")),
+                        Some("kanata rejected the generated include".to_string()),
+                    ),
+                    SaveOutcome::DaemonError { code, message } => (
+                        Some(format!("{code}: {message}")),
+                        Some(format!("{code}: {message}")),
+                    ),
+                    SaveOutcome::Unreachable(message) => (
+                        Some(format!("daemon unreachable: {message}")),
+                        Some("daemon unreachable".to_string()),
+                    ),
+                }
+            }
+            Err(error) => (Some(format_issues(&error)), Some(summarize_issues(&error))),
+        };
+        if let Some(footer) = footer {
+            self.save_error.replace(Some(footer));
+            self.dirty.set(true);
+            self.update_actions();
         }
-        let previous = self.loaded.borrow().clone();
-        if let SaveOutcome::Saved { config } =
-            attempt_save(&model::socket_path(), &previous, &candidate)
-        {
-            *self.loaded.borrow_mut() = *config;
-            self.dirty.set(false);
-        }
+        reason
+    }
+
+    /// Ask before closing with edits that auto-save could not persist.
+    fn confirm_unsaved_close(&self, window: &adw::PreferencesWindow, reason: &str) {
+        let dialog = adw::AlertDialog::new(
+            Some("Changes are not saved"),
+            Some(&format!(
+                "{reason}\n\nFix the values and try again, or discard the changes and close."
+            )),
+        );
+        dialog.add_response("keep", "Keep Editing");
+        dialog.add_response("discard", "Discard and Close");
+        dialog.set_response_appearance("discard", adw::ResponseAppearance::Destructive);
+        dialog.set_default_response(Some("keep"));
+        dialog.set_close_response("keep");
+        let weak = window.downgrade();
+        dialog.connect_response(None, move |_, response| {
+            if response == "discard" {
+                if let Some(window) = weak.upgrade() {
+                    window.destroy();
+                }
+            }
+        });
+        dialog.present(Some(window));
     }
 
     /// Debounce form changes so typing does not hit the daemon per keystroke.
@@ -303,6 +358,10 @@ impl AppState {
             self.save_error.replace(Some(summarize_issues(&error)));
             self.dirty.set(true);
             self.update_actions();
+            // The footer sits at the bottom of a scrollable page; a toast makes
+            // it obvious that auto-save is paused. The message stays stable so
+            // consecutive invalid keystrokes only show one toast.
+            self.notify_error_once("Not saved: fix the invalid values highlighted below");
             return;
         }
         if self.busy.get() {

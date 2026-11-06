@@ -58,7 +58,8 @@ can never brick input (plan §6, matrix #9).
 config_version: 1
 
 grid:
-  # Level-1 keys, left-to-right. Subset of "asdfghjkl;" (unique).
+  # Level-1 keys, left-to-right. Any 5-100 unique ASCII keys; space and the
+  # full string "esc" are reserved. "asdfghjkl;" is only the default.
   columns: "asdfghjkl;"
   # Level-2 keys, top-to-bottom. Subset of the 30-key QWERTY block (unique).
   rows: "qwertyuiopasdfghjkl;zxcvbnm,./"
@@ -116,8 +117,9 @@ keybindings:
 Semantic validation (all reported as field-tagged issues, shown 1:1 in the GUI):
 
 - `config_version` must equal 1.
-- Column keys are unique and drawn from `asdfghjkl;`; row keys are unique and
-  drawn from the QWERTY block; neither may use `esc`/`space`.
+- Column keys are 5–100 unique ASCII characters; `space` and the full string
+  `esc` are reserved. Row keys are unique and drawn from the QWERTY block
+  (which contains neither `esc` nor `space`).
 - Subgrid dimensions are non-zero, `columns * rows == keys.len()`, keys are
   unique, and none is `esc`/`space`.
 - Colors are `#rrggbb`; `grid_opacity` is finite in `0.0..=1.0`.
@@ -196,6 +198,7 @@ edit in GUI
   → daemon validates again and persists atomically under /var/lib/mouseless
     (last-good backup); the running app keeps its previous values
   → invalid draft: nothing persisted, the footer shows the first issue inline
+    and closing the window offers “Keep Editing” or “Discard and Close”
   → click “Restart App” (or Ctrl+Enter):
       → render the include for kanata-affecting changes → `kanata --check`
         against a staged copy (never writes /etc)

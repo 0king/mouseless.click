@@ -125,8 +125,8 @@ fn grid_page(state: &Rc<AppState>) -> adw::PreferencesPage {
         "Cell keys",
         &format!(
             "Level 1 picks a column from “{}”; level 2 picks a row from “{}”. \
-             The selected cell opens a subgrid. Duplicates and keys outside the \
-             pool are rejected before saving.",
+             The selected cell opens a subgrid. Duplicate keys are rejected \
+             before saving.",
             form::pool_labels().0,
             form::pool_labels().1
         ),
