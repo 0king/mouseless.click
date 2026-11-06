@@ -159,6 +159,7 @@ fn appearance_page(state: &Rc<AppState>) -> adw::PreferencesPage {
         "Colors",
         "Opacity is applied to the grid fill; labels and the highlight stay opaque.",
     );
+    colors.add(&form.theme);
     colors.add(&form::color_row("Grid fill", &form.grid_color));
     form.grid_opacity.set_hexpand(true);
     form.grid_opacity.set_size_request(220, -1);

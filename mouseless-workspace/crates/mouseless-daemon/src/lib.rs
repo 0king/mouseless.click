@@ -17,7 +17,7 @@
 //! - overlay actions (multi-click, drag, nudges, monitor switch, cursor hide);
 //! - custom free mode (`lyr-free`) with an 8 ms fixed-step physics tick.
 
-use mouseless_config::{parse_hex_color, Config as FileConfig, Easing as FileEasing};
+use mouseless_config::{parse_hex_color, Config as FileConfig, Easing as FileEasing, Theme};
 use mouseless_core::{
     cursor_hide_target, select_monitor, subcell_bounds, Corner, GridConfig, Monitor,
     MonitorDirection, Point, PrimaryGrid, Rect,
@@ -267,8 +267,12 @@ pub struct DaemonConfig {
     /// Connector/output names for [`MonitorAssignment::Custom`], in priority
     /// order. Ignored for the other policies.
     pub custom_monitors: Vec<String>,
-    /// Draw-only colours sent with every grid model.
-    pub appearance: GridAppearance,
+    /// Draw-only colours sent with every grid model (dark theme).
+    pub dark_appearance: GridAppearance,
+    /// Draw-only colours for the light theme.
+    pub light_appearance: GridAppearance,
+    /// Active theme: `Dark` (default) or `Light`; toggled in-session by Tab.
+    pub active_theme: Theme,
     /// Custom physics (`lyr-free`) or kanata's `lyr-mouse` fallback.
     pub free_mode_engine: FreeModeEngine,
     /// Free-mode movement/auto-off parameters.
@@ -325,7 +329,14 @@ impl Default for DaemonConfig {
             subgrid: default_subgrid(),
             monitor_assignment: MonitorAssignment::Auto,
             custom_monitors: Vec::new(),
-            appearance: GridAppearance::default(),
+            dark_appearance: GridAppearance::default(),
+            light_appearance: GridAppearance {
+                grid_color: [0xc9, 0xaa, 0x03],
+                grid_opacity: 0.2,
+                label_color: [0, 0, 0],
+                highlight_color: [0xff, 0xb2, 0x2c],
+            },
+            active_theme: Theme::default(),
             free_mode_engine: FreeModeEngine::Custom,
             free_mode: FreeModeParams::default(),
             wheel: WheelParams::default(),
@@ -375,7 +386,7 @@ impl DaemonConfig {
             move_settle_poll_ms: app.daemon.move_settle_poll_ms,
         };
         let fallback = GridAppearance::default();
-        self.appearance = GridAppearance {
+        self.dark_appearance = GridAppearance {
             grid_color: parse_hex_color(&app.appearance.grid_color).unwrap_or(fallback.grid_color),
             grid_opacity: if app.appearance.grid_opacity.is_finite() {
                 app.appearance.grid_opacity.clamp(0.0, 1.0)
@@ -387,6 +398,10 @@ impl DaemonConfig {
             highlight_color: parse_hex_color(&app.appearance.highlight_color)
                 .unwrap_or(fallback.highlight_color),
         };
+        // The application config carries a single appearance set; light theme
+        // colors come from `config.yaml` (applied next), so start light off at
+        // the wire default until a settings document overrides them.
+        self.light_appearance = GridAppearance::default();
     }
 
     /// Copy the user-facing schema-v1 sections into the runtime config.
@@ -413,7 +428,7 @@ impl DaemonConfig {
         };
         self.custom_monitors = config.grid.custom_monitors.clone();
         let fallback = GridAppearance::default();
-        self.appearance = GridAppearance {
+        self.dark_appearance = GridAppearance {
             grid_color: parse_hex_color(&config.appearance.grid_color)
                 .unwrap_or(fallback.grid_color),
             grid_opacity: if config.appearance.grid_opacity.is_finite() {
@@ -426,6 +441,20 @@ impl DaemonConfig {
             highlight_color: parse_hex_color(&config.appearance.highlight_color)
                 .unwrap_or(fallback.highlight_color),
         };
+        self.light_appearance = GridAppearance {
+            grid_color: parse_hex_color(&config.appearance.light_grid_color)
+                .unwrap_or(fallback.grid_color),
+            grid_opacity: if config.appearance.light_grid_opacity.is_finite() {
+                config.appearance.light_grid_opacity.clamp(0.0, 1.0)
+            } else {
+                fallback.grid_opacity
+            },
+            label_color: parse_hex_color(&config.appearance.light_label_color)
+                .unwrap_or(fallback.label_color),
+            highlight_color: parse_hex_color(&config.appearance.light_highlight_color)
+                .unwrap_or(fallback.highlight_color),
+        };
+        self.active_theme = config.appearance.theme;
         self.initial_action_location = match config.behavior.initial_action_location {
             mouseless_config::InitialActionLocation::ScreenCenter => {
                 InitialActionLocation::ScreenCenter
@@ -480,6 +509,15 @@ impl DaemonConfig {
         self.overlay_layer = config.keybindings.overlay_layer.clone();
         self.free_mode_layer = config.keybindings.free_mode_layer.clone();
         self.kanata_free_mode_layer = config.keybindings.kanata_free_mode_layer.clone();
+    }
+
+    /// The appearance the extension should draw right now: the active theme's
+    /// color set, resolved from `config.yaml` at load time.
+    pub fn effective_appearance(&self) -> GridAppearance {
+        match self.active_theme {
+            Theme::Dark => self.dark_appearance,
+            Theme::Light => self.light_appearance,
+        }
     }
 }
 
@@ -695,7 +733,11 @@ where
             self.degrade_base();
             return Err(DaemonError::NoLayout);
         };
-        let model = build_grid_model(&self.config.grid, &monitor, self.config.appearance);
+        let model = build_grid_model(
+            &self.config.grid,
+            &monitor,
+            self.config.effective_appearance(),
+        );
         self.release_free_buttons();
         self.teardown(false);
         // Grab before showing: if the grab fails, the user sees no overlay
@@ -921,6 +963,7 @@ where
             CellKey::ArrowRight => self.nudge(NudgeDirection::Right),
             CellKey::Space => self.handle_space(ev.modifiers, now_ms),
             CellKey::Char(c) => self.handle_char(c, ev.modifiers, now_ms),
+            CellKey::Tab => self.toggle_theme(),
             // A key outside the 30-character cell vocabulary is an explicit
             // "I meant to type, not click" gesture: dismiss the overlay so
             // the grabbed key cannot be swallowed silently.
@@ -929,6 +972,43 @@ where
                 Ok(SessionStep::Exit)
             }
         }
+    }
+
+    /// Flip the active theme and re-show the current grid so the extension
+    /// re-renders in the new colors without ending the session.
+    fn toggle_theme(&mut self) -> Result<SessionStep, DaemonError> {
+        self.config.active_theme = match self.config.active_theme {
+            Theme::Dark => Theme::Light,
+            Theme::Light => Theme::Dark,
+        };
+        let appearance = self.config.effective_appearance();
+        match self.machine.phase() {
+            Phase::Overlay | Phase::Click => {
+                let Some(monitor) = self.active_monitor else {
+                    return Ok(SessionStep::Continue);
+                };
+                let model = build_grid_model(&self.config.grid, &monitor, appearance);
+                let _ = self.overlay.show(&model);
+            }
+            Phase::Subgrid => {
+                let Some(monitor) = self.active_monitor else {
+                    return Ok(SessionStep::Continue);
+                };
+                let Some(parent) = self.selected_cell else {
+                    return Ok(SessionStep::Continue);
+                };
+                let model = build_subgrid_model(
+                    &self.config.grid,
+                    &self.config.subgrid,
+                    &monitor,
+                    parent,
+                    appearance,
+                )?;
+                self.overlay.show_subgrid(parent, &model)?;
+            }
+            Phase::Normal => {}
+        }
+        Ok(SessionStep::Continue)
     }
 
     fn handle_overlay_release(
@@ -1013,7 +1093,7 @@ where
                             &self.config.subgrid,
                             &monitor,
                             index,
-                            self.config.appearance,
+                            self.config.effective_appearance(),
                         )?;
                         self.pending_column = None;
                         self.selected_cell = Some(index);
@@ -1090,7 +1170,8 @@ where
                 self.click_at(button, target, now_ms, modifiers)?;
             } else {
                 let default_is_click = self.config.default_action == DefaultAction::Click;
-                let toggling = self.modifier_active(&modifiers, &self.config.toggle_action_modifier);
+                let toggling =
+                    self.modifier_active(&modifiers, &self.config.toggle_action_modifier);
                 let should_click = default_is_click != toggling;
                 if should_click {
                     self.click_at(button, target, now_ms, modifiers)?;
@@ -1268,7 +1349,11 @@ where
         self.pending_click_deadline_ms = None;
         let _ = self.machine.reset_to_overlay();
         if let Some(monitor) = self.active_monitor {
-            let model = build_grid_model(&self.config.grid, &monitor, self.config.appearance);
+            let model = build_grid_model(
+                &self.config.grid,
+                &monitor,
+                self.config.effective_appearance(),
+            );
             let _ = self.overlay.show(&model);
         }
     }
@@ -1286,7 +1371,11 @@ where
             return Ok(());
         };
         let monitor = monitors[next];
-        let model = build_grid_model(&self.config.grid, &monitor, self.config.appearance);
+        let model = build_grid_model(
+            &self.config.grid,
+            &monitor,
+            self.config.effective_appearance(),
+        );
         self.active_monitor = Some(monitor);
         self.selected_cell = None;
         self.pending_column = None;
@@ -3294,10 +3383,10 @@ mod tests {
         assert_eq!(config.subgrid.keys, vec!['q', 'w', 'e', 'r']);
         assert_eq!(config.monitor_assignment, MonitorAssignment::Custom);
         assert_eq!(config.custom_monitors, vec!["DP-2", "DP-1"]);
-        assert_eq!(config.appearance.grid_color, [0x11, 0x22, 0x33]);
-        assert_eq!(config.appearance.grid_opacity, 0.5);
-        assert_eq!(config.appearance.label_color, [0x44, 0x55, 0x66]);
-        assert_eq!(config.appearance.highlight_color, [0x77, 0x88, 0x99]);
+        assert_eq!(config.dark_appearance.grid_color, [0x11, 0x22, 0x33]);
+        assert_eq!(config.dark_appearance.grid_opacity, 0.5);
+        assert_eq!(config.dark_appearance.label_color, [0x44, 0x55, 0x66]);
+        assert_eq!(config.dark_appearance.highlight_color, [0x77, 0x88, 0x99]);
         assert_eq!(config.grid_action_level, GridActionLevel::Two);
         assert_eq!(config.default_action, DefaultAction::Move);
         assert!(config.free_mode_after_move);
@@ -3335,9 +3424,9 @@ mod tests {
         assert_eq!(config.tuning.free_mode_tick_ms, 16);
         assert_eq!(config.tuning.move_tolerance_px, 5);
         assert!(config.debug_move);
-        assert_eq!(config.appearance.grid_color, [0x11, 0x22, 0x33]);
+        assert_eq!(config.dark_appearance.grid_color, [0x11, 0x22, 0x33]);
         assert_eq!(
-            config.appearance.label_color,
+            config.dark_appearance.label_color,
             GridAppearance::default().label_color
         );
     }
@@ -3346,7 +3435,7 @@ mod tests {
     fn default_config_appearance_matches_wire_defaults() {
         let mut config = DaemonConfig::default();
         config.apply_config(&FileConfig::default());
-        assert_eq!(config.appearance, GridAppearance::default());
+        assert_eq!(config.dark_appearance, GridAppearance::default());
         assert_eq!(config.monitor_assignment, MonitorAssignment::Auto);
         assert!(config.custom_monitors.is_empty());
     }
@@ -3500,5 +3589,52 @@ mod tests {
         assert!(!d.grab_held());
         assert_eq!(d.config().multi_click_threshold_ms, 700);
         assert_eq!(d.kbd.set_layer_calls, vec![BASE_LAYER.to_string()]);
+    }
+
+    #[test]
+    fn tab_toggle_flips_theme_and_re_shows_without_ending_session() {
+        let mut d = daemon();
+        d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
+            .unwrap();
+        assert!(d.overlay_visible());
+        assert_eq!(d.config().active_theme, Theme::Dark);
+        let dark = d.overlay().last_model.as_ref().unwrap().appearance;
+        assert_eq!(dark, GridAppearance::default());
+
+        fn press_tab(d: &mut TestDaemon) {
+            d.handle_key_event(KeyEvent {
+                key: CellKey::Tab,
+                pressed: true,
+                modifiers: Modifiers::default(),
+            })
+            .unwrap();
+        }
+        press_tab(&mut d);
+        assert_eq!(d.config().active_theme, Theme::Light);
+        assert!(d.overlay_visible()); // session stays alive
+        let light = d.overlay().last_model.as_ref().unwrap().appearance;
+        assert_eq!(
+            light,
+            GridAppearance {
+                grid_color: [0xc9, 0xaa, 0x03],
+                grid_opacity: 0.2,
+                label_color: [0, 0, 0],
+                highlight_color: [0xff, 0xb2, 0x2c],
+            }
+        );
+
+        press_tab(&mut d);
+        assert_eq!(d.config().active_theme, Theme::Dark);
+        let again = d.overlay().last_model.as_ref().unwrap().appearance;
+        assert_eq!(again, GridAppearance::default());
+
+        // Other keys still dismiss the overlay.
+        d.handle_key_event(KeyEvent {
+            key: CellKey::Other,
+            pressed: true,
+            modifiers: Modifiers::default(),
+        })
+        .unwrap();
+        assert!(!d.overlay_visible());
     }
 }

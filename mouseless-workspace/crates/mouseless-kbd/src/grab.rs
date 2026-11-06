@@ -47,7 +47,9 @@ pub enum CellKey {
     ArrowLeft,
     /// Right arrow (subgrid nudge).
     ArrowRight,
-    /// Any other non-modifier key (digits, Enter, Tab, function keys, …).
+    /// Tab: toggles the overlay theme while a session is active.
+    Tab,
+    /// Any other non-modifier key (digits, Enter, function keys, …).
     ///
     /// The overlay session treats this as an explicit "not a cell key"
     /// gesture and dismisses itself. Modifiers (Ctrl/Alt/Meta) are filtered
@@ -152,6 +154,7 @@ pub fn translate_key(code: evdev::KeyCode) -> Option<CellKey> {
         KeyCode::KEY_DOWN => CellKey::ArrowDown,
         KeyCode::KEY_LEFT => CellKey::ArrowLeft,
         KeyCode::KEY_RIGHT => CellKey::ArrowRight,
+        KeyCode::KEY_TAB => CellKey::Tab,
         _ => CellKey::Other,
     })
 }
@@ -386,7 +389,6 @@ mod tests {
             KeyCode::KEY_1,
             KeyCode::KEY_0,
             KeyCode::KEY_ENTER,
-            KeyCode::KEY_TAB,
             KeyCode::KEY_BACKSPACE,
             KeyCode::KEY_GRAVE,
             KeyCode::KEY_LEFTBRACE,
@@ -398,6 +400,11 @@ mod tests {
         ] {
             assert_eq!(translate_key(code), Some(CellKey::Other), "{code:?}");
         }
+        assert_eq!(
+            translate_key(KeyCode::KEY_TAB),
+            Some(CellKey::Tab),
+            "Tab toggles the theme instead of dismissing"
+        );
         for code in [
             KeyCode::KEY_LEFTCTRL,
             KeyCode::KEY_RIGHTCTRL,

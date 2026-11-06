@@ -30,8 +30,8 @@ pub use presets::{
 pub use schema::{
     AppearanceConfig, BehaviorConfig, Config, CursorCorner, DefaultAction, Easing, Engine,
     FreeModeConfig, GridActionLevel, GridConfig, InitialActionLocation, KeybindingConfig,
-    MonitorAssignment, SubgridConfig, WheelConfig, COLUMN_KEY_POOL, CONFIG_VERSION, ROW_KEY_POOL,
-    SUBGRID_KEY_POOL,
+    MonitorAssignment, SubgridConfig, Theme, WheelConfig, COLUMN_KEY_POOL, CONFIG_VERSION,
+    ROW_KEY_POOL, SUBGRID_KEY_POOL,
 };
 pub use store::{ConfigStore, StoreError};
 pub use validate::{parse_hex_color, validate, Issue, ValidationError};

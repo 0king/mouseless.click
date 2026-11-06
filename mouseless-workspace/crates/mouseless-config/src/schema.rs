@@ -345,22 +345,48 @@ impl Default for WheelConfig {
     }
 }
 
+/// Active color theme: the pinned dark look, or the light variant.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum Theme {
+    /// Dark grid fill with light labels (the pinned Phase-3 look).
+    #[default]
+    Dark,
+    /// Light grid fill with dark labels.
+    Light,
+}
+
 /// Colors, opacity, and cursor hiding.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AppearanceConfig {
-    /// Grid fill color, `#rrggbb`.
+    /// Active theme: picks which color set the daemon renders.
+    #[serde(default = "default_theme")]
+    pub theme: Theme,
+    /// Grid fill color, `#rrggbb` (dark theme).
     #[serde(default = "default_grid_color")]
     pub grid_color: String,
-    /// Grid fill opacity, 0.0..=1.0 (0.2 = 80% transparent).
+    /// Grid fill opacity, 0.0..=1.0 (0.2 = 80% transparent) (dark theme).
     #[serde(default = "default_grid_opacity")]
     pub grid_opacity: f64,
-    /// Cell label color, `#rrggbb`.
+    /// Cell label color, `#rrggbb` (dark theme).
     #[serde(default = "default_label_color")]
     pub label_color: String,
-    /// Highlight color, `#rrggbb`.
+    /// Highlight color, `#rrggbb` (dark theme).
     #[serde(default = "default_highlight_color")]
     pub highlight_color: String,
+    /// Light theme grid fill color, `#rrggbb`.
+    #[serde(default = "default_light_grid_color")]
+    pub light_grid_color: String,
+    /// Light theme cell label color, `#rrggbb`.
+    #[serde(default = "default_light_label_color")]
+    pub light_label_color: String,
+    /// Light theme highlight color, `#rrggbb`.
+    #[serde(default = "default_light_highlight_color")]
+    pub light_highlight_color: String,
+    /// Light theme grid fill opacity, 0.0..=1.0.
+    #[serde(default = "default_light_grid_opacity")]
+    pub light_grid_opacity: f64,
     /// Move the cursor away after a click.
     #[serde(default)]
     pub hide_cursor_on_click: bool,
@@ -372,10 +398,15 @@ pub struct AppearanceConfig {
 impl Default for AppearanceConfig {
     fn default() -> Self {
         Self {
+            theme: default_theme(),
             grid_color: default_grid_color(),
             grid_opacity: default_grid_opacity(),
             label_color: default_label_color(),
             highlight_color: default_highlight_color(),
+            light_grid_color: default_light_grid_color(),
+            light_label_color: default_light_label_color(),
+            light_highlight_color: default_light_highlight_color(),
+            light_grid_opacity: default_light_grid_opacity(),
             hide_cursor_on_click: false,
             cursor_hide_corner: CursorCorner::default(),
         }
@@ -522,6 +553,26 @@ fn default_highlight_color() -> String {
     crate::appconfig::DEFAULT_HIGHLIGHT_COLOR.into()
 }
 
+fn default_theme() -> Theme {
+    Theme::Dark
+}
+
+fn default_light_grid_color() -> String {
+    "#c9aa03".into()
+}
+
+fn default_light_label_color() -> String {
+    "#000000".into()
+}
+
+fn default_light_highlight_color() -> String {
+    crate::appconfig::DEFAULT_HIGHLIGHT_COLOR.into()
+}
+
+fn default_light_grid_opacity() -> f64 {
+    crate::appconfig::DEFAULT_GRID_OPACITY
+}
+
 fn default_overlay_layer() -> String {
     "lyr-mouseless".into()
 }
@@ -645,5 +696,29 @@ mod tests {
         );
         assert_eq!(config.grid.monitor_assignment, MonitorAssignment::Custom);
         assert_eq!(config.grid.custom_monitors, vec!["DP-1"]);
+    }
+
+    #[test]
+    fn theme_defaults_to_dark_and_light_fields_have_documented_defaults() {
+        let config = Config::default();
+        assert_eq!(config.appearance.theme, Theme::Dark);
+        assert_eq!(config.appearance.light_grid_color, "#c9aa03");
+        assert_eq!(config.appearance.light_label_color, "#000000");
+        assert_eq!(
+            config.appearance.light_highlight_color,
+            crate::appconfig::DEFAULT_HIGHLIGHT_COLOR
+        );
+        assert_eq!(config.appearance.light_grid_opacity, 0.2);
+    }
+
+    #[test]
+    fn theme_and_light_colors_round_trip_through_yaml() {
+        let text = "config_version: 1\nappearance:\n  theme: light\n  light_grid_color: '#c9aa03'\n  light_label_color: '#000000'\n  light_highlight_color: '#ffb22c'\n  light_grid_opacity: 0.2\n";
+        let config = Config::from_yaml_str(text).unwrap();
+        assert_eq!(config.appearance.theme, Theme::Light);
+        let yaml = config.to_yaml_string().unwrap();
+        let parsed = Config::from_yaml_str(&yaml).unwrap();
+        assert_eq!(parsed.appearance.theme, Theme::Light);
+        assert_eq!(parsed.appearance.light_grid_color, "#c9aa03");
     }
 }

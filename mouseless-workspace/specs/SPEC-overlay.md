@@ -109,8 +109,14 @@ unless `is_connected()` and `last_layout()` are both available.
 11. **Appearance (config-driven, pinned defaults).** Every model carries the
     daemon-resolved `appearance` block (grid/label/highlight RGB plus
     `grid_opacity`); the renderer draws those values and never parses config.
-    The pinned defaults are `#d4de04` at 80% transparency (20% opacity,
-    alpha 51), `#ebe9e8` labels, and an amber `#ffb22c` highlight. The
+    The pinned defaults are the dark theme: `#d4de04` at 80% transparency
+    (20% opacity, alpha 51), `#ebe9e8` labels, and an amber `#ffb22c` highlight.
+    A light theme (`#c9aa03` grid fill, `#000000` labels, highlight and opacity
+    inheriting the dark defaults) is selectable via `appearance.theme`; both
+    themes are independently editable in the settings app. While an overlay
+    session is active, pressing `Tab` toggles the theme and the daemon re-sends
+    the current grid model so the renderer re-draws in the new colors without
+    ending the session. The
     fullscreen root background is transparent — the tiled grid is the only
     tint on the active monitor, and other monitors are untouched. The selected
     parent is not drawn at all when its subgrid opens, so sub-cells are not

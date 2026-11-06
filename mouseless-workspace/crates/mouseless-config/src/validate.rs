@@ -4,9 +4,7 @@
 //! show each one 1:1 (SPEC-settings) instead of failing on the first problem.
 //! All checks are pure and allocation-bounded; no I/O.
 
-use crate::schema::{
-    Config, Engine, MonitorAssignment, CONFIG_VERSION, ROW_KEY_POOL,
-};
+use crate::schema::{Config, Engine, MonitorAssignment, CONFIG_VERSION, ROW_KEY_POOL};
 use std::fmt;
 
 /// One field-tagged validation issue.
@@ -377,10 +375,7 @@ fn validate_column_keys(value: &str, field: &str, issues: &mut Vec<Issue>) {
         ));
     }
     if value.is_empty() {
-        issues.push(Issue::new(
-            field,
-            "at least one column key is required",
-        ));
+        issues.push(Issue::new(field, "at least one column key is required"));
     }
 }
 
@@ -568,8 +563,11 @@ mod tests {
     #[test]
     fn golden_defaults_are_stable() {
         let config = Config::default();
+        assert_eq!(config.appearance.theme, Theme::Dark);
         assert_eq!(config.appearance.grid_color, "#d4de04");
         assert_eq!(config.appearance.label_color, "#ebe9e8");
         assert_eq!(config.appearance.grid_opacity, 0.2);
+        assert_eq!(config.appearance.light_grid_color, "#c9aa03");
+        assert_eq!(config.appearance.light_label_color, "#000000");
     }
 }

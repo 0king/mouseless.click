@@ -97,12 +97,17 @@ free_mode:
     step_size_large: 10
 
 appearance:
-  grid_color: "#d4de04"
-  grid_opacity: 0.2               # 0.0..=1.0 (0.2 = 80% transparent)
-  label_color: "#ebe9e8"
+  theme: dark                         # dark | light
+  grid_color: "#d4de04"               # dark theme grid fill
+  grid_opacity: 0.2                   # 0.0..=1.0 (0.2 = 80% transparent)
+  label_color: "#ebe9e8"              # dark theme cell labels
   highlight_color: "#ffb22c"
+  light_grid_color: "#c9aa03"         # light theme grid fill
+  light_label_color: "#000000"        # light theme cell labels
+  light_highlight_color: "#ffb22c"    # light theme highlight (defaults to dark)
+  light_grid_opacity: 0.2             # light theme grid opacity
   hide_cursor_on_click: false
-  cursor_hide_corner: top-right   # top-left | top-right | bottom-left | bottom-right
+  cursor_hide_corner: top-right       # top-left | top-right | bottom-left | bottom-right
 
 keybindings:
   overlay_layer: lyr-mouseless
@@ -113,6 +118,8 @@ keybindings:
   monitor_switch_key: shift
   drag_modifier: alt
 ```
+
+The `theme` field selects which color set the daemon renders (`dark` or `light`; default `dark`). Each theme has its own grid/label/highlight colors and opacity, all editable in the Appearance page. While an overlay session is active, pressing `Tab` toggles the theme in-session and re-renders the live grid with the new colors; the session stays alive and `Tab` is not persisted to `config.yaml` (the default theme is set here and applied on the next daemon update/restart).
 
 Semantic validation (all reported as field-tagged issues, shown 1:1 in the GUI):
 

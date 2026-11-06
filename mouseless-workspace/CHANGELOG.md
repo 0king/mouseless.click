@@ -7,6 +7,15 @@ of truth is [`VERSION`](VERSION); the Cargo workspace inherits it, and
 `scripts/check-version.sh` verifies the CLI/daemon/settings binaries and the
 GNOME extension metadata agree with it.
 
+## [Unreleased]
+
+### Added
+
+- Dual light/dark themes: `appearance.theme` (`dark` default, `light`) plus
+  independent light-theme grid/label/highlight colors and opacity.
+- `Tab` toggles the active theme in-session while an overlay is active and
+  re-renders the live grid without ending the session.
+
 ## [0.1.0] - 2026-11-05
 
 First tracked release.

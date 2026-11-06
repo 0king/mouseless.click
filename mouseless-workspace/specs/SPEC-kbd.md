@@ -95,12 +95,14 @@ z x c v b n m , . /
 ```
 
 `space → Space`, `esc → Escape`, arrows → nudge, left/right Shift →
-`ShiftLeft`/`ShiftRight`. Every other non-modifier key maps to
-`CellKey::Other`; the overlay session treats it as an explicit "typing, not
-clicking" gesture and dismisses itself (otherwise the grab would swallow the
-key silently). Pure Ctrl/Alt/Meta presses map to `None` so action modifiers do
-not cancel the session. Codes:
-`KEY_Q/W/E/R/T/Y/U/I/O/P/A/S/D/F/G/H/J/K/L/SEMICOLON/Z/X/C/V/B/N/M/COMMA/DOT/SLASH/SPACE/ESC`;
+`ShiftLeft`/`ShiftRight`, `tab → Tab`. `Tab` toggles the overlay theme
+(`dark` ↔ `light`) while a session is active and re-renders the live grid
+without dismissing it. Every other non-modifier key maps to `CellKey::Other`;
+the overlay session treats it as an explicit "typing, not clicking" gesture
+and dismisses itself (otherwise the grab would swallow the key silently).
+Pure Ctrl/Alt/Meta presses map to `None` so action modifiers do not cancel
+the session. Codes:
+`KEY_Q/W/E/R/T/Y/U/I/O/P/A/S/D/F/G/H/J/K/L/SEMICOLON/Z/X/C/V/B/N/M/COMMA/DOT/SLASH/SPACE/ESC/TAB`;
 the home-row subset doubles as free-mode keys (`i k j l s d f a r e q w m , . /`).
 
 ## Tech stack

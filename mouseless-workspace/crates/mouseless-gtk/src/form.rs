@@ -14,7 +14,7 @@ use gtk::prelude::*;
 use libadwaita as adw;
 use mouseless_config::{
     BehaviorConfig, Config, CursorCorner, DefaultAction, Easing, Engine, GridActionLevel,
-    InitialActionLocation, MonitorAssignment, ROW_KEY_POOL,
+    InitialActionLocation, MonitorAssignment, Theme, ROW_KEY_POOL,
 };
 use std::rc::Rc;
 
@@ -36,6 +36,8 @@ pub const ENGINE_LABELS: [&str; 2] = ["Custom physics", "Kanata lyr-mouse fallba
 pub const EASING_LABELS: [&str; 4] = ["Loose", "Natural", "Snappy", "Instant"];
 /// Cursor-hide corner choices.
 pub const CORNER_LABELS: [&str; 4] = ["Top left", "Top right", "Bottom left", "Bottom right"];
+/// Theme choices (index matches the schema enum order).
+pub const THEME_LABELS: [&str; 2] = ["Dark", "Light"];
 
 /// Entry row with a live hint subtitle.
 #[derive(Clone)]
@@ -93,6 +95,8 @@ pub struct Form {
     pub custom_monitors: HintEntry,
 
     // Appearance
+    /// Active theme: picks which color set the pickers edit.
+    pub theme: adw::ComboRow,
     /// Grid fill colour picker.
     pub grid_color: gtk::ColorButton,
     /// Grid fill opacity (0–100 %).
@@ -196,6 +200,7 @@ impl Form {
             monitor_assignment: combo_row("Monitor assignment", &MONITOR_LABELS, 0),
             custom_monitors: HintEntry::new("Custom connectors", "DP-1, HDMI-1"),
 
+            theme: combo_row("Theme", &THEME_LABELS, 0),
             grid_color: color_button(&appearance.grid_color),
             grid_opacity: gtk::Scale::new(
                 gtk::Orientation::Horizontal,
@@ -297,11 +302,7 @@ impl Form {
             MonitorAssignment::Custom
         ));
 
-        set_color(&self.grid_color, &config.appearance.grid_color);
-        set_color(&self.label_color, &config.appearance.label_color);
-        set_color(&self.highlight_color, &config.appearance.highlight_color);
-        self.grid_opacity
-            .set_value((config.appearance.grid_opacity * 100.0).clamp(0.0, 100.0));
+        self.load_appearance_colors(config);
         self.hide_cursor
             .set_active(config.appearance.hide_cursor_on_click);
         self.cursor_corner
@@ -378,6 +379,34 @@ impl Form {
         self.update_opacity_subtitle();
     }
 
+    /// Fill the appearance pickers from the active theme's color set in
+    /// `config`, so switching themes swaps the pickers to that theme's values.
+    fn load_appearance_colors(&self, config: &Config) {
+        self.theme.set_selected(match config.appearance.theme {
+            Theme::Dark => 0,
+            Theme::Light => 1,
+        });
+        let (grid, label, highlight, opacity) = match config.appearance.theme {
+            Theme::Dark => (
+                &config.appearance.grid_color,
+                &config.appearance.label_color,
+                &config.appearance.highlight_color,
+                config.appearance.grid_opacity,
+            ),
+            Theme::Light => (
+                &config.appearance.light_grid_color,
+                &config.appearance.light_label_color,
+                &config.appearance.light_highlight_color,
+                config.appearance.light_grid_opacity,
+            ),
+        };
+        set_color(&self.grid_color, grid);
+        set_color(&self.label_color, label);
+        set_color(&self.highlight_color, highlight);
+        self.grid_opacity
+            .set_value((opacity * 100.0).clamp(0.0, 100.0));
+    }
+
     /// Build a complete candidate document, preserving every section the form
     /// does not edit (there are none today, but this keeps schema growth safe).
     pub fn to_config(&self, base: &Config) -> Config {
@@ -394,10 +423,25 @@ impl Form {
         };
         config.grid.custom_monitors = model::split_monitors(&self.custom_monitors.text());
 
-        config.appearance.grid_color = color_hex(&self.grid_color);
-        config.appearance.grid_opacity = (self.grid_opacity.value() / 100.0).clamp(0.0, 1.0);
-        config.appearance.label_color = color_hex(&self.label_color);
-        config.appearance.highlight_color = color_hex(&self.highlight_color);
+        config.appearance.theme = match self.theme.selected() {
+            1 => Theme::Light,
+            _ => Theme::Dark,
+        };
+        let opacity = (self.grid_opacity.value() / 100.0).clamp(0.0, 1.0);
+        match config.appearance.theme {
+            Theme::Dark => {
+                config.appearance.grid_color = color_hex(&self.grid_color);
+                config.appearance.grid_opacity = opacity;
+                config.appearance.label_color = color_hex(&self.label_color);
+                config.appearance.highlight_color = color_hex(&self.highlight_color);
+            }
+            Theme::Light => {
+                config.appearance.light_grid_color = color_hex(&self.grid_color);
+                config.appearance.light_grid_opacity = opacity;
+                config.appearance.light_label_color = color_hex(&self.label_color);
+                config.appearance.light_highlight_color = color_hex(&self.highlight_color);
+            }
+        }
         config.appearance.hide_cursor_on_click = self.hide_cursor.is_active();
         config.appearance.cursor_hide_corner = match self.cursor_corner.selected() {
             0 => CursorCorner::TopLeft,
@@ -607,6 +651,15 @@ impl Form {
                     state.changed();
                 }
             });
+
+        let theme_weak = weak.clone();
+        self.theme.connect_selected_notify(move |_| {
+            if let Some(state) = theme_weak.upgrade() {
+                state.form.load_appearance_colors(&state.loaded.borrow());
+                state.form.refresh_preview();
+                state.changed();
+            }
+        });
 
         for button in [&self.grid_color, &self.label_color, &self.highlight_color] {
             let weak = weak.clone();
