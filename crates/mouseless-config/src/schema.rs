@@ -515,7 +515,7 @@ fn default_multi_click_ms() -> u64 {
 }
 
 fn default_tap_ms() -> u64 {
-    200
+    300
 }
 
 fn default_nudges() -> u32 {
@@ -631,7 +631,7 @@ mod tests {
         assert_eq!(config.grid.subgrid.columns, 10);
         assert_eq!(config.grid.subgrid.rows, 3);
         assert_eq!(config.grid.subgrid.keys.chars().count(), 30);
-        assert_eq!(config.behavior.tap_threshold_ms, 200);
+        assert_eq!(config.behavior.tap_threshold_ms, 300);
         assert_eq!(config.appearance.grid_color, "#d4de04");
         assert_eq!(config.appearance.grid_opacity, 0.2);
     }

@@ -104,7 +104,7 @@ or custom free-mode session is active (see §5).
 - New layer `lyr-free` for custom free mode: `i/k/j/l` move, `s/d/f` boost,
   `a` decel, `space` left button, `r/e/q/w` right/middle/back/forward,
   `m/,/.//` wheel, `esc` → base; all other keys `XX`. Trigger: `ControlLeft` tap
-  (`@ml-free-tap`, `tap-hold-release 200 200`) in `lyr-base`; hold stays `lctl`.
+  (`@ml-tap`, `tap-hold-release 300 300`) in `lyr-base`; hold stays `lctl`.
   Configurable/documented; `lyr-mouse` remains the `free_mode_engine=kanata`
   fallback.
 - No `cmd` hooks of any kind (audit W1). No `kanata_cmd_allowed`, no

@@ -35,8 +35,8 @@ containing `@sp`) with `@ml-tap`:
 ```
 
 `@ml-tap` is defined in `mouseless.kbd` (the include below):
-`tap-hold-release 200 200 (layer-switch lyr-mouseless) lctl`.
-A tap (<200 ms) switches to `lyr-mouseless`; holding behaves as left Control.
+`tap-hold-release 300 300 (layer-switch lyr-mouseless) lctl`.
+A tap (<300 ms) switches to `lyr-mouseless`; holding behaves as left Control.
 `ShiftLeft`/`ShiftRight` and every other layer are untouched.
 
 ## 3. Include our layers (append at end of file)

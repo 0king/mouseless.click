@@ -365,7 +365,7 @@ mod tests {
         let include = render_include(&Config::default());
         // Overlay trigger defaults to left control; shift has no trigger.
         assert!(
-            include.contains("ml-tap (tap-hold-release 200 200 (layer-switch lyr-mouseless) lctl)")
+            include.contains("ml-tap (tap-hold-release 300 300 (layer-switch lyr-mouseless) lctl)")
         );
         // No free-mode tap trigger by default (control is now the overlay trigger).
         assert!(!include.contains("ml-free-tap"));

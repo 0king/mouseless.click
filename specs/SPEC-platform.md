@@ -32,7 +32,7 @@ verifiable by a scripted runbook.
 
 | File | Install path | Purpose |
 |---|---|---|
-| `kanata/mouseless.kbd` | `/etc/kanata/mouseless.kbd` | `ml-tap` (`tap-hold-release 200 200` → `lyr-mouseless`) on the `lctl` slot; clean overlay layer (level-1 columns `a s d f g h j k l ;` + every level-2 key `qwertyuiop / asdfghjkl; / zxcvbnm,./` emitted plainly, `spc`, `esc`→base), and the custom free-mode layer (`i/k/j/l`, boosts, buttons, wheel) — no dedicated free-mode tap trigger by default (`keybindings.free_mode_trigger_key`). |
+| `kanata/mouseless.kbd` | `/etc/kanata/mouseless.kbd` | `ml-tap` (`tap-hold-release 300 300` → `lyr-mouseless`) on the `lctl` slot; clean overlay layer (level-1 columns `a s d f g h j k l ;` + every level-2 key `qwertyuiop / asdfghjkl; / zxcvbnm,./` emitted plainly, `spc`, `esc`→base), and the custom free-mode layer (`i/k/j/l`, boosts, buttons, wheel) — no dedicated free-mode tap trigger by default (`keybindings.free_mode_trigger_key`). |
 | `kanata/UNICFG-EDITS.md` + `apply-kanata-config.sh` | runbook (script backs up both files, edits, `kanata --check`, restores on failure, restarts) | The 3 unicfg edits: defcfg output name + mouse exclude, `@ml-tap` in `lyr-base` (lctl slot), `(include "mouseless.kbd")`. |
 | `systemd/kanata.service.d-override.conf` | `/etc/systemd/system/kanata.service.d/mouseless.conf` | TCP `-p 127.0.0.1:7070`, `--emergency-exit-code 1`, `Restart=on-failure` + `RestartForceExitStatus=SIGTERM` (audit W2). `SupplementaryGroups=input uinput` — additive/idempotent (a no-op when kanata-svc already has them, a fix when it does not); kanata never joins the human `mouseless` socket group. |
 | `../mouseless.toml` | `/etc/mouseless/mouseless.toml` | Application-level constants (paths, kanata endpoint, timeouts, device names, base layer, deep-link scheme, app id, appearance fallbacks). Read by all binaries via `--config`/`MOUSELESS_CONFIG`/default path. The installer writes `[devices]` names and `[kanata] address` into the defcfg/drop-in, then validates with `kanata --check`; re-run the installer after changing them. |
@@ -174,7 +174,7 @@ installed-file contracts. Phase 3 adds `platform/desktop/`.
 ## Testing strategy (scripted assertions; runbook-style)
 
 - #1: `scripts/check-platform.sh` greps the include for
-  `tap-hold-release 200 200` on both `ml-tap` and `ml-free-tap`, plain cell keys
+  `tap-hold-release 300 300` on `ml-tap` (`ml-free-tap` removed), plain cell keys
   in `lyr-mouseless`, the `lyr-free` movement/button/wheel keys, and absence of
   `cmd`; it greps `apply-kanata-config.sh` for `linux-output-device-name` and
   `linux-dev-names-exclude`. Blocking; runs without root.

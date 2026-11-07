@@ -76,7 +76,7 @@ behavior:
   default_action: click                    # click | move
   free_mode_after_move: false
   multi_click_threshold_ms: 500
-  tap_threshold_ms: 200
+  tap_threshold_ms: 300
   nudges_per_cell: 4
   hold_subgrid_for_nudge: false
   continuous_mode: false

@@ -13,7 +13,7 @@
 (defalias
   ;; ControlLeft tap -> overlay; hold -> left control (tap-hold-release matches
   ;; the HRM style used in unicfg.kbd).
-  ml-tap (tap-hold-release 200 200 (layer-switch lyr-mouseless) lctl)
+  ml-tap (tap-hold-release 300 300 (layer-switch lyr-mouseless) lctl)
 )
 
 ;; Clean no-HRM overlay layer: the full QWERTY letter block + space; esc exits

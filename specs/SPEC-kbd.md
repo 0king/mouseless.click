@@ -175,7 +175,7 @@ grep -A2 'Name="kanata-mouseless"' /proc/bus/input/devices
 
 1. **Matrix #1 semantics (tap-vs-hold).** Plan §8 #1 asks for fake-clock
    property tests, but tap-hold is kanata's (SKILL-01). Proposed blocking test:
-   (a) config assertion script checks `ml-tap` is `tap-hold-release 200 200`,
+   (a) config assertion script checks `ml-tap` is `tap-hold-release 300 300`,
    `concurrent-tap-hold yes`, and `ShiftRight` untouched; (b) state-level shape
    test for duplicate/late `LayerChange`. Confirm with human.
 2. **`ShiftLeft` under `concurrent-tap-hold`.** The include relies on the live

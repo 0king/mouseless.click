@@ -135,7 +135,7 @@ require_literal "$TOML" 'state_dir = "/var/lib/mouseless"' "state dir default"
 require_literal "$TOML" 'config_file = "config.yaml"' "settings document name"
 
 echo "== kanata include =="
-require_literal "$KBD" "ml-tap (tap-hold-release 200 200" "ml-tap 200/200"
+require_literal "$KBD" "ml-tap (tap-hold-release 300 300" "ml-tap 300/300"
 require_literal "$KBD" "(deflayer lyr-mouseless" "overlay layer present"
 require_literal "$KBD" "(deflayer lyr-free" "free-mode layer present"
 require_literal "$KBD" "j k l" "free-mode movement keys"
