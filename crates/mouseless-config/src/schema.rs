@@ -447,7 +447,7 @@ pub struct KeybindingConfig {
     /// Action key name (`space`).
     #[serde(default = "default_action_key")]
     pub action_key: String,
-    /// Monitor-switch modifier name (`shift`).
+    /// Monitor-switch modifier name; empty disables monitor switching.
     #[serde(default = "default_monitor_key")]
     pub monitor_switch_key: String,
     /// Drag modifier name (`alt`).
@@ -603,7 +603,7 @@ fn default_action_key() -> String {
 }
 
 fn default_monitor_key() -> String {
-    "shift".into()
+    String::new()
 }
 
 fn default_drag_modifier() -> String {

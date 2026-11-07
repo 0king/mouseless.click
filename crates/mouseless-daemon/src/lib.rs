@@ -312,6 +312,9 @@ pub struct DaemonConfig {
     pub free_mode_layer: String,
     /// Kanata-native free-mode fallback layer name.
     pub kanata_free_mode_layer: String,
+    /// Modifier that triggers multi-monitor switching on tap; empty disables
+    /// monitor switching entirely (nothing on Shift by default).
+    pub monitor_switch_key: String,
 }
 
 impl Default for DaemonConfig {
@@ -356,6 +359,7 @@ impl Default for DaemonConfig {
             overlay_layer: OVERLAY_LAYER.into(),
             free_mode_layer: FREE_MODE_LAYER.into(),
             kanata_free_mode_layer: KANATA_FREE_MODE_LAYER.into(),
+            monitor_switch_key: String::new(),
         }
     }
 }
@@ -509,6 +513,7 @@ impl DaemonConfig {
         self.overlay_layer = config.keybindings.overlay_layer.clone();
         self.free_mode_layer = config.keybindings.free_mode_layer.clone();
         self.kanata_free_mode_layer = config.keybindings.kanata_free_mode_layer.clone();
+        self.monitor_switch_key = config.keybindings.monitor_switch_key.clone();
     }
 
     /// The appearance the extension should draw right now: the active theme's
@@ -951,10 +956,12 @@ where
                 Ok(SessionStep::Exit)
             }
             CellKey::ShiftLeft | CellKey::ShiftRight => {
-                self.shift_press = Some(ShiftPress {
-                    at_ms: now_ms,
-                    used: false,
-                });
+                if !self.config.monitor_switch_key.is_empty() {
+                    self.shift_press = Some(ShiftPress {
+                        at_ms: now_ms,
+                        used: false,
+                    });
+                }
                 Ok(SessionStep::Continue)
             }
             CellKey::ArrowUp => self.nudge(NudgeDirection::Up),
@@ -1016,7 +1023,9 @@ where
         ev: KeyEvent,
         now_ms: u64,
     ) -> Result<SessionStep, DaemonError> {
-        if matches!(ev.key, CellKey::ShiftLeft | CellKey::ShiftRight) {
+        if !self.config.monitor_switch_key.is_empty()
+            && matches!(ev.key, CellKey::ShiftLeft | CellKey::ShiftRight)
+        {
             if let Some(press) = self.shift_press.take() {
                 let duration = now_ms.saturating_sub(press.at_ms);
                 if !press.used && duration <= self.config.tuning.monitor_switch_tap_ms {
@@ -2788,6 +2797,7 @@ mod tests {
         let mut d = daemon_with(
             DaemonConfig {
                 multi_click_threshold_ms: 0,
+                monitor_switch_key: "shift".into(),
                 ..Default::default()
             },
             layout_dual(),
@@ -2861,6 +2871,7 @@ mod tests {
         let mut d = daemon_with_mouse(
             DaemonConfig {
                 multi_click_threshold_ms: 0,
+                monitor_switch_key: "shift".into(),
                 ..Default::default()
             },
             layout_live_dual(),

@@ -285,15 +285,11 @@ pub fn validate(config: &Config) -> Result<(), ValidationError> {
     }
 
     // v1 supports only the pinned trigger/action roles; the kanata layer and
-    // the evdev translator both hard-code them. Rebinding is Phase 4.
+    // the evdev translator both hard-code them. Rebinding is Phase 4. An empty
+    // monitor_switch_key disables monitor switching (nothing on Shift).
     for (field, value, allowed) in [
         ("keybindings.exit_key", &keys.exit_key, "esc"),
         ("keybindings.action_key", &keys.action_key, "space"),
-        (
-            "keybindings.monitor_switch_key",
-            &keys.monitor_switch_key,
-            "shift",
-        ),
         ("keybindings.drag_modifier", &keys.drag_modifier, "alt"),
     ] {
         if value != allowed {
@@ -302,6 +298,12 @@ pub fn validate(config: &Config) -> Result<(), ValidationError> {
                 format!("v1 supports only \"{allowed}\" (rebinding is Phase 4)"),
             ));
         }
+    }
+    if !keys.monitor_switch_key.is_empty() && keys.monitor_switch_key != "shift" {
+        issues.push(Issue::new(
+            "keybindings.monitor_switch_key",
+            "v1 supports only \"shift\" (rebinding is Phase 4)",
+        ));
     }
 
     if issues.is_empty() {
