@@ -1,21 +1,19 @@
 ;; Mouseless overlay + custom free-mode layers for kanata (Phase 2).
 ;; Installed as /etc/kanata/mouseless.kbd, sourced from unicfg.kbd via
 ;;   (include "mouseless.kbd")
-;; Requires in unicfg.kbd (see UNICFG-EDITS.md):
-;; - lyr-base: lsft slot replaced with `@ml-tap` (overlay trigger)
-;; - lyr-base: lctl slot replaced with `@ml-free-tap` (free-mode trigger)
+;; Requirements in unicfg.kbd (see UNICFG-EDITS.md):
+;; - lyr-base: lctl slot replaced with `@ml-tap` (overlay trigger)
 ;; - defcfg: linux-output-device-name + linux-dev-names-exclude
-;; Design notes (audit C1, user-accepted): ShiftLeft tap (<200 ms) switches to
-;; lyr-mouseless; ControlLeft tap (<200 ms) switches to lyr-free. Holding either
-;; behaves as the plain modifier. `concurrent-tap-hold yes` is required so fast
-;; modifier+key input resolves as a hold; both triggers are configurable here.
+;; Design notes (audit C1, user-accepted): ControlLeft tap (<200 ms) switches to
+;; lyr-mouseless; holding behaves as left Control. `concurrent-tap-hold yes` is
+;; required so fast modifier+key input resolves as a hold. The overlay trigger is
+;; configurable in config.yaml (`keybindings.overlay_trigger_key`); ShiftLeft has
+;; no dedicated trigger by default.
 
 (defalias
-  ;; ShiftLeft tap -> overlay; hold -> left shift (tap-hold-release matches
+  ;; ControlLeft tap -> overlay; hold -> left control (tap-hold-release matches
   ;; the HRM style used in unicfg.kbd).
-  ml-tap (tap-hold-release 200 200 (layer-switch lyr-mouseless) lsft)
-  ;; ControlLeft tap -> custom free mode; hold -> left control.
-  ml-free-tap (tap-hold-release 200 200 (layer-switch lyr-free) lctl)
+  ml-tap (tap-hold-release 200 200 (layer-switch lyr-mouseless) lctl)
 )
 
 ;; Clean no-HRM overlay layer: the full QWERTY letter block + space; esc exits

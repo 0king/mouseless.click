@@ -25,6 +25,15 @@ pub fn render_include(config: &Config) -> String {
     let overlay = &config.keybindings.overlay_layer;
     let free = &config.keybindings.free_mode_layer;
     let grid = &config.grid;
+    let overlay_trigger = &config.keybindings.overlay_trigger_key;
+    let free_alias = if config.keybindings.free_mode_trigger_key.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "  ml-free-tap (tap-hold-release {tap} {tap} (layer-switch {free}) {})\n",
+            config.keybindings.free_mode_trigger_key
+        )
+    };
 
     let mut out = String::new();
     out.push_str(
@@ -33,12 +42,11 @@ pub fn render_include(config: &Config) -> String {
          ;; Installed as /etc/kanata/mouseless.kbd, sourced from unicfg.kbd via\n\
          ;;   (include \"mouseless.kbd\")\n\
          ;; Requires in unicfg.kbd (see UNICFG-EDITS.md):\n\
-         ;; - lyr-base: lsft slot replaced with `@ml-tap` (overlay trigger)\n\
-         ;; - lyr-base: lctl slot replaced with `@ml-free-tap` (free-mode trigger)\n\
+         ;; - lyr-base: lctl slot replaced with `@ml-tap` (overlay trigger)\n\
          ;; - defcfg: linux-output-device-name + linux-dev-names-exclude\n",
     );
     out.push_str(&format!(
-        "\n(defalias\n  ml-tap (tap-hold-release {tap} {tap} (layer-switch {overlay}) lsft)\n  ml-free-tap (tap-hold-release {tap} {tap} (layer-switch {free}) lctl)\n)\n"
+        "\n(defalias\n  ml-tap (tap-hold-release {tap} {tap} (layer-switch {overlay}) {overlay_trigger})\n{free_alias}\n)\n"
     ));
     out.push_str(&format!(
         "\n(deflayer {overlay}\n  (layer-switch lyr-base) _ _ _ _ _ _ _ _ _ _ _ _\n  _ _ _ _ _ _ _ _ _ _ _ _ _ _\n  _ q w e r t y u i o p _ _ _\n  _ a s d f g h j k l ; _ _\n  lsft z x c v b n m , . / rsft\n  lctl lmet lalt spc ralt rctl rmet\n)\n"
@@ -328,12 +336,14 @@ mod tests {
         config.behavior.tap_threshold_ms = 150;
         config.keybindings.overlay_layer = "lyr-overlay".into();
         config.keybindings.free_mode_layer = "lyr-move".into();
+        config.keybindings.overlay_trigger_key = "lctl".into();
+        config.keybindings.free_mode_trigger_key = "rctl".into();
         let include = render_include(&config);
         assert!(
-            include.contains("ml-tap (tap-hold-release 150 150 (layer-switch lyr-overlay) lsft)")
+            include.contains("ml-tap (tap-hold-release 150 150 (layer-switch lyr-overlay) lctl)")
         );
         assert!(
-            include.contains("ml-free-tap (tap-hold-release 150 150 (layer-switch lyr-move) lctl)")
+            include.contains("ml-free-tap (tap-hold-release 150 150 (layer-switch lyr-move) rctl)")
         );
         assert!(include.contains("(deflayer lyr-overlay"));
         assert!(include.contains("(deflayer lyr-move"));
@@ -348,6 +358,17 @@ mod tests {
     fn render_is_deterministic() {
         let config = Config::default();
         assert_eq!(render_include(&config), render_include(&config));
+    }
+
+    #[test]
+    fn default_render_uses_configurable_trigger_keys() {
+        let include = render_include(&Config::default());
+        // Overlay trigger defaults to left control; shift has no trigger.
+        assert!(
+            include.contains("ml-tap (tap-hold-release 200 200 (layer-switch lyr-mouseless) lctl)")
+        );
+        // No free-mode tap trigger by default (control is now the overlay trigger).
+        assert!(!include.contains("ml-free-tap"));
     }
 
     #[test]

@@ -453,6 +453,13 @@ pub struct KeybindingConfig {
     /// Drag modifier name (`alt`).
     #[serde(default = "default_drag_modifier")]
     pub drag_modifier: String,
+    /// Kanata key name for the overlay tap-hold trigger (default `lctl`).
+    #[serde(default = "default_overlay_trigger_key")]
+    pub overlay_trigger_key: String,
+    /// Kanata key name for the free-mode tap-hold trigger (default empty — no
+    /// dedicated trigger; free mode is entered via `free_mode_after_move`).
+    #[serde(default = "default_free_mode_trigger_key")]
+    pub free_mode_trigger_key: String,
 }
 
 impl Default for KeybindingConfig {
@@ -465,6 +472,8 @@ impl Default for KeybindingConfig {
             action_key: default_action_key(),
             monitor_switch_key: default_monitor_key(),
             drag_modifier: default_drag_modifier(),
+            overlay_trigger_key: default_overlay_trigger_key(),
+            free_mode_trigger_key: default_free_mode_trigger_key(),
         }
     }
 }
@@ -599,6 +608,14 @@ fn default_monitor_key() -> String {
 
 fn default_drag_modifier() -> String {
     "alt".into()
+}
+
+fn default_overlay_trigger_key() -> String {
+    "lctl".into()
+}
+
+fn default_free_mode_trigger_key() -> String {
+    String::new()
 }
 
 #[cfg(test)]

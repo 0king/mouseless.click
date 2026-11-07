@@ -32,8 +32,8 @@ verifiable by a scripted runbook.
 
 | File | Install path | Purpose |
 |---|---|---|
-| `kanata/mouseless.kbd` | `/etc/kanata/mouseless.kbd` | `ml-tap` / `ml-free-tap` (`tap-hold-release 200 200` → `lyr-mouseless` / `lyr-free`), clean overlay layer (level-1 columns `a s d f g h j k l ;` + every level-2 key `qwertyuiop / asdfghjkl; / zxcvbnm,./` emitted plainly, `spc`, `esc`→base), and the custom free-mode layer (`i/k/j/l`, boosts, buttons, wheel). |
-| `kanata/UNICFG-EDITS.md` + `apply-kanata-config.sh` | runbook (script backs up both files, edits, `kanata --check`, restores on failure, restarts) | The 4 unicfg edits: defcfg output name + mouse exclude, `@ml-tap` and `@ml-free-tap` in `lyr-base`, `(include "mouseless.kbd")`. |
+| `kanata/mouseless.kbd` | `/etc/kanata/mouseless.kbd` | `ml-tap` (`tap-hold-release 200 200` → `lyr-mouseless`) on the `lctl` slot; clean overlay layer (level-1 columns `a s d f g h j k l ;` + every level-2 key `qwertyuiop / asdfghjkl; / zxcvbnm,./` emitted plainly, `spc`, `esc`→base), and the custom free-mode layer (`i/k/j/l`, boosts, buttons, wheel) — no dedicated free-mode tap trigger by default (`keybindings.free_mode_trigger_key`). |
+| `kanata/UNICFG-EDITS.md` + `apply-kanata-config.sh` | runbook (script backs up both files, edits, `kanata --check`, restores on failure, restarts) | The 3 unicfg edits: defcfg output name + mouse exclude, `@ml-tap` in `lyr-base` (lctl slot), `(include "mouseless.kbd")`. |
 | `systemd/kanata.service.d-override.conf` | `/etc/systemd/system/kanata.service.d/mouseless.conf` | TCP `-p 127.0.0.1:7070`, `--emergency-exit-code 1`, `Restart=on-failure` + `RestartForceExitStatus=SIGTERM` (audit W2). `SupplementaryGroups=input uinput` — additive/idempotent (a no-op when kanata-svc already has them, a fix when it does not); kanata never joins the human `mouseless` socket group. |
 | `../mouseless.toml` | `/etc/mouseless/mouseless.toml` | Application-level constants (paths, kanata endpoint, timeouts, device names, base layer, deep-link scheme, app id, appearance fallbacks). Read by all binaries via `--config`/`MOUSELESS_CONFIG`/default path. The installer writes `[devices]` names and `[kanata] address` into the defcfg/drop-in, then validates with `kanata --check`; re-run the installer after changing them. |
 | `systemd/mouselessd.service` | `/etc/systemd/system/mouselessd.service` | `After=kanata.service`, no `Requires=`; `ExecStart=/usr/local/bin/mouselessd` (endpoint comes from `mouseless.toml`, never the unit); `User=mouselessd`, `Group=mouseless`, `SupplementaryGroups=input uinput`; `RuntimeDirectory=mouseless` (0770), `UMask=0007`; `Restart=on-failure`, `StartLimitIntervalSec=0`; sandboxing (`ProtectSystem=strict`, empty capability set). |
@@ -204,10 +204,8 @@ installed-file contracts. Phase 3 adds `platform/desktop/`.
 ## Success criteria
 
 - [x] Kanata include + runbook + apply script with backup/validate/restart.
-- [x] `lyr-free` + `@ml-free-tap` include for custom free mode; validated with
-      `kanata --check` on 2026-10-29.
-- [x] Apply script replayed against a temp unicfg copy: all four edits land,
-      a second run is idempotent, and `kanata --check` passes.
+- [x] `lyr-free` layer included for custom free mode; no dedicated tap trigger by default (overlay is on `lctl`; free mode via `free_mode_after_move` or `keybindings.free_mode_trigger_key`); validated with `kanata --check` on 2026-10-29.
+- [x] Apply script replayed against a temp unicfg copy: all three edits land, a second run is idempotent, and `kanata --check` passes.
 - [x] Apply script creates missing `input`/`uinput` groups first, so systemd
       accepts `SupplementaryGroups=` on a host where kanata has no device
       permissions yet (getent-guarded, idempotent).

@@ -70,9 +70,12 @@ parse TOML; `platform/install-extension.sh` generates its `config.js` (socket
 path plus legacy-payload color fallback) from the same file. The file is read
 once per process; edits require a restart.
 
-Phase 2 free mode uses a dedicated `lyr-free` kanata layer (`@ml-free-tap` on
-ControlLeft); the daemon holds the same temporary grab and runs an 8 ms physics
-tick. `lyr-mouse` remains authoritative when `free_mode_engine = kanata`.
+Phase 2 free mode uses a dedicated `lyr-free` kanata layer defined in the
+include but without a dedicated tap trigger by default (overlay now owns
+ControlLeft); free mode is entered via `free_mode_after_move` or
+`keybindings.free_mode_trigger_key`. The daemon holds the same temporary grab
+and runs an 8 ms physics tick. `lyr-mouse` remains authoritative when
+`free_mode_engine = kanata`.
 
 Phase 1.3 extension layout: `gnome-extension/extension.js` (lifecycle +
 dispatch), `ipc.js` (NDJSON client/reconnect), `render.js` (Clutter actor and

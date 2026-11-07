@@ -1,8 +1,8 @@
 #!/bin/sh
 # Mouseless Phase 1.1 + Phase 2: apply kanata config + service drop-in.
 # Run from repo root as: sudo ./platform/kanata/apply-kanata-config.sh
-# Backs up unicfg.kbd and the existing include, applies the 4 UNICFG-EDITS.md
-# changes (output name, @ml-tap, @ml-free-tap, include), validates with
+# Backs up unicfg.kbd and the existing include, applies the UNICFG-EDITS.md
+# changes (output name, @ml-tap, include), validates with
 # `kanata --check` (restores both files and aborts on failure), then restarts
 # kanata + shows TCP state.
 set -eu
@@ -63,21 +63,16 @@ try:
     idx = next(i for i, l in enumerate(lines) if l.startswith('(deflayer lyr-base'))
 except StopIteration:
     sys.exit('unicfg.kbd: no (deflayer lyr-base ...) found')
-for j in range(idx, min(len(lines), idx + 10)):
-    if lines[j].strip() == '_  _  _    _    _    _    _    _    _    _    _    _':
+# Overlay trigger: first token of the row containing @sp (lctl slot).
+found_overlay = False
+for j in range(idx, min(len(lines), idx + 12)):
+    if '@sp' in lines[j]:
+        found_overlay = True
         if '@ml-tap' not in lines[j]:
             lines[j] = lines[j].replace('_', '@ml-tap', 1)
         break
-# Free-mode trigger: first token of the row containing @sp (lctl slot).
-found_free = False
-for j in range(idx, min(len(lines), idx + 12)):
-    if '@sp' in lines[j]:
-        found_free = True
-        if '@ml-free-tap' not in lines[j]:
-            lines[j] = lines[j].replace('_', '@ml-free-tap', 1)
-        break
-if not found_free:
-    print('warning: no @sp row found; @ml-free-tap not added', file=sys.stderr)
+if not found_overlay:
+    print('warning: no @sp row found; @ml-tap not added', file=sys.stderr)
 s = '\n'.join(lines)
 if '(include "mouseless.kbd")' not in s:
     s = s.rstrip() + '\n\n(include "mouseless.kbd")\n'
