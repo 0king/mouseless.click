@@ -64,12 +64,17 @@ try:
 except StopIteration:
     sys.exit('unicfg.kbd: no (deflayer lyr-base ...) found')
 # Overlay trigger: first token of the row containing @sp (lctl slot).
+# Self-healing on re-runs: strip any stale @ml-tap/@ml-free-tap tokens from
+# lyr-base (old apply versions put @ml-tap on the Shift row and @ml-free-tap
+# on the Control row), then place @ml-tap on the lctl slot. Shift gets no
+# trigger; free mode has no dedicated tap trigger by default.
+for j in range(idx, min(len(lines), idx + 12)):
+    lines[j] = lines[j].replace('@ml-tap', '_').replace('@ml-free-tap', '_')
 found_overlay = False
 for j in range(idx, min(len(lines), idx + 12)):
     if '@sp' in lines[j]:
         found_overlay = True
-        if '@ml-tap' not in lines[j]:
-            lines[j] = lines[j].replace('_', '@ml-tap', 1)
+        lines[j] = lines[j].replace('_', '@ml-tap', 1)
         break
 if not found_overlay:
     print('warning: no @sp row found; @ml-tap not added', file=sys.stderr)

@@ -23,7 +23,7 @@
 ;; sub-cell). Every one of those 30 characters must be emitted plainly here so
 ;; the temp grab can read it; otherwise `_` would fall through to base HRM
 ;; aliases and delay or swallow the key.
-;; Modifiers are explicit so the base aliases (`@ml-tap`, `@ml-free-tap`, `@sp`)
+;; Modifiers are explicit so the base aliases (`@ml-tap`, `@sp`)
 ;; cannot fire while the overlay is open; the daemon needs the real press/release
 ;; events for Shift monitor-switching and Alt drag.
 ;; Column counts mirror defsrc exactly (13/14/14/13/12/7).

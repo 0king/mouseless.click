@@ -156,7 +156,7 @@ One crate, split by concern:
 
 1. **Matrix #1 (tap-vs-hold).** Plan §8 #1 says "fake-clock property tests",
    but tap-hold lives in kanata (SKILL-01). Proposed reading: blocking test =
-   kanata-config assertion (`tap-hold-release 200 200`) + state-level shape test
+   kanata-config assertion (`tap-hold-release 300 300`) + state-level shape test
    for late/early/duplicate `LayerChange`. Needs human confirmation.
 2. **Defaults — resolved (2026-10-29):** `multi_click_threshold_ms 500`,
    `nudges_per_cell 4`, initial action location `screen_center`, default action

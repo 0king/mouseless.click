@@ -345,8 +345,7 @@ Trait-boundary rules (enforced in review + CI):
 ### Phase 2: Custom free-mode physics + precision (Priority 2)
 - [x] **2.1** `mouseless-state` free-mode loop (fixed-step tick, accel/easing/wheel,
   auto-off) behind `free_mode_engine=custom`; kanata `lyr-mouse` kept as fallback.
-  _Implemented 2026-10-29: `machine.rs`/`physics.rs`/`actions.rs`, `lyr-free` +
-  `@ml-free-tap`, temporary grab, 8 ms daemon tick, auto-off/held-button release.
+  _Implemented 2026-10-29: `machine.rs`/`physics.rs`/`actions.rs`,   `lyr-free` (no dedicated tap trigger by default), temporary grab, 8 ms daemon tick, auto-off/held-button release.
   Unit tests green; live host smoke still needs the sudo kanata config apply._
 - [x] **2.2** Subgrid nudging, drag & drop, multi-click cadence, modifier clicks,
   multi-monitor switching, continuous mode, cursor hiding; tests #4, #5, #7 green.
