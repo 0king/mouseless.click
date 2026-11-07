@@ -115,7 +115,7 @@ keybindings:
   kanata_free_mode_layer: lyr-mouse
   exit_key: esc
   action_key: space
-  monitor_switch_key: ""
+  monitor_switch_key: ctrl
   drag_modifier: alt
 ```
 

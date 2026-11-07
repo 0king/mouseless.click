@@ -39,6 +39,10 @@ pub enum CellKey {
     ShiftLeft,
     /// Right Shift press/release (monitor switching).
     ShiftRight,
+    /// Left Control press/release (monitor switching trigger).
+    CtrlLeft,
+    /// Right Control press/release (monitor switching trigger).
+    CtrlRight,
     /// Up arrow (subgrid nudge).
     ArrowUp,
     /// Down arrow (subgrid nudge).
@@ -94,19 +98,18 @@ pub struct KeyEvent {
 
 /// Translate a kernel key code to a [`CellKey`].
 ///
-/// `None` is reserved for pure modifiers (Ctrl/Alt/Meta) and keys the grab
+/// `None` is reserved for pure modifiers (Alt/Meta) and keys the grab
 /// never sees. Every other key becomes `Some(_)`: keys outside the 30-cell
 /// character set map to [`CellKey::Other`] so the overlay can dismiss on a
-/// stray tap instead of silently swallowing it.
+/// stray tap instead of silently swallowing it. Control keys pass through so
+/// they can drive monitor switching.
 pub fn translate_key(code: evdev::KeyCode) -> Option<CellKey> {
     use evdev::KeyCode;
     // Modifier-only presses are state, not a key choice; they must not
-    // dismiss the overlay (Alt/Shift are used by the drag/right-click paths).
+    // dismiss the overlay (Alt/Meta are used by the drag/right-click paths).
     if matches!(
         code,
-        KeyCode::KEY_LEFTCTRL
-            | KeyCode::KEY_RIGHTCTRL
-            | KeyCode::KEY_LEFTALT
+        KeyCode::KEY_LEFTALT
             | KeyCode::KEY_RIGHTALT
             | KeyCode::KEY_LEFTMETA
             | KeyCode::KEY_RIGHTMETA
@@ -150,6 +153,8 @@ pub fn translate_key(code: evdev::KeyCode) -> Option<CellKey> {
         KeyCode::KEY_ESC => CellKey::Escape,
         KeyCode::KEY_LEFTSHIFT => CellKey::ShiftLeft,
         KeyCode::KEY_RIGHTSHIFT => CellKey::ShiftRight,
+        KeyCode::KEY_LEFTCTRL => CellKey::CtrlLeft,
+        KeyCode::KEY_RIGHTCTRL => CellKey::CtrlRight,
         KeyCode::KEY_UP => CellKey::ArrowUp,
         KeyCode::KEY_DOWN => CellKey::ArrowDown,
         KeyCode::KEY_LEFT => CellKey::ArrowLeft,
@@ -375,13 +380,22 @@ mod tests {
             translate_key(KeyCode::KEY_RIGHTSHIFT),
             Some(CellKey::ShiftRight)
         );
+        assert_eq!(
+            translate_key(KeyCode::KEY_LEFTCTRL),
+            Some(CellKey::CtrlLeft)
+        );
+        assert_eq!(
+            translate_key(KeyCode::KEY_RIGHTCTRL),
+            Some(CellKey::CtrlRight)
+        );
         assert_eq!(translate_key(KeyCode::KEY_UP), Some(CellKey::ArrowUp));
         assert_eq!(translate_key(KeyCode::KEY_SLASH), Some(CellKey::Char('/')));
     }
 
     /// Bug regression: a tap outside the 30-character cell vocabulary must
     /// reach the daemon so the overlay can dismiss. Modifier-only presses are
-    /// still swallowed (Shift/Alt are action modifiers).
+    /// still swallowed (Ctrl/Alt/Meta excepted: Ctrl drives monitor
+    /// switching, Alt/Meta are action modifiers).
     #[test]
     fn keys_outside_the_character_set_are_other() {
         use evdev::KeyCode;
@@ -406,8 +420,6 @@ mod tests {
             "Tab toggles the theme instead of dismissing"
         );
         for code in [
-            KeyCode::KEY_LEFTCTRL,
-            KeyCode::KEY_RIGHTCTRL,
             KeyCode::KEY_LEFTALT,
             KeyCode::KEY_RIGHTALT,
             KeyCode::KEY_LEFTMETA,

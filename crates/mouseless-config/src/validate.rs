@@ -299,10 +299,13 @@ pub fn validate(config: &Config) -> Result<(), ValidationError> {
             ));
         }
     }
-    if !keys.monitor_switch_key.is_empty() && keys.monitor_switch_key != "shift" {
+    if !keys.monitor_switch_key.is_empty()
+        && keys.monitor_switch_key != "shift"
+        && keys.monitor_switch_key != "ctrl"
+    {
         issues.push(Issue::new(
             "keybindings.monitor_switch_key",
-            "v1 supports only \"shift\" (rebinding is Phase 4)",
+            "v1 supports only \"shift\" or \"ctrl\" (rebinding is Phase 4)",
         ));
     }
 
@@ -548,7 +551,7 @@ mod tests {
         let mut config = Config::default();
         config.keybindings.exit_key = "q".into();
         config.keybindings.action_key = "enter".into();
-        config.keybindings.monitor_switch_key = "ctrl".into();
+        config.keybindings.monitor_switch_key = "alt".into();
         config.keybindings.drag_modifier = "meta".into();
         let found = issues(&config);
         for field in [

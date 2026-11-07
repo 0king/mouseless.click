@@ -578,7 +578,7 @@ pub enum SessionStep {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ShiftPress {
+struct SwitchPress {
     at_ms: u64,
     used: bool,
 }
@@ -609,7 +609,7 @@ pub struct Daemon<K, M, O, G = CellGrab> {
     nudge: NudgeState,
     last_click_target: Option<(i32, i32)>,
     pending_click_deadline_ms: Option<u64>,
-    shift_press: Option<ShiftPress>,
+    switch_press: Option<SwitchPress>,
     held_subcell: Option<HeldSubcell>,
     /// Events seen while blocked in `refresh_cursor` (client commands must
     /// not be lost just because a move was in flight).
@@ -680,7 +680,7 @@ where
             nudge,
             last_click_target: None,
             pending_click_deadline_ms: None,
-            shift_press: None,
+            switch_press: None,
             held_subcell: None,
             deferred_events: Vec::new(),
             clock_origin: Instant::now(),
@@ -773,7 +773,7 @@ where
         self.pending_click_deadline_ms = None;
         self.click_counter.reset();
         self.last_click_target = None;
-        self.shift_press = None;
+        self.switch_press = None;
         self.held_subcell = None;
         self.drag = DragState::default();
         Ok(())
@@ -820,7 +820,7 @@ where
         self.pending_click_deadline_ms = None;
         self.click_counter.reset();
         self.last_click_target = None;
-        self.shift_press = None;
+        self.switch_press = None;
         self.held_subcell = None;
         self.drag = DragState::default();
         Ok(())
@@ -853,7 +853,7 @@ where
         self.drag = DragState::default();
         self.held_subcell = None;
         self.pending_click_deadline_ms = None;
-        self.shift_press = None;
+        self.switch_press = None;
         self.click_counter.reset();
         self.last_click_target = None;
         let _ = self.machine.hide();
@@ -955,12 +955,14 @@ where
                 self.cancel_overlay();
                 Ok(SessionStep::Exit)
             }
-            CellKey::ShiftLeft | CellKey::ShiftRight => {
-                if !self.config.monitor_switch_key.is_empty() {
-                    self.shift_press = Some(ShiftPress {
-                        at_ms: now_ms,
-                        used: false,
-                    });
+            CellKey::ShiftLeft | CellKey::ShiftRight | CellKey::CtrlLeft | CellKey::CtrlRight => {
+                if let Some(key_name) = Self::monitor_key_name(ev.key) {
+                    if key_name == self.config.monitor_switch_key.trim().to_lowercase() {
+                        self.switch_press = Some(SwitchPress {
+                            at_ms: now_ms,
+                            used: false,
+                        });
+                    }
                 }
                 Ok(SessionStep::Continue)
             }
@@ -1023,18 +1025,13 @@ where
         ev: KeyEvent,
         now_ms: u64,
     ) -> Result<SessionStep, DaemonError> {
-        if !self.config.monitor_switch_key.is_empty()
-            && matches!(ev.key, CellKey::ShiftLeft | CellKey::ShiftRight)
-        {
-            if let Some(press) = self.shift_press.take() {
-                let duration = now_ms.saturating_sub(press.at_ms);
-                if !press.used && duration <= self.config.tuning.monitor_switch_tap_ms {
-                    let direction = if ev.key == CellKey::ShiftLeft {
-                        MonitorDirection::Left
-                    } else {
-                        MonitorDirection::Right
-                    };
-                    self.switch_monitor(direction)?;
+        if let Some(key_name) = Self::monitor_key_name(ev.key) {
+            if key_name == self.config.monitor_switch_key.trim().to_lowercase() {
+                if let Some(press) = self.switch_press.take() {
+                    let duration = now_ms.saturating_sub(press.at_ms);
+                    if !press.used && duration <= self.config.tuning.monitor_switch_tap_ms {
+                        self.switch_monitor(Self::monitor_key_direction(ev.key))?;
+                    }
                 }
             }
             return Ok(SessionStep::Continue);
@@ -1276,9 +1273,33 @@ where
         }
     }
 
+    /// Canonical config name for a monitor-switch physical key.
+    fn monitor_key_name(key: CellKey) -> Option<&'static str> {
+        match key {
+            CellKey::ShiftLeft | CellKey::ShiftRight => Some("shift"),
+            CellKey::CtrlLeft | CellKey::CtrlRight => Some("ctrl"),
+            _ => None,
+        }
+    }
+
+    /// Left/right direction a monitor-switch key press maps to.
+    fn monitor_key_direction(key: CellKey) -> MonitorDirection {
+        match key {
+            CellKey::ShiftLeft | CellKey::CtrlLeft => MonitorDirection::Left,
+            CellKey::ShiftRight | CellKey::CtrlRight => MonitorDirection::Right,
+            _ => MonitorDirection::Left,
+        }
+    }
+
     fn mark_modifier_used(&mut self, modifiers: Modifiers) {
-        if modifiers.shift {
-            if let Some(press) = self.shift_press.as_mut() {
+        let name = self.config.monitor_switch_key.trim().to_lowercase();
+        let active = match name.as_str() {
+            "ctrl" | "control" => modifiers.ctrl,
+            "shift" => modifiers.shift,
+            _ => false,
+        };
+        if active {
+            if let Some(press) = self.switch_press.as_mut() {
                 press.used = true;
             }
         }
@@ -2793,11 +2814,11 @@ mod tests {
     }
 
     #[test]
-    fn shift_tap_switches_monitor_by_x_order() {
+    fn ctrl_tap_switches_monitor_by_x_order() {
         let mut d = daemon_with(
             DaemonConfig {
                 multi_click_threshold_ms: 0,
-                monitor_switch_key: "shift".into(),
+                monitor_switch_key: "ctrl".into(),
                 ..Default::default()
             },
             layout_dual(),
@@ -2807,10 +2828,10 @@ mod tests {
         assert_eq!(d.active_monitor().unwrap().x, 0);
         d.handle_key_event_at(
             KeyEvent {
-                key: CellKey::ShiftRight,
+                key: CellKey::CtrlRight,
                 pressed: true,
                 modifiers: Modifiers {
-                    shift: true,
+                    ctrl: true,
                     ..Default::default()
                 },
             },
@@ -2819,7 +2840,7 @@ mod tests {
         .unwrap();
         d.handle_key_event_at(
             KeyEvent {
-                key: CellKey::ShiftRight,
+                key: CellKey::CtrlRight,
                 pressed: false,
                 modifiers: Modifiers::default(),
             },
@@ -2830,10 +2851,10 @@ mod tests {
         // Wraps back to the first monitor.
         d.handle_key_event_at(
             KeyEvent {
-                key: CellKey::ShiftRight,
+                key: CellKey::CtrlRight,
                 pressed: true,
                 modifiers: Modifiers {
-                    shift: true,
+                    ctrl: true,
                     ..Default::default()
                 },
             },
@@ -2842,7 +2863,7 @@ mod tests {
         .unwrap();
         d.handle_key_event_at(
             KeyEvent {
-                key: CellKey::ShiftRight,
+                key: CellKey::CtrlRight,
                 pressed: false,
                 modifiers: Modifiers::default(),
             },
@@ -2871,7 +2892,7 @@ mod tests {
         let mut d = daemon_with_mouse(
             DaemonConfig {
                 multi_click_threshold_ms: 0,
-                monitor_switch_key: "shift".into(),
+                monitor_switch_key: "ctrl".into(),
                 ..Default::default()
             },
             layout_live_dual(),
@@ -2886,13 +2907,13 @@ mod tests {
             .unwrap();
         assert_eq!(d.active_monitor().unwrap().x, 1920);
 
-        // Tap Left Shift: external (right) -> built-in (left).
+        // Tap Left Control: external (right) -> built-in (left).
         d.handle_key_event_at(
             KeyEvent {
-                key: CellKey::ShiftLeft,
+                key: CellKey::CtrlLeft,
                 pressed: true,
                 modifiers: Modifiers {
-                    shift: true,
+                    ctrl: true,
                     ..Default::default()
                 },
             },
@@ -2901,7 +2922,7 @@ mod tests {
         .unwrap();
         d.handle_key_event_at(
             KeyEvent {
-                key: CellKey::ShiftLeft,
+                key: CellKey::CtrlLeft,
                 pressed: false,
                 modifiers: Modifiers::default(),
             },

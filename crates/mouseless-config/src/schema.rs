@@ -603,7 +603,7 @@ fn default_action_key() -> String {
 }
 
 fn default_monitor_key() -> String {
-    String::new()
+    "ctrl".into()
 }
 
 fn default_drag_modifier() -> String {

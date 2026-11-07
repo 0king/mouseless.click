@@ -60,7 +60,7 @@ grab_retry_attempts = 40
 grab_retry_delay_ms = 50
 # Cursor refresh budget before a click.
 cursor_query_timeout_ms = 100
-# Tap window for monitor switching (only when monitor_switch_key is set).
+# Monitor switch key: ctrl (lctrl tap switches monitor), shift, or "" to disable.
 monitor_switch_tap_ms = 200
 # Fixed physics tick for custom free mode.
 free_mode_tick_ms = 8
