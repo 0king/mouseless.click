@@ -52,7 +52,7 @@ pub fn render_include(config: &Config) -> String {
         "\n(deflayer {overlay}\n  (layer-switch lyr-base) _ _ _ _ _ _ _ _ _ _ _ _\n  _ _ _ _ _ _ _ _ _ _ _ _ _ _\n  _ q w e r t y u i o p _ _ _\n  _ a s d f g h j k l ; _ _\n  lsft z x c v b n m , . / rsft\n  lctl lmet lalt spc ralt rctl rmet\n)\n"
     ));
     out.push_str(&format!(
-        "\n(deflayer {precision}\n  (layer-switch lyr-base) _ _ _ _ _ _ _ _ _ _ _ _\n  _ _ _ _ _ _ _ _ _ _ _ _ _ _\n  _ _ _ _ _ _ _ _ mlp-up _ _ _ _\n  (layer-switch lyr-base) _ _ _ _ _ _ mlp-left mlp-down mlp-right _ _ _\n  _ _ _ mlp-fast mlp-slow _ _ _ _ _ _ _\n  _ _ _ _ _ _ _\n)\n"
+        "\n(deflayer {precision}\n  (layer-switch lyr-base) _ _ _ _ _ _ _ _ _ _ _ _ _\n  _ _ _ _ _ _ _ _ _ _ _ _ _ _\n  _ _ _ _ _ _ _ _ mlp-up _ _ _ _ _\n  (layer-switch lyr-base) _ _ _ _ _ _ mlp-left mlp-down mlp-right _ _ _\n  _ _ _ mlp-fast mlp-slow _ _ _ _ _ _ _\n  _ _ _ _ _ _ _\n)\n"
     ));
 
     // The header comment states the pools so a human editing the generated
