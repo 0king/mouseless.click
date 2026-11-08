@@ -13,8 +13,8 @@ use adw::prelude::*;
 use gtk::prelude::*;
 use libadwaita as adw;
 use mouseless_config::{
-    BehaviorConfig, Config, CursorCorner, DefaultAction, Easing, Engine, GridActionLevel,
-    InitialActionLocation, MonitorAssignment, Theme, ROW_KEY_POOL,
+    BehaviorConfig, Config, CursorCorner, DefaultAction, GridActionLevel, InitialActionLocation,
+    MonitorAssignment, Theme, ROW_KEY_POOL,
 };
 use std::rc::Rc;
 
@@ -30,10 +30,6 @@ pub const INITIAL_LABELS: [&str; 2] = ["Screen centre", "System cursor"];
 pub const LEVEL_LABELS: [&str; 2] = ["Open the subgrid (third key acts)", "Act after two keys"];
 /// Default action choices.
 pub const ACTION_LABELS: [&str; 2] = ["Left click", "Move the cursor"];
-/// Free-mode engine choices.
-pub const ENGINE_LABELS: [&str; 2] = ["Custom physics", "Kanata lyr-mouse fallback"];
-/// Easing choices.
-pub const EASING_LABELS: [&str; 4] = ["Loose", "Natural", "Snappy", "Instant"];
 /// Cursor-hide corner choices.
 pub const CORNER_LABELS: [&str; 4] = ["Top left", "Top right", "Bottom left", "Bottom right"];
 /// Theme choices (index matches the schema enum order).
@@ -140,34 +136,14 @@ pub struct Form {
     /// Alt begins/continues a drag.
     pub hold_drag: adw::SwitchRow,
 
-    // Free mode
-    /// Custom physics or kanata.
-    pub engine: adw::ComboRow,
-    /// Base movement speed.
-    pub base_speed: adw::SpinRow,
-    /// Speed multiplier.
-    pub speed_multiplier: adw::SpinRow,
-    /// Movement easing.
-    pub easing: adw::ComboRow,
-    /// Idle auto-off.
-    pub auto_off: adw::SpinRow,
-    /// Wheel base speed.
-    pub wheel_base: adw::SpinRow,
-    /// Wheel speed multiplier.
-    pub wheel_multiplier: adw::SpinRow,
-    /// Wheel easing.
-    pub wheel_easing: adw::ComboRow,
-    /// Wheel step.
-    pub wheel_step: adw::SpinRow,
-    /// Large wheel step.
-    pub wheel_step_large: adw::SpinRow,
-
     // Keybindings
     /// Overlay layer name.
     pub overlay_layer: adw::EntryRow,
-    /// Custom free-mode layer name.
-    pub free_mode_layer: adw::EntryRow,
-    /// Kanata-native free-mode layer name.
+    /// Precision layer name.
+    pub precision_layer: adw::EntryRow,
+    /// Optional precision tap-hold trigger.
+    pub precision_trigger: adw::EntryRow,
+    /// Kanata-native free-mode fallback layer name.
     pub kanata_free_layer: adw::EntryRow,
     /// Exit key name.
     pub exit_key: adw::EntryRow,
@@ -259,19 +235,9 @@ impl Form {
                 true,
             ),
 
-            engine: combo_row("Free-mode engine", &ENGINE_LABELS, 0),
-            base_speed: spin_row("Base speed (px/tick)", 0.5, 50.0, 0.5, 1, 10.0),
-            speed_multiplier: spin_row("Boost multiplier", 1.0, 10.0, 0.25, 2, 2.0),
-            easing: combo_row("Movement easing", &EASING_LABELS, 1),
-            auto_off: spin_row("Auto-off after idle (s)", 0.0, 3600.0, 5.0, 0, 10.0),
-            wheel_base: spin_row("Wheel base speed (lines/tick)", 0.25, 20.0, 0.25, 2, 1.0),
-            wheel_multiplier: spin_row("Wheel boost multiplier", 1.0, 10.0, 0.25, 2, 2.0),
-            wheel_easing: combo_row("Wheel easing", &EASING_LABELS, 1),
-            wheel_step: spin_row("Wheel step (lines)", 1.0, 100.0, 1.0, 0, 3.0),
-            wheel_step_large: spin_row("Large wheel step (lines)", 1.0, 1000.0, 1.0, 0, 10.0),
-
             overlay_layer: entry_row("Overlay layer"),
-            free_mode_layer: entry_row("Free-mode layer"),
+            precision_layer: entry_row("Precision layer"),
+            precision_trigger: entry_row("Precision trigger"),
             kanata_free_layer: entry_row("Kanata free-mode layer"),
             exit_key: entry_row("Exit key"),
             action_key: entry_row("Action key"),
@@ -339,32 +305,12 @@ impl Form {
             .set_text(&config.behavior.right_click_modifier);
         self.hold_drag.set_active(config.behavior.hold_for_drag);
 
-        self.engine.set_selected(match config.free_mode.engine {
-            Engine::Custom => 0,
-            Engine::Kanata => 1,
-        });
-        self.base_speed.set_value(config.free_mode.base_px_per_tick);
-        self.speed_multiplier
-            .set_value(config.free_mode.speed_multiplier);
-        self.easing
-            .set_selected(easing_index(config.free_mode.easing));
-        self.auto_off
-            .set_value(config.free_mode.auto_off_secs as f64);
-        self.wheel_base
-            .set_value(config.free_mode.wheel.base_lines_per_tick);
-        self.wheel_multiplier
-            .set_value(config.free_mode.wheel.speed_multiplier);
-        self.wheel_easing
-            .set_selected(easing_index(config.free_mode.wheel.easing));
-        self.wheel_step
-            .set_value(f64::from(config.free_mode.wheel.step_size));
-        self.wheel_step_large
-            .set_value(f64::from(config.free_mode.wheel.step_size_large));
-
         self.overlay_layer
             .set_text(&config.keybindings.overlay_layer);
-        self.free_mode_layer
+        self.precision_layer
             .set_text(&config.keybindings.free_mode_layer);
+        self.precision_trigger
+            .set_text(&config.keybindings.free_mode_trigger_key);
         self.kanata_free_layer
             .set_text(&config.keybindings.kanata_free_mode_layer);
         self.exit_key.set_text(&config.keybindings.exit_key);
@@ -452,22 +398,9 @@ impl Form {
 
         config.behavior = self.to_behavior();
 
-        config.free_mode.engine = match self.engine.selected() {
-            1 => Engine::Kanata,
-            _ => Engine::Custom,
-        };
-        config.free_mode.base_px_per_tick = self.base_speed.value();
-        config.free_mode.speed_multiplier = self.speed_multiplier.value();
-        config.free_mode.easing = easing_from_index(self.easing.selected());
-        config.free_mode.auto_off_secs = self.auto_off.value().max(0.0) as u64;
-        config.free_mode.wheel.base_lines_per_tick = self.wheel_base.value();
-        config.free_mode.wheel.speed_multiplier = self.wheel_multiplier.value();
-        config.free_mode.wheel.easing = easing_from_index(self.wheel_easing.selected());
-        config.free_mode.wheel.step_size = self.wheel_step.value() as i32;
-        config.free_mode.wheel.step_size_large = self.wheel_step_large.value() as i32;
-
         config.keybindings.overlay_layer = self.overlay_layer.text().to_string();
-        config.keybindings.free_mode_layer = self.free_mode_layer.text().to_string();
+        config.keybindings.free_mode_layer = self.precision_layer.text().to_string();
+        config.keybindings.free_mode_trigger_key = self.precision_trigger.text().to_string();
         config.keybindings.kanata_free_mode_layer = self.kanata_free_layer.text().to_string();
         config.keybindings.exit_key = self.exit_key.text().to_string();
         config.keybindings.action_key = self.action_key.text().to_string();
@@ -577,7 +510,8 @@ impl Form {
         }
         for entry in [
             &self.overlay_layer,
-            &self.free_mode_layer,
+            &self.precision_layer,
+            &self.precision_trigger,
             &self.kanata_free_layer,
             &self.exit_key,
             &self.action_key,
@@ -596,13 +530,6 @@ impl Form {
             &self.multi_click,
             &self.tap,
             &self.nudges,
-            &self.base_speed,
-            &self.speed_multiplier,
-            &self.auto_off,
-            &self.wheel_base,
-            &self.wheel_multiplier,
-            &self.wheel_step,
-            &self.wheel_step_large,
         ] {
             let weak = weak.clone();
             spin.connect_value_notify(move |_| {
@@ -631,9 +558,6 @@ impl Form {
             &self.initial_location,
             &self.grid_level,
             &self.default_action,
-            &self.engine,
-            &self.easing,
-            &self.wheel_easing,
         ] {
             let changed = changed.clone();
             combo.connect_selected_notify(move |_| changed());
@@ -771,24 +695,6 @@ fn corner_index(value: CursorCorner) -> u32 {
         CursorCorner::TopRight => 1,
         CursorCorner::BottomLeft => 2,
         CursorCorner::BottomRight => 3,
-    }
-}
-
-fn easing_index(value: Easing) -> u32 {
-    match value {
-        Easing::Loose => 0,
-        Easing::Natural => 1,
-        Easing::Snappy => 2,
-        Easing::Instant => 3,
-    }
-}
-
-fn easing_from_index(value: u32) -> Easing {
-    match value {
-        0 => Easing::Loose,
-        2 => Easing::Snappy,
-        3 => Easing::Instant,
-        _ => Easing::Natural,
     }
 }
 

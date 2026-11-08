@@ -196,24 +196,6 @@ fn missing_settings_binary_exits_1() {
 }
 
 #[test]
-fn enter_free_mode_sends_lyr_free() {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let server = std::thread::spawn(move || accept_line(&listener));
-
-    let out = run(port, "enter-free-mode");
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(
-        server.join().unwrap().trim(),
-        r#"{"ChangeLayer":{"new":"lyr-free"}}"#
-    );
-}
-
-#[test]
 fn toggle_queries_then_hides_visible_overlay() {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

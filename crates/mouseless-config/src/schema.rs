@@ -435,7 +435,7 @@ pub struct KeybindingConfig {
     /// Overlay layer (`lyr-mouseless`).
     #[serde(default = "default_overlay_layer")]
     pub overlay_layer: String,
-    /// Custom free-mode layer (`lyr-free`).
+    /// Precision layer name (`lyr-mouse-precision`).
     #[serde(default = "default_free_layer")]
     pub free_mode_layer: String,
     /// Kanata-native free-mode fallback (`lyr-mouse`).
@@ -456,8 +456,8 @@ pub struct KeybindingConfig {
     /// Kanata key name for the overlay tap-hold trigger (default `lctl`).
     #[serde(default = "default_overlay_trigger_key")]
     pub overlay_trigger_key: String,
-    /// Kanata key name for the free-mode tap-hold trigger (default empty — no
-    /// dedicated trigger; free mode is entered via `free_mode_after_move`).
+    /// Kanata key name for the precision tap-hold trigger (default empty — no
+    /// dedicated trigger; precision is entered via `free_mode_after_move`).
     #[serde(default = "default_free_mode_trigger_key")]
     pub free_mode_trigger_key: String,
 }
@@ -587,7 +587,7 @@ fn default_overlay_layer() -> String {
 }
 
 fn default_free_layer() -> String {
-    "lyr-free".into()
+    "lyr-mouse-precision".into()
 }
 
 fn default_kanata_free_layer() -> String {

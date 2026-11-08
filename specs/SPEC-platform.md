@@ -4,7 +4,7 @@
 > Plan refs: §2.3, §5.6, §7, §8 #5/#6, §10.6 · Audits W2, G1 ·
 > Matrix rows: #1 (config assertion), #5 (udev rule), #6 (exclusions), part of #9
 > Status as of 2026-11-04: **Packaging complete, host install pending** — kanata
-> include (overlay + `lyr-free`), service drop-ins, apply script, udev rules,
+> include (overlay + `lyr-mouse-precision`), service drop-ins, apply script, udev rules,
 > daemon unit, `sysusers.d`, system/extension installers, runbook,
 > `scripts/check-platform.sh`, and the `mouseless://` scheme handler exist and
 > pass local checks. The GTK settings entry and the wider distro matrix remain
@@ -32,7 +32,7 @@ verifiable by a scripted runbook.
 
 | File | Install path | Purpose |
 |---|---|---|
-| `kanata/mouseless.kbd` | `/etc/kanata/mouseless.kbd` | `ml-tap` (`tap-hold-release 300 300` → `lyr-mouseless`) on the `lctl` slot; clean overlay layer (level-1 columns `a s d f g h j k l ;` + every level-2 key `qwertyuiop / asdfghjkl; / zxcvbnm,./` emitted plainly, `spc`, `esc`→base), and the custom free-mode layer (`i/k/j/l`, boosts, buttons, wheel) — no dedicated free-mode tap trigger by default (`keybindings.free_mode_trigger_key`). |
+| `kanata/mouseless.kbd` | `/etc/kanata/mouseless.kbd` | `ml-tap` (`tap-hold-release 300 300` → `lyr-mouseless`) on the `lctl` slot; clean overlay layer (level-1 columns `a s d f g h j k l ;` + every level-2 key `qwertyuiop / asdfghjkl; / zxcvbnm,./` emitted plainly, `spc`, `esc`→base), and the precision layer (`lyr-mouse-precision`: `i/j/k/l` 1 px, `c`/`v` speed, `esc`/`capslock` exit; no dedicated precision tap trigger by default). |
 | `kanata/UNICFG-EDITS.md` + `apply-kanata-config.sh` | runbook (script backs up both files, edits, `kanata --check`, restores on failure, restarts) | The 3 unicfg edits: defcfg output name + mouse exclude, `@ml-tap` in `lyr-base` (lctl slot), `(include "mouseless.kbd")`. |
 | `systemd/kanata.service.d-override.conf` | `/etc/systemd/system/kanata.service.d/mouseless.conf` | TCP `-p 127.0.0.1:7070`, `--emergency-exit-code 1`, `Restart=on-failure` + `RestartForceExitStatus=SIGTERM` (audit W2). `SupplementaryGroups=input uinput` — additive/idempotent (a no-op when kanata-svc already has them, a fix when it does not); kanata never joins the human `mouseless` socket group. |
 | `../mouseless.toml` | `/etc/mouseless/mouseless.toml` | Application-level constants (paths, kanata endpoint, timeouts, device names, base layer, deep-link scheme, app id, appearance fallbacks). Read by all binaries via `--config`/`MOUSELESS_CONFIG`/default path. The installer writes `[devices]` names and `[kanata] address` into the defcfg/drop-in, then validates with `kanata --check`; re-run the installer after changing them. |
@@ -43,7 +43,7 @@ verifiable by a scripted runbook.
 | `install-extension.sh` | run in place as the desktop user | Generates `config.js` from `mouseless.toml`, packs `extension.js` + `ipc.js` + `render.js` + `config.js`, installs, removes the UUID from `org.gnome.shell disabled-extensions` (GNOME leaves it there after `install --force`, making `enable` a silent no-op), and enables `mouseless@0king.dev`. `--dry-run` supported. |
 | `README.md` (this dir) | `/usr/local/share/doc/mouseless/README.md` | Install/verify/upgrade/uninstall runbook and troubleshooting. |
 | `scripts/check-platform.sh` | run in place | Asserts the TOML sections and cross-file sync (device names, socket, extension fallback colors, scheme), kanata timings/layers, unit/drop-in/udev/sysusers contents, desktop entry validity, UUID, installer paths, POSIX shell syntax, and `systemd-analyze verify`. |
-| `desktop/mouseless-url-handler.desktop` | `/usr/share/applications/mouseless-url-handler.desktop` | `x-scheme-handler/mouseless` → `/usr/local/bin/mouseless %u`; the installer rewrites the scheme from `mouseless.toml`; the CLI accepts exact deep links, so overlay/free-mode/status links need no GUI. |
+| `desktop/mouseless-url-handler.desktop` | `/usr/share/applications/mouseless-url-handler.desktop` | `x-scheme-handler/mouseless` → `/usr/local/bin/mouseless %u`; the installer rewrites the scheme from `mouseless.toml`; the CLI accepts exact deep links, so overlay/status links need no GUI. |
 
 ### Kill-switch semantics (audit W2, cross-ref `SPEC-daemon.md`)
 
@@ -80,8 +80,8 @@ directly and ignores `--emergency-exit-code`; hence
 `/usr/share/applications/mouseless-url-handler.desktop` and declares
 `MimeType=x-scheme-handler/mouseless;` with
 `Exec=/usr/local/bin/mouseless %u`. The CLI accepts both a plain verb and its
-exact `mouseless://` link (`Verb::from_deep_link`), so overlay, free-mode,
-status, and device-list links work without a GUI. Unknown links exit `2` as
+exact `mouseless://` link (`Verb::from_deep_link`), so overlay, status,
+and device-list links work without a GUI. Unknown links exit `2` as
 usage errors before touching kanata or the daemon.
 
 `install-system.sh` installs the entry, refreshes the desktop database when
@@ -175,7 +175,7 @@ installed-file contracts. Phase 3 adds `platform/desktop/`.
 
 - #1: `scripts/check-platform.sh` greps the include for
   `tap-hold-release 300 300` on `ml-tap` (`ml-free-tap` removed), plain cell keys
-  in `lyr-mouseless`, the `lyr-free` movement/button/wheel keys, and absence of
+  in `lyr-mouseless`, the `lyr-mouse-precision` movement/speed keys, and absence of
   `cmd`; it greps `apply-kanata-config.sh` for `linux-output-device-name` and
   `linux-dev-names-exclude`. Blocking; runs without root.
 - #5: pointer accuracy is covered by the daemon's closed-loop movement
@@ -204,7 +204,10 @@ installed-file contracts. Phase 3 adds `platform/desktop/`.
 ## Success criteria
 
 - [x] Kanata include + runbook + apply script with backup/validate/restart.
-- [x] `lyr-free` layer included for custom free mode; no dedicated tap trigger by default (overlay is on `lctl`; free mode via `free_mode_after_move` or `keybindings.free_mode_trigger_key`); validated with `kanata --check` on 2026-10-29.
+- [x] `lyr-mouse-precision` layer included for precision movement; no dedicated
+  tap trigger by default (overlay is on `lctl`; precision via
+  `free_mode_after_move` or `keybindings.precision_trigger`); validated with
+  `kanata --check`.
 - [x] Apply script replayed against a temp unicfg copy: all three edits land, a second run is idempotent, and `kanata --check` passes.
 - [x] Apply script creates missing `input`/`uinput` groups first, so systemd
       accepts `SupplementaryGroups=` on a host where kanata has no device

@@ -1,8 +1,8 @@
 //! `mouselessd` binary: thin orchestration, Phase 2 production wiring.
 //!
 //! ```text
-//! kanata TCP LayerChange → overlay/free session → EvdevCellGrab (fresh fd)
-//!   → cell keys / free-mode key state → subgrid/click or 8 ms physics tick
+//! kanata TCP LayerChange → overlay/precision session → EvdevCellGrab (fresh fd)
+//!   → cell keys / kanata precision layer → subgrid/click or 8 ms physics tick
 //!   → Unix-socket Show/Highlight/ShowSubgrid/Hide frames (GNOME extension)
 //! ```
 //!
@@ -338,7 +338,6 @@ fn main() -> ExitCode {
         cfg.apply_config(&stored);
     }
     let start_overlay_layer = cfg.overlay_layer.clone();
-    let start_free_layer = cfg.free_mode_layer.clone();
 
     let (host, port) = cfg
         .kanata_addr
@@ -379,7 +378,7 @@ fn main() -> ExitCode {
 
     // A session may already be active when the daemon starts. Base and other
     // layers are reconciled through the idle loop without grabbing.
-    let mut pending_layer = if start == start_overlay_layer || start == start_free_layer {
+    let mut pending_layer = if start == start_overlay_layer {
         Some(start)
     } else {
         None
@@ -436,29 +435,11 @@ fn main() -> ExitCode {
                     daemon.end_overlay();
                 }
             }
-        } else if name == daemon.free_mode_layer() {
-            match start_free_with_retry(&mut daemon, &app) {
-                Ok(()) => {
-                    if daemon.free_mode_active() {
-                        match run_free_session(&mut daemon, &store, &app) {
-                            SessionEnd::Done => {}
-                            SessionEnd::KanataGone => {
-                                let _ = daemon.on_kanata_lost();
-                                return ExitCode::from(1);
-                            }
-                            SessionEnd::Layer(next) => pending_layer = Some(next),
-                        }
-                    }
-                }
-                Err(e) => {
-                    eprintln!("mouselessd: free-mode start degraded: {e}");
-                    daemon.end_free_mode();
-                }
-            }
         } else {
-            // Base and kanata's own free-mode fallback both land here.
-            // `on_layer_event` releases buttons/grab and restores base
-            // except for the kanata fallback layer, which kanata chose.
+            // Base, kanata's own free-mode fallback, and the precision layer
+            // all land here. `on_layer_event` releases buttons/grab and
+            // restores base except for the kanata fallback and precision
+            // layers, which kanata/the daemon chose deliberately.
             if let Err(e) = daemon.on_layer_event(LayerEvent::LayerChanged(name)) {
                 eprintln!("mouselessd: layer transition failed: {e}");
             }
@@ -470,20 +451,6 @@ fn main() -> ExitCode {
 fn start_overlay_with_retry(daemon: &mut ProdDaemon, app: &AppConfig) -> Result<(), DaemonError> {
     for _ in 0..app.daemon.grab_retry_attempts {
         match daemon.start_overlay() {
-            Ok(()) => return Ok(()),
-            Err(DaemonError::Kbd(KbdError::Busy)) => {
-                std::thread::sleep(app.daemon.grab_retry_delay())
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    Err(DaemonError::Kbd(KbdError::Busy))
-}
-
-/// Start custom free mode, retrying `EBUSY` within the configured budget.
-fn start_free_with_retry(daemon: &mut ProdDaemon, app: &AppConfig) -> Result<(), DaemonError> {
-    for _ in 0..app.daemon.grab_retry_attempts {
-        match daemon.start_free_mode() {
             Ok(()) => return Ok(()),
             Err(DaemonError::Kbd(KbdError::Busy)) => {
                 std::thread::sleep(app.daemon.grab_retry_delay())
@@ -575,7 +542,7 @@ fn run_overlay_session(
                 eprintln!("mouselessd: overlay tick failed ({e}); ending session");
                 break;
             }
-            next_tick = now + app.daemon.free_mode_tick();
+            next_tick = now + app.daemon.tick();
             if !daemon.session_active() {
                 break;
             }
@@ -584,94 +551,8 @@ fn run_overlay_session(
         }
     }
 
-    daemon.end_overlay();
-    SessionEnd::Done
-}
-
-/// One custom free-mode session: grab held, no overlay, fixed 8 ms physics.
-///
-/// Free mode is relative, so an overlay disconnect only hides the overlay and
-/// leaves the session running. Esc, auto-off, uinput failure, or a layer change
-/// end it; held buttons are always released by `end_free_mode`/teardown.
-fn run_free_session(daemon: &mut ProdDaemon, store: &ConfigStore, app: &AppConfig) -> SessionEnd {
-    if let Err(e) = daemon
-        .keyboard_mut()
-        .set_read_timeout(app.daemon.session_read_timeout())
-    {
-        eprintln!("mouselessd: free-mode read timeout: {e}");
-    }
-
-    let mut next_tick = Instant::now();
-    loop {
-        if drain_overlay_events(daemon, store, app) {
-            // Relative motion keeps working; only the overlay is gone.
-            eprintln!("mouselessd: overlay disconnected; free mode continues");
-            daemon.on_overlay_lost();
-        }
-
-        match daemon.keyboard_mut().next_layer_event() {
-            Ok(LayerEvent::LayerChanged(name)) => {
-                if name != daemon.free_mode_layer() {
-                    return SessionEnd::Layer(name);
-                }
-            }
-            Err(KbdError::Unavailable(_)) | Err(KbdError::Busy) => {}
-            Err(KbdError::Io(msg)) => {
-                if is_kanata_gone(&msg) {
-                    return SessionEnd::KanataGone;
-                }
-                eprintln!("mouselessd: tcp during free mode ({msg}); ending session");
-                break;
-            }
-        }
-
-        let mut end_session = false;
-        loop {
-            match daemon.poll_key_event() {
-                Ok(Some(ev)) => match daemon.handle_key_event(ev) {
-                    Ok(SessionStep::Continue) => {}
-                    Ok(SessionStep::Clicked) => {}
-                    Ok(SessionStep::Exit) => {
-                        end_session = true;
-                        break;
-                    }
-                    Err(e) => {
-                        eprintln!("mouselessd: free-mode key failed ({e}); ending session");
-                        end_session = true;
-                        break;
-                    }
-                },
-                Ok(None) => break,
-                Err(e) => {
-                    eprintln!("mouselessd: free-mode read ({e}); ending session");
-                    end_session = true;
-                    break;
-                }
-            }
-        }
-        if end_session {
-            break;
-        }
-
-        let now = Instant::now();
-        if now >= next_tick {
-            if let Err(e) = daemon.tick_now() {
-                eprintln!("mouselessd: free-mode tick failed ({e}); ending session");
-                break;
-            }
-            next_tick = now + app.daemon.free_mode_tick();
-            if !daemon.free_mode_active() {
-                break;
-            }
-        } else {
-            std::thread::sleep((next_tick - now).min(Duration::from_millis(1)));
-        }
-    }
-
-    // Layer transitions are applied by the caller (so `lyr-mouse` is not
-    // overridden); every other exit path must release buttons + restore base.
-    if daemon.free_mode_active() {
-        daemon.end_free_mode();
+    if daemon.session_active() {
+        daemon.end_overlay();
     }
     SessionEnd::Done
 }
@@ -711,7 +592,6 @@ fn process_client_command(
             daemon_version: env!("CARGO_PKG_VERSION").into(),
             overlay_connected: daemon.overlay_connected(),
             session_active: daemon.session_active(),
-            free_mode: daemon.free_mode_active(),
             config_path: store.config_path().display().to_string(),
         },
         // The effective document is exactly what the daemon would reload: the
@@ -937,7 +817,6 @@ mod tests {
             daemon_version: "test".into(),
             overlay_connected: false,
             session_active: false,
-            free_mode: false,
             config_path: "/tmp/mouseless/config.yaml".into(),
         };
         overlay.reply_client(request_id, &reply).unwrap();

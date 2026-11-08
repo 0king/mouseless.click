@@ -39,25 +39,24 @@ free-mode tick, and the kill switch. All math is `core`, all decisions are
 pub fn on_layer_event(&mut self, ev: LayerEvent) -> Result<(), DaemonError>;
 pub fn start_overlay(&mut self) -> Result<(), DaemonError>; // grab + show, or degrade
 pub fn end_overlay(&mut self);                              // drop grab + hide + base
-pub fn start_free_mode(&mut self) -> Result<(), DaemonError>; // grab, no overlay
-pub fn end_free_mode(&mut self);                              // release buttons + base
 pub fn on_overlay_lost(&mut self);                          // Shell crash/restart
 pub fn poll_overlay_events(&mut self) -> Vec<OverlayEvent>;
 pub fn poll_key_event(&mut self) -> Result<Option<KeyEvent>, DaemonError>;
 pub fn handle_key_event_at(&mut self, ev: KeyEvent, now_ms: u64) -> Result<SessionStep, DaemonError>;
 pub fn tick(&mut self, now_ms: u64) -> Result<(), DaemonError>;
 pub fn tick_now(&mut self) -> Result<(), DaemonError>;
-pub fn session_active(&self) -> bool;                      // overlay OR free OR grab
+pub fn session_active(&self) -> bool;                      // overlay OR grab
 pub fn click_relative(&mut self, b: MouseButton, cur: CursorPos, target: (i32,i32)) -> Result<(), DaemonError>;
 pub fn on_kanata_lost(&mut self) -> DaemonError;   // release + hide + signal co-exit
 pub fn keyboard_mut(&mut self) -> &mut K;          // event loop polls the backend
 ```
 
 - `lyr-mouseless` → show + acquire `CellGrab` when a helloed overlay and a
-  layout exist; otherwise degrade without grabbing. `lyr-free` → custom
-  free-mode grab without showing the overlay. `lyr-mouse` → release/teardown
-  without forcing base (kanata chose its own fallback layer). Any other layer →
-  hide + drop grab. All directions are idempotent.
+  layout exist; otherwise degrade without grabbing. `lyr-mouse-precision` →
+  release grab, no base restore (the precision layer is entered via
+  `behavior.free_mode_after_move` or the optional precision trigger). `lyr-mouse`
+  → release/teardown without forcing base (kanata chose its own fallback layer).
+  Any other layer → hide + drop grab. All directions are idempotent.
 - Duplicate/missed `LayerChange` MUST NOT desync (single-flight, one mutex or
   single-threaded ownership — current design is single-threaded, keep it).
 - Kill switch (plan §7): TCP EOF/reset → release grab (RAII), best-effort
@@ -229,14 +228,13 @@ Closed-loop half-error stepping is backend-agnostic: it works with the
 compositor's real gain (up to ~2×) and with any future `MouseBackend`, and it
 keeps the fast path sleep-free.
 
-### Custom free-mode input path
+### Precision layer input path
 
-`free_mode_engine = custom` (default) uses the dedicated `lyr-free` layer:
-kanata emits the mapped letters, the daemon holds the same temporary grab as
-the overlay, and `mouseless-state` advances physics on a fixed 8 ms tick.
-Held buttons are tracked by `FreeModeSession` and released on every teardown.
-`free_mode_engine = kanata` leaves `lyr-mouse` authoritative; `lyr-free` is then
-ignored and the daemon restores base so letters cannot leak.
+When `behavior.free_mode_after_move` is true, a `move` action ends the overlay
+and switches kanata to `lyr-mouse-precision` (1 px `i/j/k/l`, `c`/`v` speed,
+`esc`/`capslock` exit). The daemon does not grab in this layer — unmapped keys
+type into the focused app. Kanata's `lyr-mouse` fallback layer is never grabbed
+by the daemon either; any other layer → hide + drop grab.
 
 ### Cell/action FSM (Phase 2)
 
@@ -280,8 +278,8 @@ daemon degrades instead of grabbing with nowhere to draw.
 used. `DaemonConfig::apply_config` maps the document onto the runtime: grid
 columns/rows and subgrid dimensions, `grid_action_level` (`2` vs `subgrid`),
 `default_action` (`click` vs `move`), `free_mode_after_move`, dynamic
-overlay/free/kanata layer names, appearance colors/opacity, monitor assignment,
-thresholds, and physics parameters. Appearance is resolved to RGB triples and
+overlay/precision/kanata layer names, appearance colors/opacity, monitor assignment,
+thresholds, and the precision tick (`tick_ms`). Appearance is resolved to RGB triples
 `grid_opacity` in the daemon and travels with every `GridModel`; the extension
 never parses config. Monitor assignment is `auto` (cursor monitor, primary
 fallback), `single` (primary), or `custom` (first present connector from

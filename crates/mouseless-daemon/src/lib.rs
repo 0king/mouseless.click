@@ -17,7 +17,7 @@
 //! - overlay actions (multi-click, drag, nudges, monitor switch, cursor hide);
 //! - custom free mode (`lyr-free`) with an 8 ms fixed-step physics tick.
 
-use mouseless_config::{parse_hex_color, Config as FileConfig, Easing as FileEasing, Theme};
+use mouseless_config::{parse_hex_color, Config as FileConfig, Theme};
 use mouseless_core::{
     cursor_hide_target, select_monitor, subcell_bounds, Corner, GridConfig, Monitor,
     MonitorDirection, Point, PrimaryGrid, Rect,
@@ -29,21 +29,21 @@ use mouseless_kbd::{
 use mouseless_mouse::{MouseBackend, MouseButton, MouseError};
 use mouseless_overlay::{OverlayBackend, OverlayError, OverlayEvent};
 use mouseless_state::{
-    ActionIntent, Button, ClickCounter, DragState, FreeModeEngine, FreeModeKey, FreeModeParams,
-    FreeModeSession, NudgeDirection, NudgeState, OverlayMachine, Phase, StateError, WheelParams,
+    ActionIntent, Button, ClickCounter, DragState, NudgeDirection, NudgeState, OverlayMachine,
+    Phase, StateError,
 };
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
 use thiserror::Error;
 
-pub use mouseless_kbd::{BASE_LAYER, FREE_MODE_LAYER, KANATA_FREE_MODE_LAYER, OVERLAY_LAYER};
+pub use mouseless_kbd::{BASE_LAYER, KANATA_FREE_MODE_LAYER, OVERLAY_LAYER, PRECISION_LAYER};
 
 /// Cursor refresh budget before a click (SPEC-daemon step 6).
 pub const CURSOR_QUERY_TIMEOUT: Duration = Duration::from_millis(100);
 /// Shift tap window for multi-monitor switching.
 pub const MONITOR_SWITCH_TAP_MS: u64 = 200;
-/// Fixed physics tick for custom free mode (SPEC-daemon OQ-3).
-pub const FREE_MODE_TICK: Duration = Duration::from_millis(8);
+/// Fixed tick for the kanata precision layer.
+pub const TICK: Duration = Duration::from_millis(8);
 /// Largest single REL step used by closed-loop [`Daemon::move_to`].
 ///
 /// The compositor applies pointer acceleration and clamps large one-shot
@@ -96,8 +96,8 @@ pub struct DaemonTuning {
     pub cursor_query_timeout_ms: u64,
     /// Shift tap window for monitor switching.
     pub monitor_switch_tap_ms: u64,
-    /// Fixed free-mode physics tick.
-    pub free_mode_tick_ms: u64,
+    /// Precision tick.
+    pub tick_ms: u64,
     /// Largest single REL step.
     pub move_max_step_px: i32,
     /// Divisor applied to the remaining error.
@@ -121,7 +121,7 @@ impl Default for DaemonTuning {
         Self {
             cursor_query_timeout_ms: CURSOR_QUERY_TIMEOUT.as_millis() as u64,
             monitor_switch_tap_ms: MONITOR_SWITCH_TAP_MS,
-            free_mode_tick_ms: FREE_MODE_TICK.as_millis() as u64,
+            tick_ms: TICK.as_millis() as u64,
             move_max_step_px: MAX_MOVE_STEP,
             move_damping_divisor: MOVE_DAMPING_DIVISOR,
             move_min_step_px: MOVE_MIN_STEP,
@@ -140,9 +140,9 @@ impl DaemonTuning {
         Duration::from_millis(self.cursor_query_timeout_ms)
     }
 
-    /// Free-mode physics tick.
-    pub fn free_mode_tick(&self) -> Duration {
-        Duration::from_millis(self.free_mode_tick_ms)
+    /// Precision tick.
+    pub fn tick(&self) -> Duration {
+        Duration::from_millis(self.tick_ms)
     }
 
     /// Stale-reply settle timeout.
@@ -273,12 +273,6 @@ pub struct DaemonConfig {
     pub light_appearance: GridAppearance,
     /// Active theme: `Dark` (default) or `Light`; toggled in-session by Tab.
     pub active_theme: Theme,
-    /// Custom physics (`lyr-free`) or kanata's `lyr-mouse` fallback.
-    pub free_mode_engine: FreeModeEngine,
-    /// Free-mode movement/auto-off parameters.
-    pub free_mode: FreeModeParams,
-    /// Free-mode wheel parameters.
-    pub wheel: WheelParams,
     /// Multi-click cadence window; 0 disables coalescing.
     pub multi_click_threshold_ms: u64,
     /// Nudges per cell edge (minimum 1).
@@ -304,11 +298,11 @@ pub struct DaemonConfig {
     pub grid_action_level: GridActionLevel,
     /// Default action for a cell/sub-cell selection.
     pub default_action: DefaultAction,
-    /// Enter custom free mode after a `move` action.
+    /// Enter the precision layer after a `move` action.
     pub free_mode_after_move: bool,
     /// Overlay layer name (must match the kanata include).
     pub overlay_layer: String,
-    /// Custom free-mode layer name.
+    /// Precision layer name (from `keybindings.free_mode_layer`).
     pub free_mode_layer: String,
     /// Kanata-native free-mode fallback layer name.
     pub kanata_free_mode_layer: String,
@@ -340,9 +334,6 @@ impl Default for DaemonConfig {
                 highlight_color: [0xff, 0xb2, 0x2c],
             },
             active_theme: Theme::default(),
-            free_mode_engine: FreeModeEngine::Custom,
-            free_mode: FreeModeParams::default(),
-            wheel: WheelParams::default(),
             multi_click_threshold_ms: 500,
             nudges_per_cell: 4,
             hold_subgrid_for_nudge: false,
@@ -357,7 +348,7 @@ impl Default for DaemonConfig {
             default_action: DefaultAction::Click,
             free_mode_after_move: false,
             overlay_layer: OVERLAY_LAYER.into(),
-            free_mode_layer: FREE_MODE_LAYER.into(),
+            free_mode_layer: PRECISION_LAYER.into(),
             kanata_free_mode_layer: KANATA_FREE_MODE_LAYER.into(),
             monitor_switch_key: String::new(),
         }
@@ -379,7 +370,7 @@ impl DaemonConfig {
         self.tuning = DaemonTuning {
             cursor_query_timeout_ms: app.daemon.cursor_query_timeout_ms,
             monitor_switch_tap_ms: app.daemon.monitor_switch_tap_ms,
-            free_mode_tick_ms: app.daemon.free_mode_tick_ms,
+            tick_ms: app.daemon.tick_ms,
             move_max_step_px: app.daemon.move_max_step_px,
             move_damping_divisor: app.daemon.move_damping_divisor,
             move_min_step_px: app.daemon.move_min_step_px,
@@ -484,24 +475,6 @@ impl DaemonConfig {
         self.right_click_modifier = config.behavior.right_click_modifier.clone();
         self.hold_for_drag = config.behavior.hold_for_drag;
 
-        self.free_mode_engine = match config.free_mode.engine {
-            mouseless_config::Engine::Custom => FreeModeEngine::Custom,
-            mouseless_config::Engine::Kanata => FreeModeEngine::Kanata,
-        };
-        self.free_mode = FreeModeParams {
-            base_px_per_tick: config.free_mode.base_px_per_tick,
-            speed_multiplier: config.free_mode.speed_multiplier,
-            easing: map_easing(config.free_mode.easing),
-            auto_off_secs: config.free_mode.auto_off_secs,
-        };
-        self.wheel = WheelParams {
-            base_lines_per_tick: config.free_mode.wheel.base_lines_per_tick,
-            speed_multiplier: config.free_mode.wheel.speed_multiplier,
-            easing: map_easing(config.free_mode.wheel.easing),
-            step_size: config.free_mode.wheel.step_size,
-            step_size_large: config.free_mode.wheel.step_size_large,
-        };
-
         self.hide_cursor_on_click = config.appearance.hide_cursor_on_click;
         self.cursor_hide_corner = match config.appearance.cursor_hide_corner {
             mouseless_config::CursorCorner::TopLeft => Corner::TopLeft,
@@ -523,15 +496,6 @@ impl DaemonConfig {
             Theme::Dark => self.dark_appearance,
             Theme::Light => self.light_appearance,
         }
-    }
-}
-
-fn map_easing(easing: FileEasing) -> mouseless_state::Easing {
-    match easing {
-        FileEasing::Loose => mouseless_state::Easing::Loose,
-        FileEasing::Natural => mouseless_state::Easing::Natural,
-        FileEasing::Snappy => mouseless_state::Easing::Snappy,
-        FileEasing::Instant => mouseless_state::Easing::Instant,
     }
 }
 
@@ -603,7 +567,6 @@ pub struct Daemon<K, M, O, G = CellGrab> {
     /// Pending level-1 column while a two-key cell selection is in progress.
     pending_column: Option<u32>,
     active_monitor: Option<Monitor>,
-    free_mode: Option<FreeModeSession>,
     click_counter: ClickCounter,
     drag: DragState,
     nudge: NudgeState,
@@ -674,7 +637,6 @@ where
             selected_cell: None,
             pending_column: None,
             active_monitor: None,
-            free_mode: None,
             click_counter: ClickCounter::default(),
             drag: DragState::default(),
             nudge,
@@ -689,21 +651,21 @@ where
 
     /// Handle one layer event.
     ///
-    /// `lyr-mouseless` shows the overlay; `lyr-free` starts custom free mode;
-    /// anything else tears down without ever leaving a grab held. Duplicate
-    /// events are safe: both starts are idempotent (plan §5).
+    /// `lyr-mouseless` shows the overlay; the precision layer tears down
+    /// without a base restore; anything else tears down without ever leaving a
+    /// grab held. Duplicate events are safe (plan §5).
     pub fn on_layer_event(&mut self, ev: LayerEvent) -> Result<(), DaemonError> {
         match ev {
             LayerEvent::LayerChanged(name) if name == self.config.overlay_layer => {
                 self.start_overlay()
             }
             LayerEvent::LayerChanged(name) if name == self.config.free_mode_layer => {
-                self.start_free_mode()
+                // Precision layer: teardown without base restore (kanata chose it).
+                self.teardown(false);
+                Ok(())
             }
             LayerEvent::LayerChanged(name) if name == self.config.kanata_free_mode_layer => {
-                // Kanata's own fallback layer: never grab. Do not force base —
-                // kanata already chose this layer deliberately.
-                self.release_free_buttons();
+                // Kanata's own fallback layer: never grab, never force base.
                 self.teardown(false);
                 Ok(())
             }
@@ -743,7 +705,6 @@ where
             &monitor,
             self.config.effective_appearance(),
         );
-        self.release_free_buttons();
         self.teardown(false);
         // Grab before showing: if the grab fails, the user sees no overlay
         // and typing continues on the base layer (plan §5 rule 5).
@@ -779,69 +740,14 @@ where
         Ok(())
     }
 
-    /// Start custom free mode (`lyr-free`): grab keys, do not show the overlay.
-    ///
-    /// Free mode is relative, so it works without the extension; a reported
-    /// layout is used only for cursor hiding/monitor switching.
-    pub fn start_free_mode(&mut self) -> Result<(), DaemonError> {
-        if self.free_mode.is_some() {
-            return Ok(());
-        }
-        if self.config.free_mode_engine == FreeModeEngine::Kanata {
-            // Kanata's `lyr-mouse` is authoritative; restore base so a stray
-            // `lyr-free` cannot leak letters to the focused app.
-            self.end_overlay();
-            return Ok(());
-        }
-        self.release_free_buttons();
-        self.teardown(false);
-        let monitor = self.overlay.last_layout().and_then(|layout| {
-            pick_monitor(
-                &layout,
-                self.overlay.last_cursor(),
-                self.config.monitor_assignment,
-                &self.config.custom_monitors,
-            )
-        });
-        match (self.grab_factory)(&self.config.grab_device_name) {
-            Ok(grab) => self.grab = Some(grab),
-            Err(KbdError::Busy) => return Err(DaemonError::Kbd(KbdError::Busy)),
-            Err(e) => {
-                self.degrade_base();
-                return Err(DaemonError::Kbd(e));
-            }
-        }
-        let mut session = FreeModeSession::new(self.config.free_mode, self.config.wheel);
-        session.motion.mark_activity(self.now_ms());
-        self.free_mode = Some(session);
-        self.active_monitor = monitor;
-        self.selected_cell = None;
-        self.pending_column = None;
-        self.pending_click_deadline_ms = None;
-        self.click_counter.reset();
-        self.last_click_target = None;
-        self.switch_press = None;
-        self.held_subcell = None;
-        self.drag = DragState::default();
-        Ok(())
-    }
-
     /// End the session on every exit path: release the grab (Drop), hide the
     /// overlay, and restore the base layer idempotently.
     pub fn end_overlay(&mut self) {
-        self.release_free_buttons();
-        self.teardown(true);
-    }
-
-    /// End free mode: release held buttons, drop the grab, restore base.
-    pub fn end_free_mode(&mut self) {
-        self.release_free_buttons();
         self.teardown(true);
     }
 
     fn teardown(&mut self, restore_base: bool) {
         self.grab = None; // RAII: drain + ungrab + close (audits G6/G7)
-        self.free_mode = None;
         self.selected_cell = None;
         self.pending_column = None;
         self.active_monitor = None;
@@ -863,28 +769,8 @@ where
         }
     }
 
-    /// Release any free-mode mouse buttons still held (never leave one down).
-    fn release_free_buttons(&mut self) {
-        let held = self
-            .free_mode
-            .as_ref()
-            .map(FreeModeSession::held_buttons)
-            .unwrap_or_default();
-        for key in held {
-            let _ = self.mouse.button_up(free_button(key));
-        }
-    }
-
-    /// Overlay client disconnected (Shell restart/crash): never keep an
-    /// overlay grab. Free mode is relative and may continue without it.
+    /// Overlay client disconnected (Shell restart/crash): release grab.
     pub fn on_overlay_lost(&mut self) {
-        if self.free_mode.is_some() {
-            self.selected_cell = None;
-            self.pending_column = None;
-            self.held_subcell = None;
-            let _ = self.overlay.hide();
-            return;
-        }
         self.end_overlay();
     }
 
@@ -933,9 +819,6 @@ where
         ev: KeyEvent,
         now_ms: u64,
     ) -> Result<SessionStep, DaemonError> {
-        if self.free_mode.is_some() {
-            return self.handle_free_key_event(ev, now_ms);
-        }
         if self.overlay_visible() {
             return self.handle_overlay_key_event(ev, now_ms);
         }
@@ -1057,7 +940,7 @@ where
         if self.held_subcell.is_some() {
             if let Some(held) = self.held_subcell.take() {
                 self.final_action(held.target, modifiers, now_ms)?;
-                if !self.overlay_visible() || self.free_mode_active() {
+                if !self.overlay_visible() {
                     return Ok(SessionStep::Clicked);
                 }
             }
@@ -1191,12 +1074,13 @@ where
         }
     }
 
-    /// Finish a `move` action: either continue into custom free mode or end
-    /// the overlay session. Mirrors [`Self::after_click`] for clicks.
+    /// Finish a `move` action: either enter the precision layer or end the
+    /// overlay session. Mirrors [`Self::after_click`] for clicks.
     fn after_move(&mut self) -> Result<(), DaemonError> {
         self.held_subcell = None;
         if self.config.free_mode_after_move {
-            self.start_free_mode()
+            self.teardown(false);
+            Ok(self.kbd.set_layer(&self.config.free_mode_layer)?)
         } else {
             self.end_overlay();
             Ok(())
@@ -1417,45 +1301,8 @@ where
         Ok(())
     }
 
-    fn handle_free_key_event(
-        &mut self,
-        ev: KeyEvent,
-        now_ms: u64,
-    ) -> Result<SessionStep, DaemonError> {
-        if ev.key == CellKey::Escape {
-            if ev.pressed {
-                self.end_free_mode();
-                return Ok(SessionStep::Exit);
-            }
-            return Ok(SessionStep::Continue);
-        }
-        let Some(key) = free_mode_key(ev.key) else {
-            return Ok(SessionStep::Continue);
-        };
-        let is_button = key.is_button();
-        if let Some(session) = self.free_mode.as_mut() {
-            if ev.pressed {
-                session.press(key, now_ms);
-            } else {
-                session.release(key);
-            }
-        }
-        if is_button {
-            let button = free_button(key);
-            if ev.pressed {
-                self.mouse.button_down(button)?;
-            } else {
-                self.mouse.button_up(button)?;
-            }
-        }
-        Ok(SessionStep::Continue)
-    }
-
-    /// Advance one fixed step: free-mode physics and multi-click expiry.
+    /// Advance one fixed step: multi-click expiry.
     pub fn tick(&mut self, now_ms: u64) -> Result<(), DaemonError> {
-        if self.free_mode.is_some() {
-            self.tick_free_mode(now_ms)?;
-        }
         if let Some(deadline) = self.pending_click_deadline_ms {
             if now_ms >= deadline {
                 self.pending_click_deadline_ms = None;
@@ -1476,30 +1323,6 @@ where
     pub fn tick_now(&mut self) -> Result<(), DaemonError> {
         let now_ms = self.now_ms();
         self.tick(now_ms)
-    }
-
-    fn tick_free_mode(&mut self, now_ms: u64) -> Result<(), DaemonError> {
-        let due = self
-            .free_mode
-            .as_ref()
-            .is_some_and(|session| session.auto_off_due(now_ms));
-        if due {
-            self.end_free_mode();
-            return Ok(());
-        }
-        let frame = match self.free_mode.as_mut() {
-            Some(session) => session.tick(now_ms),
-            None => return Ok(()),
-        };
-        if frame.move_delta != (0, 0) {
-            self.mouse
-                .move_rel(frame.move_delta.0, frame.move_delta.1)?;
-        }
-        if frame.wheel_delta != (0, 0) {
-            self.mouse
-                .scroll(frame.wheel_delta.0, frame.wheel_delta.1)?;
-        }
-        Ok(())
     }
 
     /// Execute a backend-neutral state intent (state never calls backends).
@@ -1698,14 +1521,12 @@ where
 
     /// Restore base and clear state without touching the grab (never held here).
     fn degrade_base(&mut self) {
-        self.release_free_buttons();
         self.teardown(true);
     }
 
     /// Handle kanata TCP EOF/reset: release grab/buttons, best-effort hide,
     /// signal co-exit so the supervisor restarts the stack in order (plan §7).
     pub fn on_kanata_lost(&mut self) -> DaemonError {
-        self.release_free_buttons();
         self.teardown(false);
         DaemonError::KanataLost
     }
@@ -1715,11 +1536,6 @@ where
         !matches!(self.machine.phase(), Phase::Normal)
     }
 
-    /// Whether custom free mode is active.
-    pub fn free_mode_active(&self) -> bool {
-        self.free_mode.is_some()
-    }
-
     /// Whether a drag is in progress.
     pub fn drag_active(&self) -> bool {
         self.drag.is_dragging()
@@ -1727,7 +1543,7 @@ where
 
     /// Whether any daemon session still owns the grab/overlay.
     pub fn session_active(&self) -> bool {
-        self.free_mode.is_some() || self.overlay_visible() || self.grab.is_some()
+        self.overlay_visible() || self.grab.is_some()
     }
 
     /// Whether a multi-click window is still open at `now_ms`.
@@ -1860,42 +1676,6 @@ fn map_button(button: Button) -> MouseButton {
         Button::Back => MouseButton::Back,
         Button::Forward => MouseButton::Forward,
     }
-}
-
-fn free_button(key: FreeModeKey) -> MouseButton {
-    match key {
-        FreeModeKey::LeftButton => MouseButton::Left,
-        FreeModeKey::RightButton => MouseButton::Right,
-        FreeModeKey::MiddleButton => MouseButton::Middle,
-        FreeModeKey::BackButton => MouseButton::Back,
-        FreeModeKey::ForwardButton => MouseButton::Forward,
-        // Non-button keys never reach this helper.
-        _ => MouseButton::Left,
-    }
-}
-
-fn free_mode_key(key: CellKey) -> Option<FreeModeKey> {
-    Some(match key {
-        CellKey::Char('i') => FreeModeKey::MoveUp,
-        CellKey::Char('k') => FreeModeKey::MoveDown,
-        CellKey::Char('j') => FreeModeKey::MoveLeft,
-        CellKey::Char('l') => FreeModeKey::MoveRight,
-        CellKey::Char('s') => FreeModeKey::Boost1,
-        CellKey::Char('d') => FreeModeKey::Boost2,
-        CellKey::Char('f') => FreeModeKey::Boost3,
-        CellKey::Char('a') => FreeModeKey::Decel,
-        CellKey::Char('m') => FreeModeKey::WheelUp,
-        CellKey::Char(',') => FreeModeKey::WheelDown,
-        CellKey::Char('.') => FreeModeKey::WheelLeft,
-        CellKey::Char('/') => FreeModeKey::WheelRight,
-        CellKey::Space => FreeModeKey::LeftButton,
-        CellKey::Char('r') => FreeModeKey::RightButton,
-        CellKey::Char('e') => FreeModeKey::MiddleButton,
-        CellKey::Char('q') => FreeModeKey::BackButton,
-        CellKey::Char('w') => FreeModeKey::ForwardButton,
-        CellKey::Escape => FreeModeKey::Exit,
-        _ => return None,
-    })
 }
 
 fn clamp_point(monitor: &Monitor, point: Point) -> Point {
@@ -3259,138 +3039,61 @@ mod tests {
     }
 
     #[test]
-    fn free_mode_layer_starts_custom_session_without_overlay() {
+    fn precision_layer_teardown_without_base_restore() {
         let mut d = daemon();
-        d.on_layer_event(LayerEvent::LayerChanged(FREE_MODE_LAYER.into()))
+        d.on_layer_event(LayerEvent::LayerChanged(PRECISION_LAYER.into()))
             .unwrap();
-        assert!(d.free_mode_active());
-        assert!(d.grab_held());
+        assert!(!d.grab_held());
         assert!(!d.overlay_visible());
         assert!(!d.overlay.visible);
-        d.on_layer_event(LayerEvent::LayerChanged(BASE_LAYER.into()))
-            .unwrap();
-        assert!(!d.free_mode_active());
-        assert!(!d.grab_held());
-        assert_eq!(d.kbd.set_layer_calls, vec![BASE_LAYER.to_string()]);
+        assert_eq!(d.kbd.set_layer_calls, Vec::<String>::new());
     }
 
     #[test]
-    fn free_mode_moves_wheels_and_holds_buttons() {
-        let mut d = daemon_with(
-            DaemonConfig {
-                free_mode: FreeModeParams {
-                    easing: mouseless_state::Easing::Instant,
-                    ..Default::default()
-                },
-                wheel: WheelParams {
-                    easing: mouseless_state::Easing::Instant,
-                    ..Default::default()
-                },
-                multi_click_threshold_ms: 0,
-                ..Default::default()
-            },
-            layout_1080p(),
+    fn after_move_enters_precision_layer() {
+        let file = file_config(
+            "config_version: 1\n\
+             behavior:\n  grid_action_level: 2\n  default_action: move\n  free_mode_after_move: true\n",
         );
-        d.on_layer_event(LayerEvent::LayerChanged(FREE_MODE_LAYER.into()))
+        let mut config = DaemonConfig {
+            multi_click_threshold_ms: 0,
+            ..Default::default()
+        };
+        config.apply_config(&file);
+        let mut d = daemon_with(config, layout_1080p());
+        d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
             .unwrap();
-        d.handle_key_event_at(key('l'), 0).unwrap(); // move right
-        d.tick(8).unwrap();
-        assert!(d.mouse.moves.iter().any(|(dx, _)| *dx > 0));
-        d.handle_key_event_at(release('l'), 16).unwrap();
-
-        d.handle_key_event_at(key('m'), 20).unwrap(); // wheel up
-                                                      // The first Instant tick is 0.9 lines, so a whole detent needs two
-                                                      // ticks (fractional carry is covered in mouseless-state).
-        d.tick(28).unwrap();
-        d.tick(36).unwrap();
-        assert!(d.mouse.scrolls.iter().any(|(_, dy)| *dy > 0));
-        d.handle_key_event_at(release('m'), 44).unwrap();
-
-        d.handle_key_event_at(
-            KeyEvent {
-                key: CellKey::Space,
-                pressed: true,
-                modifiers: Modifiers::default(),
-            },
-            48,
-        )
-        .unwrap();
-        assert_eq!(d.mouse.button_downs, vec![MouseButton::Left]);
-        d.handle_key_event_at(
-            KeyEvent {
-                key: CellKey::Space,
-                pressed: false,
-                modifiers: Modifiers::default(),
-            },
-            56,
-        )
-        .unwrap();
-        assert_eq!(d.mouse.button_ups, vec![MouseButton::Left]);
-        assert!(d.free_mode_active());
-    }
-
-    #[test]
-    fn free_mode_auto_off_releases_buttons_and_restores_base() {
-        let mut d = daemon_with(
-            DaemonConfig {
-                free_mode: FreeModeParams {
-                    auto_off_secs: 1,
-                    ..Default::default()
-                },
-                multi_click_threshold_ms: 0,
-                ..Default::default()
-            },
-            layout_1080p(),
-        );
-        d.on_layer_event(LayerEvent::LayerChanged(FREE_MODE_LAYER.into()))
-            .unwrap();
-        d.handle_key_event_at(
-            KeyEvent {
-                key: CellKey::Space,
-                pressed: true,
-                modifiers: Modifiers::default(),
-            },
-            0,
-        )
-        .unwrap();
-        d.tick(1_000).unwrap();
-        assert!(!d.free_mode_active());
-        assert_eq!(d.mouse.button_ups, vec![MouseButton::Left]);
-        assert!(!d.grab_held());
-        assert_eq!(d.kbd.set_layer_calls, vec![BASE_LAYER.to_string()]);
-    }
-
-    #[test]
-    fn escape_exits_free_mode_and_releases_grab() {
-        let mut d = daemon();
-        d.on_layer_event(LayerEvent::LayerChanged(FREE_MODE_LAYER.into()))
-            .unwrap();
+        d.handle_cell_key(CellKey::Char('a')).unwrap();
         assert_eq!(
-            d.handle_key_event_at(
-                KeyEvent {
-                    key: CellKey::Escape,
-                    pressed: true,
-                    modifiers: Modifiers::default(),
-                },
-                10
-            )
-            .unwrap(),
-            SessionStep::Exit
+            d.handle_cell_key(CellKey::Char('q')).unwrap(),
+            SessionStep::Clicked
         );
-        assert!(!d.free_mode_active());
+        assert!(!d.overlay_visible());
         assert!(!d.grab_held());
-        assert_eq!(d.kbd.set_layer_calls, vec![BASE_LAYER.to_string()]);
+        assert_eq!(d.kbd.set_layer_calls, vec![PRECISION_LAYER.to_string()]);
     }
 
     #[test]
-    fn free_mode_ignores_kanata_fallback_layer_without_grab() {
-        let mut d = daemon();
-        d.on_layer_event(LayerEvent::LayerChanged(KANATA_FREE_MODE_LAYER.into()))
+    fn after_move_ends_overlay_when_disabled() {
+        let file = file_config(
+            "config_version: 1\nbehavior:\n  grid_action_level: 2\n  default_action: move\n",
+        );
+        let mut config = DaemonConfig {
+            multi_click_threshold_ms: 0,
+            ..Default::default()
+        };
+        config.apply_config(&file);
+        let mut d = daemon_with(config, layout_1080p());
+        d.on_layer_event(LayerEvent::LayerChanged(OVERLAY_LAYER.into()))
             .unwrap();
+        d.handle_cell_key(CellKey::Char('a')).unwrap();
+        assert_eq!(
+            d.handle_cell_key(CellKey::Char('q')).unwrap(),
+            SessionStep::Clicked
+        );
+        assert!(!d.overlay_visible());
         assert!(!d.grab_held());
-        assert!(!d.free_mode_active());
-        // Kanata already chose its own layer: do not force base.
-        assert!(d.kbd.set_layer_calls.is_empty());
+        assert_eq!(d.kbd.set_layer_calls, vec![BASE_LAYER.to_string()]);
     }
 
     fn file_config(yaml: &str) -> FileConfig {
@@ -3422,8 +3125,6 @@ mod tests {
         assert_eq!(config.grid_action_level, GridActionLevel::Two);
         assert_eq!(config.default_action, DefaultAction::Move);
         assert!(config.free_mode_after_move);
-        assert_eq!(config.free_mode_engine, FreeModeEngine::Kanata);
-        assert_eq!(config.free_mode.easing, mouseless_state::Easing::Snappy);
         assert!(config.hide_cursor_on_click);
         assert_eq!(config.cursor_hide_corner, Corner::BottomLeft);
         assert_eq!(config.overlay_layer, "lyr-custom");
@@ -3442,7 +3143,7 @@ mod tests {
         app.paths.socket = "/tmp/mouseless-test.sock".into();
         app.layers.base = "base-x".into();
         app.devices.kanata_output_name = "kbd-x".into();
-        app.daemon.free_mode_tick_ms = 16;
+        app.daemon.tick_ms = 16;
         app.daemon.move_tolerance_px = 5;
         app.daemon.debug_move = true;
         app.appearance.grid_color = "#112233".into();
@@ -3453,7 +3154,7 @@ mod tests {
         assert_eq!(config.socket_path, "/tmp/mouseless-test.sock");
         assert_eq!(config.base_layer, "base-x");
         assert_eq!(config.grab_device_name, "kbd-x");
-        assert_eq!(config.tuning.free_mode_tick_ms, 16);
+        assert_eq!(config.tuning.tick_ms, 16);
         assert_eq!(config.tuning.move_tolerance_px, 5);
         assert!(config.debug_move);
         assert_eq!(config.dark_appearance.grid_color, [0x11, 0x22, 0x33]);
@@ -3557,7 +3258,7 @@ mod tests {
     }
 
     #[test]
-    fn quick_select_two_key_move_enters_free_mode() {
+    fn quick_select_two_key_move_enters_precision_layer() {
         let file = file_config(
             "config_version: 1\n\
              behavior:\n  grid_action_level: 2\n  default_action: move\n  free_mode_after_move: true\n",
@@ -3575,14 +3276,16 @@ mod tests {
             SessionStep::Continue
         );
         // Level 2 + move: the second key moves to the primary cell center
-        // instead of opening the subgrid, then free mode starts.
+        // instead of opening the subgrid, then the precision layer starts.
         assert_eq!(
             d.handle_cell_key(CellKey::Char('q')).unwrap(),
             SessionStep::Clicked
         );
-        assert!(d.free_mode_active());
+        assert!(!d.overlay_visible());
+        assert!(!d.grab_held());
         assert!(d.mouse.clicks.is_empty());
         assert_near(d.mouse.position(), (96, 18));
+        assert_eq!(d.kbd.set_layer_calls, vec![PRECISION_LAYER.to_string()]);
     }
 
     #[test]
@@ -3603,7 +3306,6 @@ mod tests {
             SessionStep::Clicked
         );
         assert!(d.mouse.clicks.is_empty());
-        assert!(!d.free_mode_active());
         assert!(!d.overlay_visible());
         assert_near(d.mouse.position(), (10, 6));
     }

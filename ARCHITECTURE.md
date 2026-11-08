@@ -23,7 +23,7 @@ config value, never a core refactor.
 physical kbd → kanata (grab, HRM, tap-dance, lyr-mouse fallback)
                  │ virtual kbd "kanata-mouseless"
                  ├──→ compositor/apps (normal typing)
-                 └──→ mouselessd (TEMP grab during overlay OR custom free mode)
+                  └──→ mouselessd (TEMP grab during overlay OR precision mode)
 mouselessd → uinput "mouseless-mouse" (REL deltas + BTN_*/WHEEL)
 mouselessd ↔ kanata TCP 127.0.0.1:port (LayerChange / ChangeLayer)
 mouselessd ↔ GNOME extension /run/mouseless/mouselessd.sock (JSON)
@@ -33,8 +33,7 @@ mouseless-settings → mouselessd (GetConfig/Save/Update over the same socket;
                     remains the only writer of the live config)
 ```
 
-No `cmd` anywhere (audit W1). `EvdevCellGrab` owns a fresh fd per overlay/free
-session with `EVIOCGKEY` + drain (audits G6/G7) and is non-blocking, so one
+No `cmd` anywhere (audit W1). `EvdevCellGrab` owns a fresh fd per overlay session with `EVIOCGKEY` + drain (audits G6/G7) and is non-blocking, so one
 thread can interleave key reads, kanata TCP layer events, and the action tick
 (a blocking read is what made Esc need two taps and postponed auto-hide).
 Pointer movement is closed-loop:
@@ -64,18 +63,18 @@ and `mouseless-settings` (precedence: `--config`, `MOUSELESS_CONFIG`,
 `/etc/mouseless/mouseless.toml`, built-in defaults). The file covers paths,
 the kanata endpoint, loop timeouts, device identity, the base layer, the
 deep-link scheme, the GTK app id, and appearance fallbacks. `config.yaml`
-(users' grid/behavior/free-mode/appearance) stays the daemon-owned settings
+(users' grid/behavior/appearance) stays the daemon-owned settings
 document and wins over the TOML appearance fallback. The GNOME extension cannot
 parse TOML; `platform/install-extension.sh` generates its `config.js` (socket
 path plus legacy-payload color fallback) from the same file. The file is read
 once per process; edits require a restart.
 
-Phase 2 free mode uses a dedicated `lyr-free` kanata layer defined in the
-include but without a dedicated tap trigger by default (overlay now owns
-ControlLeft); free mode is entered via `free_mode_after_move` or
-`keybindings.free_mode_trigger_key`. The daemon holds the same temporary grab
-and runs an 8 ms physics tick. `lyr-mouse` remains authoritative when
-`free_mode_engine = kanata`.
+Phase 3 precision layer uses `lyr-mouse-precision` for 1 px `i/j/k/l` movement
+with `c`/`v` speed toggles and `esc`/`capslock` exit. Entered after a `move`
+when `behavior.free_mode_after_move` is true, or via the optional
+`keybindings.precision_trigger`. The daemon does not grab in precision mode;
+unmapped keys type into the focused app. Kanata's `lyr-mouse` fallback layer is
+never grabbed either.
 
 Phase 1.3 extension layout: `gnome-extension/extension.js` (lifecycle +
 dispatch), `ipc.js` (NDJSON client/reconnect), `render.js` (Clutter actor and
@@ -95,12 +94,12 @@ resolved with a `Cogl.Color` fallback for GNOME 47+.
 - #5 REL deltas: `compute_delta` clamp + fake-mouse tests; closed-loop
   cross-monitor, acceleration-gain damping, stale-reply, and stalled-cursor
   regressions with a shared `CursorMouse`/`FakeOverlay` cursor
-- #7 physics goldens: per-easing-curve convergence with `ManualClock`
+- #7 physics goldens: removed with free-mode physics (SPEC-state);
 - Phase 2 actions: daemon multi-click/continuous/drag/nudge/monitor/cursor-hide
   tests + state `actions.rs` unit tests
-- Free mode: daemon move/wheel/button/auto-off/Esc tests + `lyr-free` config
-  validation (`kanata --check`)
+- Precision layer: daemon `teardown(false)` + `kbd.set_layer(lyr-mouse-precision)`
+  tests + `after_move` enter/skip tests
 - #8 IPC: version negotiate/refuse, 1 MiB limit, checked-in malformed corpus,
   Hello timeout, and overlay-server malformed-frame tests
 - #10 kill switch: `on_kanata_lost` grab-release + co-exit test
-- CLI: fake-kanata TCP tests for show/enter-free-mode/toggle/status + exit codes
+- CLI: fake-kanata TCP tests for show/toggle/status + exit codes

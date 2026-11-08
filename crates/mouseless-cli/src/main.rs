@@ -15,9 +15,7 @@
 use mouseless_cli::{toggle_target_with, CliError, LayerNames, SettingsPage, Verb};
 use mouseless_config::{load_effective, AppConfig};
 use mouseless_ipc::{request, ClientToDaemon, DaemonToClient};
-use mouseless_kbd::{
-    query_current_layer, send_layer_change, KanataTcpConfig, FREE_MODE_LAYER, OVERLAY_LAYER,
-};
+use mouseless_kbd::{query_current_layer, send_layer_change, KanataTcpConfig, OVERLAY_LAYER};
 use std::path::PathBuf;
 use std::process::{Command, ExitCode, Stdio};
 
@@ -120,12 +118,8 @@ fn parse_args(app: &AppConfig) -> Result<(KanataTcpConfig, String, String), Stri
                 println!(
                     "usage: mouseless [--config PATH] [--kanata HOST:PORT] [--socket PATH] <verb>"
                 );
-                println!(
-                    "verbs: show hide toggle enter-free-mode exit-free-mode status reload settings [page]"
-                );
-                println!(
-                    "settings pages: grid appearance behavior free-mode keybindings presets status"
-                );
+                println!("verbs: show hide toggle status reload settings [page]");
+                println!("settings pages: grid appearance behavior keybindings presets status");
                 println!("flags: --list-input-devices, --version");
                 println!("exit: 0 success, 1 operational failure, 2 usage error");
                 std::process::exit(0);
@@ -243,7 +237,6 @@ fn main() -> ExitCode {
     let layers = LayerNames {
         base: &app.layers.base,
         overlay: OVERLAY_LAYER,
-        free_mode: FREE_MODE_LAYER,
     };
     let client_timeout = app.ipc.client_timeout();
     match verb {
@@ -255,7 +248,6 @@ fn main() -> ExitCode {
                         daemon_version,
                         overlay_connected,
                         session_active,
-                        free_mode,
                         config_path,
                     }) => {
                         println!("daemon: ok ({daemon_version})");
@@ -270,10 +262,6 @@ fn main() -> ExitCode {
                         println!(
                             "session: {}",
                             if session_active { "active" } else { "idle" }
-                        );
-                        println!(
-                            "free-mode: {}",
-                            if free_mode { "active" } else { "inactive" }
                         );
                         println!("config: {config_path}");
                     }
@@ -314,14 +302,12 @@ fn main() -> ExitCode {
             Ok(current) => change_layer(&cfg, toggle_target_with(&current, &layers)),
             Err(e) => query_error(&e),
         },
-        Verb::Show | Verb::Hide | Verb::EnterFreeMode | Verb::ExitFreeMode => {
-            match verb.layer_change_with(&layers) {
-                Some(layer) => change_layer(&cfg, layer),
-                None => {
-                    usage(&app);
-                    ExitCode::from(2)
-                }
+        Verb::Show | Verb::Hide => match verb.layer_change_with(&layers) {
+            Some(layer) => change_layer(&cfg, layer),
+            None => {
+                usage(&app);
+                ExitCode::from(2)
             }
-        }
+        },
     }
 }

@@ -21,8 +21,6 @@ pub struct StatusWidgets {
     pub overlay: adw::ActionRow,
     /// Session state.
     pub session: adw::ActionRow,
-    /// Free-mode state.
-    pub free_mode: adw::ActionRow,
     /// Daemon-owned config path.
     pub config_path: adw::ActionRow,
     /// Kanata layer/TCP state.
@@ -40,7 +38,6 @@ pub fn build(state: &Rc<AppState>) {
     state.window.add(&grid_page(state));
     state.window.add(&appearance_page(state));
     state.window.add(&behavior_page(state));
-    state.window.add(&free_mode_page(state));
     state.window.add(&keybindings_page(state));
     state.window.add(&presets_page(state));
     state.window.add(&status_page(state));
@@ -221,34 +218,6 @@ fn behavior_page(state: &Rc<AppState>) -> adw::PreferencesPage {
     page
 }
 
-fn free_mode_page(state: &Rc<AppState>) -> adw::PreferencesPage {
-    let page = page("free-mode", "Free Mode", "input-mouse-symbolic");
-    let form = &state.form;
-
-    let movement = group(
-        "Movement",
-        "Custom physics runs in the daemon. The kanata engine hands movement to \
-         `lyr-mouse`; the other values remain stored so switching back is lossless.",
-    );
-    movement.add(&form.engine);
-    movement.add(&form.base_speed);
-    movement.add(&form.speed_multiplier);
-    movement.add(&form.easing);
-    movement.add(&form.auto_off);
-    page.add(&movement);
-
-    let wheel = group("Wheel", "");
-    wheel.add(&form.wheel_base);
-    wheel.add(&form.wheel_multiplier);
-    wheel.add(&form.wheel_easing);
-    wheel.add(&form.wheel_step);
-    wheel.add(&form.wheel_step_large);
-    page.add(&wheel);
-
-    page.add(&action_group(state));
-    page
-}
-
 fn keybindings_page(state: &Rc<AppState>) -> adw::PreferencesPage {
     let page = page(
         "keybindings",
@@ -264,7 +233,8 @@ fn keybindings_page(state: &Rc<AppState>) -> adw::PreferencesPage {
          be installed by root (OQ-3); use “Save include…” below.",
     );
     editable.add(&form.overlay_layer);
-    editable.add(&form.free_mode_layer);
+    editable.add(&form.precision_layer);
+    editable.add(&form.precision_trigger);
     editable.add(&form.kanata_free_layer);
     editable.add(&form.exit_key);
     editable.add(&form.action_key);
@@ -282,8 +252,8 @@ fn keybindings_page(state: &Rc<AppState>) -> adw::PreferencesPage {
         "Hold the overlay-trigger key; a tap keeps its normal key (kanata tap-hold).",
     ));
     reference.add(&row(
-        "Free-mode trigger",
-        "Hold the free-mode-trigger key; a tap keeps its normal key.",
+        "Precision trigger",
+        "Hold the precision-trigger key; a tap keeps its normal key (kanata tap-hold).",
     ));
     reference.add(&row("Exit", "Esc returns to the base layer."));
     reference.add(&row(
@@ -342,7 +312,7 @@ fn presets_page(state: &Rc<AppState>) -> adw::PreferencesPage {
     let save = group(
         "Save current behavior",
         "Presets store the complete behavior section (selection, timing, modifiers, \
-         and free-mode-after-move). Grid, appearance, and free-mode physics stay as-is.",
+         and free-mode-after-move). Grid, appearance, and the precision layer stay as-is.",
     );
     let save_button = gtk::Button::with_label("Save preset");
     save_button.add_css_class("pill");
@@ -401,12 +371,10 @@ fn status_page(state: &Rc<AppState>) -> adw::PreferencesPage {
     let daemon_row = row("Daemon", "querying…");
     let overlay = row("Overlay", "querying…");
     let session = row("Session", "querying…");
-    let free_mode = row("Free mode", "querying…");
     let config_path = row("Config file", "querying…");
     daemon.add(&daemon_row);
     daemon.add(&overlay);
     daemon.add(&session);
-    daemon.add(&free_mode);
     daemon.add(&config_path);
     page.add(&daemon);
 
@@ -468,7 +436,6 @@ fn status_page(state: &Rc<AppState>) -> adw::PreferencesPage {
         daemon: daemon_row,
         overlay,
         session,
-        free_mode,
         config_path,
         kanata,
         uinput,

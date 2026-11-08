@@ -160,16 +160,15 @@ The kanata overlay layer must emit the full 30-key block plainly; re-apply
 
 ```sh
 cargo run -p mouseless-cli -- show|hide|toggle
-cargo run -p mouseless-cli -- enter-free-mode|exit-free-mode
 cargo run -p mouseless-cli -- status
 cargo run -p mouseless-cli -- reload
-cargo run -p mouseless-cli -- settings [grid|appearance|behavior|free-mode|keybindings|presets|status]
+cargo run -p mouseless-cli -- settings [grid|appearance|behavior|keybindings|presets|status]
 cargo run -p mouseless-cli -- --list-input-devices
 cargo run -p mouseless-cli -- --config ./mouseless.toml status
 cargo run -p mouseless-cli -- --version
 ```
 
-`status` prints the live kanata layer plus daemon/overlay/session/free-mode and
+`status` prints the live kanata layer plus daemon/overlay/session and
 config-path lines when the daemon socket is reachable (`--socket` or
 `MOUSELESS_SOCKET` to override). `reload` asks the daemon to re-read its stored
 `/var/lib/mouseless/config.yaml`; an invalid file returns an error and leaves the
@@ -184,7 +183,7 @@ installed binaries accept `--version`/`-V` (for example
 
 `mouseless-settings` (crate `mouseless-gtk`) is the GTK4/Adwaita settings
 window: grid and subgrid geometry with a live preview, appearance, behavior,
-free mode, keybinding reference with conflict hints, presets (built-in and
+keybinding reference with conflict hints, presets (built-in and
 user YAML), and a status page. It reads the saved document with `GetConfig`,
 validates locally, and auto-saves every valid edit with `Save`; the daemon
 persists the document but keeps the running app on its previous values.
@@ -209,12 +208,12 @@ stays headless.
 
 ## Phase status
 
-Phases 1.2/1.3/1.4 and Phase 2 (custom free-mode physics, multi-click,
+Phases 1.2/1.3/1.4 and Phase 2 (multi-click,
 drag/drop, nudges, modifier clicks, monitor switching, cursor hiding) are
 implemented and covered by 190 hermetic tests; the Phase-1.4 host e2e and
-visual/fractional acceptance passed on 2026-10-29. The Phase-2 kanata include
+visual/fractional acceptance passed on 2026-10-29. The Phase-1.4 kanata include
 is applied on the primary host (kanata on `lyr-base`, TCP `127.0.0.1:7070`),
-and live free-mode movement/click behavior was confirmed. The Phase-3 grid
+and live overlay behavior was confirmed. The Phase-3 grid
 layout is implemented: a 10×30 primary grid (columns `asdfghjkl;`, rows
 `qwertyuiopasdfghjkl;zxcvbnm,./`) whose cells are labelled with both keys
 (e.g. `AQ`), a 10×3 keyboard-shaped subgrid, and config-driven appearance
@@ -223,9 +222,9 @@ Phase-3 config engine, presets, atomic apply/rollback, kanata include
 renderer/check gate, daemon persistence (`/var/lib/mouseless/config.yaml`),
 live appearance/monitor-assignment application, and CLI `reload`/`status` are
 implemented and tested headless. The `mouseless://` scheme handler is installed by
-`platform/install-system.sh` and routes overlay/free-mode/status verbs to the
+`platform/install-system.sh` and routes overlay/status verbs to the
 CLI. The Adwaita settings app (`mouseless-settings`) is implemented over the
-same engine: seven pages, live subgrid preview, presets, keybinding conflict
+same engine: six pages, live subgrid preview, presets, keybinding conflict
 hints, status, and `mouseless://settings/<page>` deep links; install the
 `libgtk-4-dev`/`libadwaita-1-dev` packages to build it. Remaining: the operator
 smoke checklist (auto-save → restart, preset round-trip, daemon-down fallback).

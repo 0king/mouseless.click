@@ -64,13 +64,14 @@ With: `cp platform/kanata/mouseless.kbd /etc/kanata/mouseless.kbd`
   so base aliases (`@ml-tap`, `@sp`) cannot fire while the overlay is open;
   the daemon needs real Shift/Alt press/release events for monitor switching
   and drag.
-- `lyr-free` — custom free mode for the daemon's physics loop:
-  `i/k/j/l` move, `s/d/f` boost, `a` decel, `space` left button,
-  `r/e/q/w` right/middle/back/forward, `m/,/.//` wheel, `esc` → base.
-  All other keys are `XX` (blocked) so base HRM/layer aliases cannot fire.
-  `lyr-free` is defined in the include but has no dedicated tap trigger by
-  default; it is entered via `free_mode_after_move` or by setting
-  `keybindings.free_mode_trigger_key`.
+- `lyr-mouse-precision` — kanata-native precision layer for 1 px movement:
+  `i` up, `k` down, `j` left, `l` right, `c` fast, `v` slow; `esc`/`capslock`
+  exit to base. All other cells are `_` (transparent, they type into the
+  focused app since the daemon does not grab in precision mode). Wheel and
+  button cells are intentionally unmapped.
+  Entered after a `move` when `behavior.free_mode_after_move` is true, or via
+  the optional `keybindings.precision_trigger` tap-hold alias
+  `ml-precision-tap`. Has no dedicated trigger by default.
 
 ## Service (TCP + kill switch, audit W2)
 

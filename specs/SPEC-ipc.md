@@ -127,7 +127,7 @@ it. A client that stays silent past the 2 s handshake budget is closed.
 |---|---|
 | `Ack` | `{"type":"Ack","message":"configuration saved and applied"}` |
 | `Error` | `{"type":"Error","code":"invalid_config","message":"…"}` |
-| `Status` | `{"type":"Status","daemon_version":"0.1.0","overlay_connected":true,"session_active":false,"free_mode":false,"config_path":"/var/lib/mouseless/config.yaml"}` |
+| `Status` | `{"type":"Status","daemon_version":"0.1.0","overlay_connected":true,"session_active":false,"config_path":"/var/lib/mouseless/config.yaml"}` |
 | `Config` | `{"type":"Config","config":ConfigData}` — effective document; identical schema to `Update.config` |
 
 - `Error.code` is stable for scripts (`invalid_config`, `io`, …); `message` is

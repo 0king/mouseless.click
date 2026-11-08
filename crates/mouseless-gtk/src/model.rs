@@ -299,8 +299,6 @@ pub struct DaemonStatus {
     pub overlay_connected: bool,
     /// Whether a session is active.
     pub session_active: bool,
-    /// Whether custom free mode is running.
-    pub free_mode: bool,
     /// Daemon-owned config path.
     pub config_path: String,
 }
@@ -324,13 +322,11 @@ pub fn gather_status(socket: PathBuf) -> StatusSnapshot {
             daemon_version,
             overlay_connected,
             session_active,
-            free_mode,
             config_path,
         }) => Ok(DaemonStatus {
             version: daemon_version,
             overlay_connected,
             session_active,
-            free_mode,
             config_path,
         }),
         Ok(DaemonToClient::Error { code, message }) => Err(format!("{code}: {message}")),

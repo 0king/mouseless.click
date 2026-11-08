@@ -62,8 +62,8 @@ grab_retry_delay_ms = 50
 cursor_query_timeout_ms = 100
 # Monitor switch key: ctrl (lctrl tap switches monitor), shift, or "" to disable.
 monitor_switch_tap_ms = 200
-# Fixed physics tick for custom free mode.
-free_mode_tick_ms = 8
+# Fixed tick for the kanata precision layer.
+tick_ms = 8
 # Closed-loop movement (see ARCHITECTURE.md: half-error law). Changing these
 # can strand or oscillate clicks; keep the defaults unless you are tuning on
 # real hardware.

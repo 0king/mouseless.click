@@ -80,10 +80,8 @@ pub enum DaemonToClient {
         daemon_version: String,
         /// Whether at least one Helloed overlay is connected.
         overlay_connected: bool,
-        /// Whether an overlay/free-mode session is active.
+        /// Whether an overlay/session is active.
         session_active: bool,
-        /// Whether custom free mode is currently running.
-        free_mode: bool,
         /// Daemon-owned config path.
         config_path: String,
     },
@@ -226,7 +224,6 @@ mod tests {
                 daemon_version: "0.1.0".into(),
                 overlay_connected: true,
                 session_active: false,
-                free_mode: false,
                 config_path: "/var/lib/mouseless/config.yaml".into(),
             },
             DaemonToClient::Config {

@@ -30,8 +30,8 @@ use thiserror::Error;
 pub const BASE_LAYER: &str = "lyr-base";
 /// Overlay layer (kanata include).
 pub const OVERLAY_LAYER: &str = "lyr-mouseless";
-/// Custom free-mode layer (kanata include, Phase 2).
-pub const FREE_MODE_LAYER: &str = "lyr-free";
+/// Kanata-native precision layer name (from `keybindings.free_mode_layer`).
+pub const PRECISION_LAYER: &str = "lyr-mouse-precision";
 /// Kanata-native free-mode fallback layer (`free_mode_engine = kanata`).
 pub const KANATA_FREE_MODE_LAYER: &str = "lyr-mouse";
 

@@ -5,13 +5,13 @@
 
 use thiserror::Error;
 
-use mouseless_kbd::{BASE_LAYER, FREE_MODE_LAYER, OVERLAY_LAYER};
+use mouseless_kbd::{BASE_LAYER, OVERLAY_LAYER};
 
 /// CLI errors (surfaced with a clear message, never a stack trace).
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum CliError {
     /// Unknown verb or bad arguments.
-    #[error("usage: mouseless <show|hide|toggle|enter-free-mode|exit-free-mode|status|reload|settings|--list-input-devices>")]
+    #[error("usage: mouseless <show|hide|toggle|status|reload|settings|--list-input-devices>")]
     Usage,
 }
 
@@ -28,8 +28,6 @@ pub enum SettingsPage {
     Appearance,
     /// Action level, thresholds, click/drag modifiers.
     Behavior,
-    /// Free-mode engine and physics.
-    FreeMode,
     /// Layer names, key roles, kill switch.
     Keybindings,
     /// Built-in and user presets.
@@ -40,11 +38,10 @@ pub enum SettingsPage {
 
 impl SettingsPage {
     /// Every page in window order.
-    pub const ALL: [SettingsPage; 7] = [
+    pub const ALL: [SettingsPage; 6] = [
         SettingsPage::Grid,
         SettingsPage::Appearance,
         SettingsPage::Behavior,
-        SettingsPage::FreeMode,
         SettingsPage::Keybindings,
         SettingsPage::Presets,
         SettingsPage::Status,
@@ -56,7 +53,6 @@ impl SettingsPage {
             SettingsPage::Grid => "grid",
             SettingsPage::Appearance => "appearance",
             SettingsPage::Behavior => "behavior",
-            SettingsPage::FreeMode => "free-mode",
             SettingsPage::Keybindings => "keybindings",
             SettingsPage::Presets => "presets",
             SettingsPage::Status => "status",
@@ -69,7 +65,6 @@ impl SettingsPage {
             SettingsPage::Grid => "Grid",
             SettingsPage::Appearance => "Appearance",
             SettingsPage::Behavior => "Behavior",
-            SettingsPage::FreeMode => "Free Mode",
             SettingsPage::Keybindings => "Keybindings",
             SettingsPage::Presets => "Presets",
             SettingsPage::Status => "Status",
@@ -82,7 +77,6 @@ impl SettingsPage {
             SettingsPage::Grid => "mouseless://settings",
             SettingsPage::Appearance => "mouseless://settings/appearance",
             SettingsPage::Behavior => "mouseless://settings/behavior",
-            SettingsPage::FreeMode => "mouseless://settings/free-mode",
             SettingsPage::Keybindings => "mouseless://settings/keybindings",
             SettingsPage::Presets => "mouseless://settings/presets",
             SettingsPage::Status => "mouseless://settings/status",
@@ -95,7 +89,6 @@ impl SettingsPage {
             SettingsPage::Grid => "settings",
             SettingsPage::Appearance => "settings/appearance",
             SettingsPage::Behavior => "settings/behavior",
-            SettingsPage::FreeMode => "settings/free-mode",
             SettingsPage::Keybindings => "settings/keybindings",
             SettingsPage::Presets => "settings/presets",
             SettingsPage::Status => "settings/status",
@@ -121,7 +114,6 @@ impl SettingsPage {
             "settings" | "settings/grid" | "grid" => Some(SettingsPage::Grid),
             "settings/appearance" | "appearance" => Some(SettingsPage::Appearance),
             "settings/behavior" | "behavior" => Some(SettingsPage::Behavior),
-            "settings/free-mode" | "free-mode" => Some(SettingsPage::FreeMode),
             "settings/keybindings" | "keybindings" => Some(SettingsPage::Keybindings),
             "settings/presets" | "presets" => Some(SettingsPage::Presets),
             "settings/status" | "status" => Some(SettingsPage::Status),
@@ -132,17 +124,15 @@ impl SettingsPage {
 
 /// Kanata layer names used by CLI verb mapping.
 ///
-/// `base` comes from `mouseless.toml`; the overlay/free-mode names come from
-/// the user settings (`config.yaml`) and keep their pinned defaults here for
-/// verbs that run without a config document.
+/// `base` comes from `mouseless.toml`; the overlay name comes from the user
+/// settings (`config.yaml`) and keeps its pinned default here for verbs that
+/// run without a config document.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayerNames<'a> {
     /// Neutral layer restored on hide/exit.
     pub base: &'a str,
     /// Overlay layer.
     pub overlay: &'a str,
-    /// Custom free-mode layer.
-    pub free_mode: &'a str,
 }
 
 impl Default for LayerNames<'static> {
@@ -150,7 +140,6 @@ impl Default for LayerNames<'static> {
         Self {
             base: BASE_LAYER,
             overlay: OVERLAY_LAYER,
-            free_mode: FREE_MODE_LAYER,
         }
     }
 }
@@ -164,11 +153,7 @@ pub enum Verb {
     Hide,
     /// `mouseless://toggle-overlay`.
     Toggle,
-    /// `mouseless://enter-free-mode`.
-    EnterFreeMode,
-    /// `mouseless://exit-free-mode`.
-    ExitFreeMode,
-    /// Kanata layer plus daemon/overlay/session/free-mode state.
+    /// Kanata layer plus daemon/overlay/session state.
     Status,
     /// Re-read the daemon-owned config, validate, and apply it.
     Reload,
@@ -203,8 +188,6 @@ impl Verb {
             "show" | "show-overlay" => Ok(Verb::Show),
             "hide" | "hide-overlay" => Ok(Verb::Hide),
             "toggle" | "toggle-overlay" => Ok(Verb::Toggle),
-            "enter-free-mode" => Ok(Verb::EnterFreeMode),
-            "exit-free-mode" => Ok(Verb::ExitFreeMode),
             "status" => Ok(Verb::Status),
             "reload" => Ok(Verb::Reload),
             "settings" => Ok(Verb::Settings(SettingsPage::Grid)),
@@ -233,8 +216,6 @@ impl Verb {
             "show-overlay" => Some(Verb::Show),
             "hide-overlay" => Some(Verb::Hide),
             "toggle-overlay" => Some(Verb::Toggle),
-            "enter-free-mode" => Some(Verb::EnterFreeMode),
-            "exit-free-mode" => Some(Verb::ExitFreeMode),
             "status" => Some(Verb::Status),
             "list-input-devices" => Some(Verb::ListInputDevices),
             _ => None,
@@ -250,8 +231,6 @@ impl Verb {
             Verb::Show => Some("mouseless://show-overlay"),
             Verb::Hide => Some("mouseless://hide-overlay"),
             Verb::Toggle => Some("mouseless://toggle-overlay"),
-            Verb::EnterFreeMode => Some("mouseless://enter-free-mode"),
-            Verb::ExitFreeMode => Some("mouseless://exit-free-mode"),
             Verb::Status => Some("mouseless://status"),
             Verb::Reload => None,
             Verb::ListInputDevices => Some("mouseless://list-input-devices"),
@@ -283,8 +262,7 @@ impl Verb {
     pub fn layer_change_with<'a>(&self, layers: &LayerNames<'a>) -> Option<&'a str> {
         match self {
             Verb::Show => Some(layers.overlay),
-            Verb::Hide | Verb::ExitFreeMode => Some(layers.base),
-            Verb::EnterFreeMode => Some(layers.free_mode),
+            Verb::Hide => Some(layers.base),
             Verb::Toggle
             | Verb::Status
             | Verb::Reload
@@ -296,8 +274,7 @@ impl Verb {
 
 /// Target layer for `toggle`: hide a visible overlay, otherwise show it.
 ///
-/// Free mode is not the overlay, so toggling from `lyr-free` shows the grid
-/// (ending free mode through the normal layer transition).
+/// Target layer for `toggle`: hide a visible overlay, otherwise show it.
 pub fn toggle_target(current_layer: &str) -> &'static str {
     toggle_target_with(current_layer, &LayerNames::default())
 }
@@ -321,8 +298,6 @@ mod tests {
             ("show", "mouseless://show-overlay"),
             ("hide", "mouseless://hide-overlay"),
             ("toggle", "mouseless://toggle-overlay"),
-            ("enter-free-mode", "mouseless://enter-free-mode"),
-            ("exit-free-mode", "mouseless://exit-free-mode"),
             ("status", "mouseless://status"),
             ("--list-input-devices", "mouseless://list-input-devices"),
         ] {
@@ -391,8 +366,6 @@ mod tests {
     fn verbs_map_to_kanata_layers() {
         assert_eq!(Verb::Show.layer_change(), Some(OVERLAY_LAYER));
         assert_eq!(Verb::Hide.layer_change(), Some(BASE_LAYER));
-        assert_eq!(Verb::EnterFreeMode.layer_change(), Some(FREE_MODE_LAYER));
-        assert_eq!(Verb::ExitFreeMode.layer_change(), Some(BASE_LAYER));
         assert_eq!(Verb::Toggle.layer_change(), None);
         assert_eq!(Verb::Status.layer_change(), None);
         assert_eq!(Verb::Reload.layer_change(), None);
@@ -418,10 +391,6 @@ mod tests {
             Some(SettingsPage::Appearance)
         );
         assert_eq!(
-            Verb::deep_link_with_scheme(&Verb::Settings(SettingsPage::FreeMode), "ml"),
-            Some("ml://settings/free-mode".into())
-        );
-        assert_eq!(
             Verb::deep_link_with_scheme(&Verb::Show, "ml"),
             Some("ml://show-overlay".into())
         );
@@ -433,22 +402,16 @@ mod tests {
         let layers = LayerNames {
             base: "base-x",
             overlay: "overlay-x",
-            free_mode: "free-x",
         };
         assert_eq!(Verb::Hide.layer_change_with(&layers), Some("base-x"));
         assert_eq!(Verb::Show.layer_change_with(&layers), Some("overlay-x"));
-        assert_eq!(
-            Verb::EnterFreeMode.layer_change_with(&layers),
-            Some("free-x")
-        );
         assert_eq!(toggle_target_with("overlay-x", &layers), "base-x");
-        assert_eq!(toggle_target_with("free-x", &layers), "overlay-x");
+        assert_eq!(toggle_target_with("base-x", &layers), "overlay-x");
     }
 
     #[test]
     fn toggle_target_hides_only_a_visible_overlay() {
         assert_eq!(toggle_target(OVERLAY_LAYER), BASE_LAYER);
-        assert_eq!(toggle_target(FREE_MODE_LAYER), OVERLAY_LAYER);
         assert_eq!(toggle_target(BASE_LAYER), OVERLAY_LAYER);
         assert_eq!(toggle_target("lyr-mouse"), OVERLAY_LAYER);
     }

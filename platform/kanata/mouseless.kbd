@@ -1,4 +1,4 @@
-;; Mouseless overlay + custom free-mode layers for kanata (Phase 2).
+;; Mouseless overlay + kanata precision layer (Phase 3).
 ;; Installed as /etc/kanata/mouseless.kbd, sourced from unicfg.kbd via
 ;;   (include "mouseless.kbd")
 ;; Requirements in unicfg.kbd (see UNICFG-EDITS.md):
@@ -36,18 +36,29 @@
   lctl lmet lalt spc ralt rctl rmet
 )
 
-;; Custom free mode: the daemon grabs this layer's output and runs its own
-;; physics. Emit exactly the letters `mouseless-kbd` translates; XX blocks all
-;; other keys so base HRM/layer aliases cannot fire while free mode is active.
-;; Modifiers stay explicit for future modifier+button chords and to keep the
-;; physical modifier state visible to the grab.
-;; Mapping: i/k/j/l move, s/d/f boost, a decel, space left button,
-;; r/e/q/w right/middle/back/forward, m/,/.// wheel, esc exits to base.
-(deflayer lyr-free
-  (layer-switch lyr-base) XX XX XX XX XX XX XX XX XX XX XX XX
-  XX XX XX XX XX XX XX XX XX XX XX XX XX XX
-  XX q w e r XX XX XX i XX XX XX XX XX
-  XX a s d f XX XX j k l XX XX XX
-  lsft XX XX XX XX XX XX m , . / rsft
-  lctl lmet lalt spc ralt rctl rmet
+;; Kanata-native precision layer: 1 px i/j/k/l movement plus speed toggles,
+;; esc/capslock to exit. The daemon does not grab this layer, so all unmapped
+;; cells are `_` (transparent — they type into the focused app). Only i/j/k/l
+;; (movement), esc/capslock (exit), c/v (speed) are mapped. Wheel/click cells
+;; are `_` and intentionally unmapped.
+;; Entered after a `move` when `behavior.free_mode_after_move` is true, or via
+;; the optional `keybindings.precision_trigger` tap-hold alias `ml-precision-tap`.
+;; Column counts mirror defsrc exactly (13/14/14/13/12/7).
+(deflayer lyr-mouse-precision
+  (layer-switch lyr-base) _ _ _ _ _ _ _ _ _ _ _ _
+  _ _ _ _ _ _ _ _ _ _ _ _ _ _
+  _ _ _ _ _ _ _ _ mlp-up _ _ _ _
+  (layer-switch lyr-base) _ _ _ _ _ _ mlp-left mlp-down mlp-right _ _ _
+  _ _ _ mlp-fast mlp-slow _ _ _ _ _ _ _
+  _ _ _ _ _ _ _
+)
+
+;; Self-contained precision aliases (not reused from unicfg @mmu/@mmd/@fst/@slw).
+(defalias
+  mlp-up (movemouse-up 20 1)
+  mlp-down (movemouse-down 20 1)
+  mlp-left (movemouse-left 20 1)
+  mlp-right (movemouse-right 20 1)
+  mlp-fast (movemouse-speed 500)
+  mlp-slow (movemouse-speed 20)
 )

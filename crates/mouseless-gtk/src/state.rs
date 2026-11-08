@@ -619,11 +619,6 @@ impl AppState {
                 } else {
                     "idle"
                 });
-                widgets.free_mode.set_subtitle(if daemon.free_mode {
-                    "running"
-                } else {
-                    "inactive"
-                });
                 widgets.config_path.set_subtitle(&daemon.config_path);
             }
             Err(error) => {
@@ -632,9 +627,6 @@ impl AppState {
                     .set_subtitle(&format!("unreachable — {error}"));
                 widgets.overlay.set_subtitle("unknown (daemon unreachable)");
                 widgets.session.set_subtitle("unknown (daemon unreachable)");
-                widgets
-                    .free_mode
-                    .set_subtitle("unknown (daemon unreachable)");
                 widgets
                     .config_path
                     .set_subtitle(&model::config_path().display().to_string());

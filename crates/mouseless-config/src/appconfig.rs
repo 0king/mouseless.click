@@ -190,8 +190,8 @@ impl AppConfig {
         if daemon.cursor_query_timeout_ms == 0 {
             issues.push("daemon.cursor_query_timeout_ms must be greater than zero".into());
         }
-        if daemon.free_mode_tick_ms == 0 {
-            issues.push("daemon.free_mode_tick_ms must be greater than zero".into());
+        if daemon.tick_ms == 0 {
+            issues.push("daemon.tick_ms must be greater than zero".into());
         }
         if daemon.move_max_step_px <= 0
             || daemon.move_min_step_px <= 0
@@ -358,8 +358,9 @@ pub struct DaemonSettings {
     pub cursor_query_timeout_ms: u64,
     /// Shift tap window for monitor switching.
     pub monitor_switch_tap_ms: u64,
-    /// Fixed physics tick for custom free mode.
-    pub free_mode_tick_ms: u64,
+    /// Fixed tick for the kanata precision layer.
+    #[serde(alias = "free_mode_tick_ms")]
+    pub tick_ms: u64,
     /// Largest single REL step.
     pub move_max_step_px: i32,
     /// Divisor applied to the remaining error (compositor acceleration).
@@ -391,7 +392,7 @@ impl Default for DaemonSettings {
             grab_retry_delay_ms: 50,
             cursor_query_timeout_ms: 100,
             monitor_switch_tap_ms: 200,
-            free_mode_tick_ms: 8,
+            tick_ms: 8,
             move_max_step_px: 64,
             move_damping_divisor: 2,
             move_min_step_px: 2,
@@ -427,9 +428,9 @@ impl DaemonSettings {
         Duration::from_millis(self.cursor_query_timeout_ms)
     }
 
-    /// Free-mode tick.
-    pub fn free_mode_tick(&self) -> Duration {
-        Duration::from_millis(self.free_mode_tick_ms)
+    /// Precision tick.
+    pub fn tick(&self) -> Duration {
+        Duration::from_millis(self.tick_ms)
     }
 
     /// Stale-reply settle timeout.

@@ -83,7 +83,8 @@ behavior:
   hold_for_right_button: true
   hold_for_drag: true
 
-free_mode:
+# free_mode — retained for schema compatibility only; inert (no daemon effect).
+
   engine: custom                  # custom | kanata
   base_px_per_tick: 10.0
   speed_multiplier: 2.0
@@ -111,7 +112,7 @@ appearance:
 
 keybindings:
   overlay_layer: lyr-mouseless
-  free_mode_layer: lyr-free
+  free_mode_layer: lyr-mouse-precision   # precision layer (no default trigger)
   kanata_free_mode_layer: lyr-mouse
   exit_key: esc
   action_key: space

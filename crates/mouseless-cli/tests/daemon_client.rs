@@ -143,7 +143,6 @@ fn status_prints_daemon_state_when_reachable() {
                 daemon_version: "9.9.9".into(),
                 overlay_connected: true,
                 session_active: false,
-                free_mode: true,
                 config_path: "/var/lib/mouseless/config.yaml".into(),
             },
         )
@@ -178,7 +177,6 @@ fn status_prints_daemon_state_when_reachable() {
     assert!(stdout.contains("daemon: ok (9.9.9)"), "{stdout}");
     assert!(stdout.contains("overlay: connected"), "{stdout}");
     assert!(stdout.contains("session: idle"), "{stdout}");
-    assert!(stdout.contains("free-mode: active"), "{stdout}");
     assert!(
         stdout.contains("config: /var/lib/mouseless/config.yaml"),
         "{stdout}"

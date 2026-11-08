@@ -4,9 +4,47 @@
 //! State emits intents; the daemon executes them through `MouseBackend`
 //! (SPEC-state boundary rule). Nothing here touches I/O or a concrete backend.
 
-use crate::physics::Vec2;
 use mouseless_core::{Corner, Point, Rect};
 use serde::{Deserialize, Serialize};
+
+/// Two-dimensional value in physical pixels (movement) or wheel lines.
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+pub struct Vec2 {
+    /// X component (positive = right).
+    pub x: f64,
+    /// Y component (positive = down for movement, up for wheel).
+    pub y: f64,
+}
+
+impl Vec2 {
+    /// Zero vector.
+    pub const ZERO: Self = Self { x: 0.0, y: 0.0 };
+
+    /// Construct a vector.
+    pub const fn new(x: f64, y: f64) -> Self {
+        Self { x, y }
+    }
+
+    /// Whether both components are exactly zero.
+    pub fn is_zero(&self) -> bool {
+        self.x == 0.0 && self.y == 0.0
+    }
+
+    /// Euclidean length.
+    pub fn length(&self) -> f64 {
+        self.x.hypot(self.y)
+    }
+
+    /// Round to integer deltas (saturating on the `i32` edges).
+    pub fn rounded_i32(&self) -> (i32, i32) {
+        (self.x.round() as i32, self.y.round() as i32)
+    }
+
+    /// Scale both components.
+    pub fn scale(&self, factor: f64) -> Self {
+        Self::new(self.x * factor, self.y * factor)
+    }
+}
 
 /// Mouse buttons mirrored without a dependency on `mouseless-mouse`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
