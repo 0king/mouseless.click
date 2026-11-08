@@ -574,7 +574,7 @@ dependencies = [
 
 [[package]]
 name = "mouseless-cli"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "mouseless-config",
  "mouseless-ipc",
@@ -585,7 +585,7 @@ dependencies = [
 
 [[package]]
 name = "mouseless-config"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "serde_yaml_ng",
@@ -595,7 +595,7 @@ dependencies = [
 
 [[package]]
 name = "mouseless-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "thiserror",
@@ -603,7 +603,7 @@ dependencies = [
 
 [[package]]
 name = "mouseless-daemon"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "mouseless-config",
  "mouseless-core",
@@ -619,7 +619,7 @@ dependencies = [
 
 [[package]]
 name = "mouseless-gtk"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "gtk4",
  "libadwaita",
@@ -631,7 +631,7 @@ dependencies = [
 
 [[package]]
 name = "mouseless-ipc"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "libc",
  "mouseless-config",
@@ -643,7 +643,7 @@ dependencies = [
 
 [[package]]
 name = "mouseless-kbd"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "evdev",
  "serde",
@@ -653,7 +653,7 @@ dependencies = [
 
 [[package]]
 name = "mouseless-mouse"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "serde",
  "thiserror",
@@ -662,7 +662,7 @@ dependencies = [
 
 [[package]]
 name = "mouseless-overlay"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "mouseless-core",
  "mouseless-ipc",
@@ -673,7 +673,7 @@ dependencies = [
 
 [[package]]
 name = "mouseless-state"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "mouseless-core",
  "serde",

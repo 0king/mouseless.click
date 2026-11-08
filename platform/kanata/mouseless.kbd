@@ -47,9 +47,9 @@
 (deflayer lyr-mouse-precision
   (layer-switch lyr-base) _ _ _ _ _ _ _ _ _ _ _ _
   _ _ _ _ _ _ _ _ _ _ _ _ _ _
-  _ _ _ _ _ _ _ _ mlp-up _ _ _ _
-  (layer-switch lyr-base) _ _ _ _ _ _ mlp-left mlp-down mlp-right _ _ _
-  _ _ _ mlp-fast mlp-slow _ _ _ _ _ _ _
+  _ _ _ _ _ _ _ _ @mlp-up _ _ _ _ _
+  (layer-switch lyr-base) _ _ _ _ _ _ @mlp-left @mlp-down @mlp-right _ _ _
+  _ _ _ @mlp-fast @mlp-slow _ _ _ _ _ _ _
   _ _ _ _ _ _ _
 )
 
